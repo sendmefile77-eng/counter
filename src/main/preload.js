@@ -17,9 +17,12 @@ contextBridge.exposeInMainWorld('counter', {
     ipcRenderer.invoke('workday-override:clear', { employeeId, date })
   ),
   getAnalytics: (filter) => ipcRenderer.invoke('analytics:get', filter),
-  initializeDuties: (entries) => ipcRenderer.invoke('duties:initialize', { entries }),
+  initializeDuties: (entries, participantIds) => ipcRenderer.invoke('duties:initialize', { entries, participantIds }),
   generateDuties: (filter) => ipcRenderer.invoke('duties:generate', filter),
   setDutyAssignment: (payload) => ipcRenderer.invoke('duties:set-assignment', payload),
+  toggleDutyAssignment: (employeeId, date) => (
+    ipcRenderer.invoke('duties:toggle-assignment', { employeeId, date })
+  ),
   setDutyRealized: (date, employeeId, realized) => (
     ipcRenderer.invoke('duties:set-realized', { date, employeeId, realized })
   ),

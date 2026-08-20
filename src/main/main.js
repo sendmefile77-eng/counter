@@ -24,6 +24,7 @@ const {
   setDutyRealized,
   setDutyRestriction,
   setWorkdayOverride,
+  toggleDutyAssignment,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
 
@@ -41,7 +42,7 @@ function clampWidgetSize(value) {
 function buildCircularShape(size) {
   const rects = [];
   const radius = size / 2;
-  const rowHeight = 3;
+  const rowHeight = 1;
   for (let y = 0; y < size; y += rowHeight) {
     const sampleY = Math.min(size - 1, y + rowHeight / 2);
     const distance = sampleY - radius;
@@ -62,16 +63,42 @@ function applyWidgetShape(size) {
 function restoreWidgetPosition(size) {
   const saved = store.state.settings.widgetPosition;
   if (!saved || !Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return false;
-  const visible = screen.getAllDisplays().some((display) => {
-    const area = display.workArea;
+  const display = screen.getAllDisplays().find((candidate) => {
+    const area = candidate.workArea;
     return saved.x + 80 < area.x + area.width
       && saved.y + 80 < area.y + area.height
       && saved.x + size - 80 > area.x
       && saved.y + size - 80 > area.y;
   });
-  if (!visible) return false;
-  mainWindow.setPosition(Math.round(saved.x), Math.round(saved.y), false);
+  if (!display) return false;
+  const area = display.workArea;
+  const x = Math.max(area.x, Math.min(Math.round(saved.x), area.x + area.width - size));
+  const y = Math.max(area.y, Math.min(Math.round(saved.y), area.y + area.height - size));
+  mainWindow.setPosition(x, y, false);
   return true;
+}
+
+function setWindowBoundsAndWait(bounds) {
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  mainWindow.setBounds(bounds, false);
+  const deadline = Date.now() + 750;
+  return new Promise((resolve) => {
+    const check = () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return resolve(false);
+      const current = mainWindow.getBounds();
+      const ready = current.x === bounds.x
+        && current.y === bounds.y
+        && current.width === bounds.width
+        && current.height === bounds.height;
+      if (ready) return setTimeout(() => resolve(true), 32);
+      if (Date.now() >= deadline) {
+        mainWindow.setBounds(bounds, false);
+        return setTimeout(() => resolve(true), 32);
+      }
+      setTimeout(check, 16);
+    };
+    check();
+  });
 }
 
 function saveWidgetBounds() {
@@ -265,14 +292,17 @@ function registerIpc() {
     mutate('workday-override:clear', (state) => clearWorkdayOverride(state, employeeId, date))
   ));
   ipcMain.handle('analytics:get', (_event, filter) => calculateStatistics(store.state, filter));
-  ipcMain.handle('duties:initialize', (_event, { entries }) => (
-    mutate('duties:initialize', (state) => initializeDutyHistory(state, entries))
+  ipcMain.handle('duties:initialize', (_event, { entries, participantIds }) => (
+    mutate('duties:initialize', (state) => initializeDutyHistory(state, entries, participantIds))
   ));
   ipcMain.handle('duties:generate', (_event, filter) => (
     mutate('duties:generate', (state) => generateDutySchedule(state, filter))
   ));
   ipcMain.handle('duties:set-assignment', (_event, payload) => (
     mutate('duties:set-assignment', (state) => setDutyAssignment(state, payload))
+  ));
+  ipcMain.handle('duties:toggle-assignment', (_event, { employeeId, date }) => (
+    mutate('duties:toggle-assignment', (state) => toggleDutyAssignment(state, employeeId, date))
   ));
   ipcMain.handle('duties:set-realized', (_event, payload) => (
     mutate('duties:set-realized', (state) => setDutyRealized(state, payload.date, payload.employeeId, payload.realized))
@@ -326,9 +356,10 @@ function registerIpc() {
     return { canceled: false, filePath: result.filePaths[0] };
   });
 
-  ipcMain.handle('window:set-mode', (_event, { mode }) => {
+  ipcMain.handle('window:set-mode', async (_event, { mode }) => {
     if (!mainWindow) return false;
     const display = screen.getDisplayMatching(mainWindow.getBounds());
+    mainWindow.hide();
     if (mode === 'dashboard') {
       saveWidgetBounds();
       windowMode = 'dashboard';
@@ -336,16 +367,21 @@ function registerIpc() {
       mainWindow.setSkipTaskbar(false);
       const width = Math.min(1240, display.workArea.width);
       const height = Math.min(860, display.workArea.height);
-      mainWindow.setSize(width, height, true);
-      mainWindow.center();
+      const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
+      const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
+      await setWindowBoundsAndWait({ x, y, width, height });
     } else {
       windowMode = 'widget';
       const size = clampWidgetSize(store.state.settings.widgetSize);
+      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
       mainWindow.setSkipTaskbar(true);
       mainWindow.setSize(size, size, false);
       if (!restoreWidgetPosition(size)) mainWindow.center();
+      const position = mainWindow.getPosition();
+      await setWindowBoundsAndWait({ x: position[0], y: position[1], width: size, height: size });
       applyWidgetShape(size);
     }
+    mainWindow.show();
     return true;
   });
 
@@ -353,10 +389,18 @@ function registerIpc() {
     if (!mainWindow || windowMode !== 'widget') return null;
     const nextSize = clampWidgetSize(size);
     const bounds = mainWindow.getBounds();
+    const display = screen.getDisplayMatching(bounds);
+    const area = display.workArea;
     const centerX = bounds.x + bounds.width / 2;
     const centerY = bounds.y + bounds.height / 2;
-    const nextX = Math.round(centerX - nextSize / 2);
-    const nextY = Math.round(centerY - nextSize / 2);
+    const nextX = Math.max(area.x, Math.min(
+      Math.round(centerX - nextSize / 2),
+      area.x + area.width - nextSize,
+    ));
+    const nextY = Math.max(area.y, Math.min(
+      Math.round(centerY - nextSize / 2),
+      area.y + area.height - nextSize,
+    ));
     mainWindow.setBounds({ x: nextX, y: nextY, width: nextSize, height: nextSize }, false);
     applyWidgetShape(nextSize);
     if (persist) {

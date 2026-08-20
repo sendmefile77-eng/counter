@@ -692,7 +692,7 @@ body.mode-widget #app {
   gap: 16px;
 }
 
-.duty-history-form input,
+.duty-history-form input[type="number"],
 .data-table input[type="number"] {
   width: 92px;
   min-height: 34px;
@@ -701,6 +701,13 @@ body.mode-widget #app {
   background: rgba(2, 8, 17, 0.5);
   color: var(--text);
   padding: 5px 8px;
+}
+
+.duty-history-form input[type="checkbox"],
+.data-table input[name="participantIds"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
 }
 
 .form-actions {
@@ -745,6 +752,32 @@ body.mode-widget #app {
   color: inherit;
   font-weight: inherit;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.duty-matrix th button strong {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.duty-matrix th button small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.duty-matrix th.weekend button small {
+  color: #d2a4ae;
+}
+
+.duty-matrix th.duty-day-incomplete {
+  box-shadow: inset 0 -2px 0 var(--amber);
 }
 
 .duty-matrix th button:hover {
@@ -759,6 +792,7 @@ body.mode-widget #app {
 }
 
 .duty-realized-total { color: #65d995; }
+.duty-matrix .matrix-cell { cursor: pointer; }
 .duty-empty { background: rgba(154, 171, 192, 0.04); color: #536780; }
 .duty-assigned { background: rgba(72, 119, 171, 0.48); color: #eef7ff; font-weight: 850; }
 .duty-realized { background: rgba(54, 191, 118, 0.34); color: #c5f7d8; font-weight: 850; box-shadow: inset 0 0 0 1px rgba(86, 224, 149, 0.35); }
@@ -795,6 +829,12 @@ body.mode-widget #app {
 .duty-pick small { display: block; }
 .duty-pick small { margin-top: 3px; color: var(--muted); }
 .duty-pick.restricted { opacity: 0.52; cursor: not-allowed; }
+
+.duty-help {
+  margin: -2px 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
 
 .month-title {
   min-width: 150px;

@@ -21,6 +21,7 @@ const {
   setDutyRestriction,
   setManualStatus,
   setWorkdayOverride,
+  toggleDutyAssignment,
 } = require('../src/shared/domain');
 
 function localDate(year, monthIndex, day, hour = 9, minute = 0) {
@@ -209,6 +210,11 @@ test('«А» блокує чергування в цей і наступний �
   const first = createEmployee(state, 'Данило', localDate(2026, 7, 20, 9, 0));
   const second = createEmployee(state, 'Євген', localDate(2026, 7, 20, 9, 0));
   const third = createEmployee(state, 'Жанна', localDate(2026, 7, 20, 9, 0));
+  initializeDutyHistory(state, [first, second, third].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })));
   setDutyRestriction(state, { employeeId: first.id, date: '2026-08-24', type: 'a' });
 
   generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-25' });
@@ -244,4 +250,93 @@ test('база попередньої версії автоматично отр
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);
   assert.deepEqual(normalized.duties.assignments, {});
+  assert.deepEqual(normalized.duties.participantIds, [employee.id]);
+});
+
+test('учасників чергувань можна обрати окремо від загального списку працівників', () => {
+  const state = defaultState(localDate(2026, 7, 20, 9, 0));
+  const employees = ['Ірина', 'Катерина', 'Леся']
+    .map((name) => createEmployee(state, name, localDate(2026, 7, 20, 9, 0)));
+  initializeDutyHistory(
+    state,
+    employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })),
+    [employees[0].id, employees[2].id],
+  );
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' });
+  assert.deepEqual(new Set(state.duties.assignments['2026-08-24'].employeeIds), new Set([
+    employees[0].id,
+    employees[2].id,
+  ]));
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(employees[1].id), false);
+});
+
+test('лівий клік може поетапно поставити двох чергових і повторним кліком зняти позначку', () => {
+  const state = defaultState(localDate(2026, 7, 20, 9, 0));
+  const first = createEmployee(state, 'Марія', localDate(2026, 7, 20, 9, 0));
+  const second = createEmployee(state, 'Назар', localDate(2026, 7, 20, 9, 0));
+  initializeDutyHistory(state, [first, second].map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })));
+
+  toggleDutyAssignment(state, first.id, '2026-08-24');
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [first.id]);
+  assert.equal(state.duties.assignments['2026-08-24'].singleApproved, false);
+  toggleDutyAssignment(state, second.id, '2026-08-24');
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.length, 2);
+  toggleDutyAssignment(state, first.id, '2026-08-24');
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [second.id]);
+});
+
+test('за достатнього складу генератор залишає щонайменше два повних дні між чергуваннями', () => {
+  const state = defaultState(localDate(2026, 7, 20, 9, 0));
+  const employees = Array.from({ length: 7 }, (_, index) => (
+    createEmployee(state, `Учасник ${index + 1}`, localDate(2026, 7, 20, 9, 0))
+  ));
+  initializeDutyHistory(state, employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })));
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' });
+  const dutyDates = new Map(employees.map((employee) => [employee.id, []]));
+  for (const assignment of Object.values(state.duties.assignments)) {
+    for (const employeeId of assignment.employeeIds) dutyDates.get(employeeId).push(assignment.date);
+  }
+  for (const dates of dutyDates.values()) {
+    for (let index = 1; index < dates.length; index += 1) {
+      const previous = new Date(`${dates[index - 1]}T12:00:00Z`);
+      const current = new Date(`${dates[index]}T12:00:00Z`);
+      assert.ok((current - previous) / 86_400_000 >= 3);
+    }
+  }
+  const counts = [...dutyDates.values()].map((dates) => dates.length);
+  assert.ok(Math.max(...counts) - Math.min(...counts) <= 1);
+  assert.equal(counts.every((count) => count > 0), true);
+});
+
+test('генератор доповнює вручну розпочату пару другим доступним черговим', () => {
+  const state = defaultState(localDate(2026, 7, 20, 9, 0));
+  const employees = ['Олег', 'Павло', 'Руслана']
+    .map((name) => createEmployee(state, name, localDate(2026, 7, 20, 9, 0)));
+  initializeDutyHistory(state, employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })));
+  toggleDutyAssignment(state, employees[0].id, '2026-08-24');
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' });
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.length, 2);
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(employees[0].id), true);
+});
+
+test('вилучений зі складу учасник зберігається в історії, але прибирається з майбутнього графіка', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Світлана', now);
+  const second = createEmployee(state, 'Тарас', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  toggleDutyAssignment(state, first.id, '2026-08-19', now);
+  toggleDutyAssignment(state, first.id, '2026-08-24', now);
+
+  initializeDutyHistory(
+    state,
+    [first, second].map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })),
+    [second.id],
+    now,
+  );
+  assert.equal(state.duties.assignments['2026-08-19'].employeeIds.includes(first.id), true);
+  assert.equal(state.duties.assignments['2026-08-24'], undefined);
 });

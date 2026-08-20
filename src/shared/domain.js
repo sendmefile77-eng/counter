@@ -115,6 +115,7 @@ function defaultState(now = new Date()) {
     workdayOverrides: {},
     duties: {
       initialized: false,
+      participantIds: [],
       baselines: {},
       assignments: {},
       aDays: {},
@@ -165,6 +166,9 @@ function normalizeState(input, now = new Date()) {
     unavailable: input.duties?.unavailable && typeof input.duties.unavailable === 'object'
       ? input.duties.unavailable
       : {},
+    participantIds: Array.isArray(input.duties?.participantIds)
+      ? input.duties.participantIds
+      : state.employees.map((employee) => employee.id),
   };
   state.audit = Array.isArray(input.audit) ? input.audit.slice(-5000) : [];
   state.settings = {
@@ -189,6 +193,8 @@ function normalizeState(input, now = new Date()) {
   if (state.employees.filter((employee) => employee.active).length > 15) {
     throw new Error('Одночасно може бути не більше 15 активних працівників.');
   }
+  state.duties.participantIds = [...new Set(state.duties.participantIds)]
+    .filter((employeeId) => ids.has(employeeId));
 
   return state;
 }
@@ -574,7 +580,8 @@ function allocateReceiptBackward(state, receiptId, requestedUnits, now = new Dat
 function dutyRestriction(state, employeeId, date) {
   const employee = getEmployee(state, employeeId);
   assertDateKey(date);
-  if (!employeeExistsOnDate(employee, date)) return 'outside_period';
+  if (!state.duties.participantIds.includes(employeeId)) return 'not_participant';
+  if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) return 'outside_period';
   const key = recordKey(employeeId, date);
   if (state.duties.aDays[key]) return 'a_day';
   if (state.duties.aDays[recordKey(employeeId, addDays(date, -1))]) return 'after_a';
@@ -584,8 +591,13 @@ function dutyRestriction(state, employeeId, date) {
   return null;
 }
 
-function initializeDutyHistory(state, entries, now = new Date()) {
+function initializeDutyHistory(state, entries, participantIds = null, now = new Date()) {
   if (!Array.isArray(entries)) throw new Error('Не передано початкові дані чергувань.');
+  const selectedIds = [...new Set(
+    (Array.isArray(participantIds) ? participantIds : entries.map((entry) => entry.employeeId)).filter(Boolean),
+  )];
+  if (selectedIds.length === 0) throw new Error('Оберіть хоча б одного учасника чергувань.');
+  for (const employeeId of selectedIds) getEmployee(state, employeeId);
   const baselines = {};
   for (const entry of entries) {
     const employee = getEmployee(state, entry.employeeId);
@@ -599,16 +611,34 @@ function initializeDutyHistory(state, entries, now = new Date()) {
     }
     baselines[employee.id] = { total, realized };
   }
+  const removedIds = new Set(
+    (state.duties.participantIds || []).filter((employeeId) => !selectedIds.includes(employeeId)),
+  );
+  const today = dateKeyFromDate(now);
+  for (const [date, assignment] of Object.entries(state.duties.assignments)) {
+    if (date < today || removedIds.size === 0) continue;
+    assignment.employeeIds = (assignment.employeeIds || []).filter((employeeId) => !removedIds.has(employeeId));
+    assignment.realizedEmployeeIds = (assignment.realizedEmployeeIds || [])
+      .filter((employeeId) => assignment.employeeIds.includes(employeeId));
+    if (assignment.employeeIds.length === 0) {
+      delete state.duties.assignments[date];
+    } else if (assignment.employeeIds.length === 1) {
+      assignment.singleApproved = false;
+      assignment.source = 'participant_removed';
+      assignment.updatedAt = now.toISOString();
+    }
+  }
   state.duties.baselines = { ...state.duties.baselines, ...baselines };
+  state.duties.participantIds = selectedIds;
   state.duties.initialized = true;
-  appendAudit(state, 'duty_history_initialized', { employees: entries.length }, now);
+  appendAudit(state, 'duty_history_initialized', { employees: entries.length, participantIds: selectedIds }, now);
   return state.duties;
 }
 
 function setDutyRestriction(state, { employeeId, date, type, note = '' }, now = new Date()) {
   const employee = getEmployee(state, employeeId);
   assertDateKey(date);
-  if (!employeeExistsOnDate(employee, date)) {
+  if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) {
     throw new Error('Дата не входить до періоду обліку цього працівника.');
   }
   const assignment = state.duties.assignments[date];
@@ -682,6 +712,40 @@ function setDutyAssignment(state, { date, employeeIds, singleApproved = false },
   return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
 }
 
+function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
+  const employee = getEmployee(state, employeeId);
+  assertDateKey(date);
+  if (!state.duties.participantIds.includes(employeeId)) {
+    throw new Error('Працівник не входить до складу учасників чергувань.');
+  }
+  const previous = state.duties.assignments[date];
+  const ids = [...(previous?.employeeIds || [])];
+  const existingIndex = ids.indexOf(employeeId);
+  if (existingIndex >= 0) {
+    ids.splice(existingIndex, 1);
+  } else {
+    const restriction = dutyRestriction(state, employeeId, date);
+    if (restriction) throw new Error(`«${employee.name}» недоступний для чергування на цю дату.`);
+    if (ids.length >= 2) throw new Error('На цей день уже призначено двох чергових. Спочатку зніміть одного з них.');
+    ids.push(employeeId);
+  }
+
+  if (ids.length === 0) {
+    delete state.duties.assignments[date];
+  } else {
+    state.duties.assignments[date] = {
+      date,
+      employeeIds: ids,
+      realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      singleApproved: ids.length === 1 && existingIndex < 0 && previous?.singleApproved === true,
+      source: 'manual_quick',
+      updatedAt: now.toISOString(),
+    };
+  }
+  appendAudit(state, 'duty_assignment_toggled', { employeeId, date, assigned: existingIndex < 0 }, now);
+  return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
+}
+
 function setDutyRealized(state, date, employeeId, realized, now = new Date()) {
   assertDateKey(date);
   getEmployee(state, employeeId);
@@ -732,64 +796,77 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
 
   const totals = dutyTotals(state, startDate);
   const employeeOrder = new Map(state.employees.map((employee, index) => [employee.id, index]));
-  let previousIds = new Set(
-    state.duties.assignments[addDays(startDate, -1)]?.employeeIds || [],
-  );
   const shortages = [];
   let generated = 0;
   let cursor = startDate;
 
   while (cursor <= endDate) {
     const existing = state.duties.assignments[cursor];
-    if (existing?.employeeIds?.length) {
+    const existingIds = [...(existing?.employeeIds || [])];
+    const existingComplete = existingIds.length >= 2
+      || (existingIds.length === 1 && existing.singleApproved);
+    if (existingComplete) {
       for (const employeeId of existing.employeeIds) {
         if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
         totals[employeeId].total += 1;
         if (existing.realizedEmployeeIds?.includes(employeeId)) totals[employeeId].realized += 1;
       }
-      previousIds = new Set(existing.employeeIds);
       cursor = addDays(cursor, 1);
       continue;
     }
 
+    for (const employeeId of existingIds) {
+      if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
+      totals[employeeId].total += 1;
+      if (existing?.realizedEmployeeIds?.includes(employeeId)) totals[employeeId].realized += 1;
+    }
+
+    const recentIds = new Set([
+      ...(state.duties.assignments[addDays(cursor, -1)]?.employeeIds || []),
+      ...(state.duties.assignments[addDays(cursor, -2)]?.employeeIds || []),
+    ]);
     const candidates = state.employees
-      .filter((employee) => employee.active && !dutyRestriction(state, employee.id, cursor))
+      .filter((employee) => (
+        employee.active
+        && !existingIds.includes(employee.id)
+        && !dutyRestriction(state, employee.id, cursor)
+      ))
       .sort((left, right) => {
         const leftTotals = totals[left.id] || { total: 0, realized: 0 };
         const rightTotals = totals[right.id] || { total: 0, realized: 0 };
         const leftScore = leftTotals.total * 1000
           + leftTotals.realized * 10
-          + (previousIds.has(left.id) ? 1_000_000 : 0)
+          + (recentIds.has(left.id) ? 1_000_000 : 0)
           + (employeeOrder.get(left.id) || 0) / 100;
         const rightScore = rightTotals.total * 1000
           + rightTotals.realized * 10
-          + (previousIds.has(right.id) ? 1_000_000 : 0)
+          + (recentIds.has(right.id) ? 1_000_000 : 0)
           + (employeeOrder.get(right.id) || 0) / 100;
         return leftScore - rightScore;
       });
 
-    if (candidates.length < 2) {
+    const needed = 2 - existingIds.length;
+    if (candidates.length < needed) {
       shortages.push(cursor);
-      previousIds = new Set();
       cursor = addDays(cursor, 1);
       continue;
     }
 
-    const selected = candidates.slice(0, 2).map((employee) => employee.id);
+    const addedIds = candidates.slice(0, needed).map((employee) => employee.id);
+    const selected = [...existingIds, ...addedIds];
     state.duties.assignments[cursor] = {
       date: cursor,
       employeeIds: selected,
-      realizedEmployeeIds: [],
+      realizedEmployeeIds: [...(existing?.realizedEmployeeIds || [])],
       singleApproved: false,
-      source: 'generated',
+      source: existingIds.length ? 'generated_completion' : 'generated',
       updatedAt: now.toISOString(),
     };
-    for (const employeeId of selected) {
+    for (const employeeId of addedIds) {
       if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
       totals[employeeId].total += 1;
     }
     generated += 1;
-    previousIds = new Set(selected);
     cursor = addDays(cursor, 1);
   }
 
@@ -934,6 +1011,7 @@ module.exports = {
   setDutyAssignment,
   setDutyRealized,
   setDutyRestriction,
+  toggleDutyAssignment,
   setManualStatus,
   setWorkdayOverride,
 };

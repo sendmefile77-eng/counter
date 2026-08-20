@@ -63,6 +63,8 @@ const DUTY_MARK_LABELS = {
   other: 'НД',
 };
 
+const WEEKDAY_SHORT = ['нд', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
 const appRoot = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
 const toastRoot = document.querySelector('#toast-root');
@@ -115,6 +117,11 @@ function activeEmployees() {
   return snapshot.employees.filter((employee) => employee.active);
 }
 
+function dutyParticipants() {
+  const ids = new Set(snapshot.duties?.participantIds || []);
+  return activeEmployees().filter((employee) => ids.has(employee.id));
+}
+
 function employeeById(employeeId) {
   return snapshot.employees.find((employee) => employee.id === employeeId);
 }
@@ -158,6 +165,16 @@ function shiftDate(date, delta) {
   const value = dateFromKey(date);
   value.setDate(value.getDate() + delta);
   return localDateKey(value);
+}
+
+function nextWeekRange(now = new Date()) {
+  const current = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+  const day = current.getDay();
+  const daysUntilMonday = day === 0 ? 1 : 8 - day;
+  current.setDate(current.getDate() + daysUntilMonday);
+  const startDate = localDateKey(current);
+  current.setDate(current.getDate() + 6);
+  return { startDate, endDate: localDateKey(current) };
 }
 
 function statusBadge(status) {
@@ -448,12 +465,13 @@ function renderDutyPage() {
         <div><h1>Початкові дані чергувань</h1><p>Введіть накопичені підсумки, щоб перший графік одразу був справедливим.</p></div>
       </div>
       <form id="duty-history-form" class="panel duty-history-form">
-        <div class="confirm-box">Загальна кількість — усі попередні чергування. Реалізовані — ті, під час яких фактично були завдання.</div>
+        <div class="confirm-box">Позначте, хто бере участь у графіку. Загальна кількість — усі попередні чергування. Реалізовані — ті, під час яких фактично були завдання.</div>
         <div class="table-scroll">
           <table class="data-table">
-            <thead><tr><th>Працівник</th><th>Усього чергувань</th><th>Реалізованих</th></tr></thead>
+            <thead><tr><th>У графіку</th><th>Працівник</th><th>Усього чергувань</th><th>Реалізованих</th></tr></thead>
             <tbody>${employees.map((employee) => `
               <tr data-duty-history-row="${h(employee.id)}">
+                <td><input name="participantIds" type="checkbox" value="${h(employee.id)}" checked aria-label="Додати ${h(employee.name)} до графіка"></td>
                 <td>${h(employee.name)}</td>
                 <td><input name="total-${h(employee.id)}" type="number" min="0" step="1" value="0" required></td>
                 <td><input name="realized-${h(employee.id)}" type="number" min="0" step="1" value="0" required></td>
@@ -466,10 +484,15 @@ function renderDutyPage() {
     `;
   }
 
+  const participants = dutyParticipants();
+  if (!participants.length) {
+    return `<div class="page-header"><div><h1>Графік чергувань</h1><p>У графіку немає активних учасників.</p></div><button class="button primary" data-duty-history>Обрати учасників</button></div>`;
+  }
+
   const count = daysInMonth(ui.dutyMonth);
   const dates = Array.from({ length: count }, (_, index) => `${ui.dutyMonth}-${String(index + 1).padStart(2, '0')}`);
   const stats = new Map((ui.dutyStats || []).map((row) => [row.employeeId, row]));
-  const totals = employees.map((employee) => stats.get(employee.id)?.total || 0);
+  const totals = participants.map((employee) => stats.get(employee.id)?.total || 0);
   const minTotal = Math.min(...totals);
   const maxTotal = Math.max(...totals);
   return `
@@ -478,19 +501,20 @@ function renderDutyPage() {
         <h1>Графік чергувань</h1>
         <p>Щодня — двоє чергових, включно із суботою та неділею. Один — лише за вашим дозволом.</p>
       </div>
-      <button class="button" data-duty-history>Початкові підсумки</button>
+      <button class="button" data-duty-history>Учасники й підсумки</button>
     </div>
     <div class="metrics-grid duty-metrics">
       <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон чергувань</span></div>
       <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>усього з історією</span></div>
-      <div class="metric-card"><strong>${(ui.dutyStats || []).reduce((sum, row) => sum + row.realized, 0)}</strong><span>реалізованих</span></div>
+      <div class="metric-card"><strong>${participants.reduce((sum, employee) => sum + (stats.get(employee.id)?.realized || 0), 0)}</strong><span>реалізованих</span></div>
     </div>
     <div class="table-toolbar">
       <button class="button small" data-duty-month-shift="-1">← Попередній</button>
       <div class="month-title">${h(formatMonth(ui.dutyMonth))}</div>
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
-      <button class="button primary small" data-generate-duties>Сформувати порожні дні</button>
+      <button class="button primary small" data-generate-duties>Сформувати наступний тиждень</button>
     </div>
+    <p class="duty-help">Лівий клік — поставити або зняти чергування. Правий клік — «А», відсутність або реалізоване чергування.</p>
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
@@ -500,10 +524,12 @@ function renderDutyPage() {
           <th class="sticky-name">Працівник</th><th>Σ</th><th>Р</th>
           ${dates.map((date) => {
             const day = dateFromKey(date).getDay();
-            return `<th class="${day === 0 || day === 6 ? 'weekend' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}">${Number(date.slice(-2))}</button></th>`;
+            const assignment = snapshot.duties.assignments[date];
+            const incomplete = assignment?.employeeIds?.length === 1 && !assignment.singleApproved;
+            return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[day]}</small></button></th>`;
           }).join('')}
         </tr></thead>
-        <tbody>${employees.map((employee) => {
+        <tbody>${participants.map((employee) => {
           const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
           return `<tr>
             <td class="sticky-name" title="${h(employee.name)}">${h(shortName(employee.name))}</td>
@@ -668,16 +694,17 @@ function closeModal() {
 
 function openDutyHistoryModal() {
   const employees = activeEmployees();
+  const selectedIds = new Set(snapshot.duties.participantIds || []);
   openModal(`
     <form id="duty-history-form">
       <header class="modal-head"><div><h2>Початкові підсумки</h2><p>Накопичені дані до початку роботи в програмі</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
-        <div class="confirm-box">Зміна цих чисел вплине на наступні автоматичні розподіли, але не видалить уже складений графік.</div>
+        <div class="confirm-box">Зніміть прапорець із тих, кого не потрібно включати до графіка. Зміна підсумків вплине на наступні розподіли, але не видалить уже внесену історію.</div>
         <div class="table-scroll"><table class="data-table">
-          <thead><tr><th>Працівник</th><th>Усього</th><th>Реалізованих</th></tr></thead>
+          <thead><tr><th>У графіку</th><th>Працівник</th><th>Усього</th><th>Реалізованих</th></tr></thead>
           <tbody>${employees.map((employee) => {
             const baseline = snapshot.duties.baselines[employee.id] || { total: 0, realized: 0 };
-            return `<tr data-duty-history-row="${h(employee.id)}"><td>${h(employee.name)}</td><td><input name="total-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.total}" required></td><td><input name="realized-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.realized}" required></td></tr>`;
+            return `<tr data-duty-history-row="${h(employee.id)}"><td><input name="participantIds" type="checkbox" value="${h(employee.id)}" ${selectedIds.has(employee.id) ? 'checked' : ''} aria-label="Участь ${h(employee.name)} у графіку"></td><td>${h(employee.name)}</td><td><input name="total-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.total}" required></td><td><input name="realized-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.realized}" required></td></tr>`;
           }).join('')}</tbody>
         </table></div>
       </div>
@@ -706,7 +733,7 @@ function openDutyDayModal(date) {
       <header class="modal-head"><div><h2>Склад чергових</h2><p>${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
         <div class="confirm-box">Оберіть двох працівників. Якщо обрано одного, окремо підтвердьте дозвіл на одиночне чергування.</div>
-        <div class="duty-picker">${activeEmployees().map((employee) => {
+        <div class="duty-picker">${dutyParticipants().map((employee) => {
           const restriction = dutyRestrictionText(employee.id, date);
           const checked = assignment.employeeIds.includes(employee.id);
           return `<label class="duty-pick ${restriction ? 'restricted' : ''}"><input type="checkbox" name="employeeIds" value="${h(employee.id)}" ${checked ? 'checked' : ''} ${restriction ? 'disabled' : ''}><span><strong>${h(employee.name)}</strong>${restriction ? `<small>${h(restriction)}</small>` : '<small>Доступний</small>'}</span></label>`;
@@ -733,6 +760,7 @@ function openDutyEmployeeModal(employeeId, date) {
       <div>Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
       ${assigned ? `
         <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-date="${date}" data-employee-id="${h(employeeId)}" data-realized="${realized ? 'false' : 'true'}">${realized ? 'Скасувати позначку «реалізоване»' : 'Позначити: під час чергування були завдання'}</button>
+        <button class="button danger" data-toggle-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
         <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
       ` : `
         <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || '')}</textarea></label>
@@ -897,6 +925,10 @@ function dutyHistoryEntries(formElement) {
   }));
 }
 
+function dutyParticipantIds(formElement) {
+  return new FormData(formElement).getAll('participantIds').map(String);
+}
+
 appRoot.addEventListener('click', async (event) => {
   const actionButton = event.target.closest('[data-action]');
   if (actionButton) {
@@ -979,19 +1011,26 @@ appRoot.addEventListener('click', async (event) => {
   if (dutyDayButton) return openDutyDayModal(dutyDayButton.dataset.dutyDay);
 
   const dutyCellButton = event.target.closest('[data-duty-cell]');
-  if (dutyCellButton) return openDutyEmployeeModal(dutyCellButton.dataset.employeeId, dutyCellButton.dataset.date);
+  if (dutyCellButton) {
+    await run(
+      () => window.counter.toggleDutyAssignment(dutyCellButton.dataset.employeeId, dutyCellButton.dataset.date),
+      null,
+    );
+    return;
+  }
 
   const generateDutiesButton = event.target.closest('[data-generate-duties]');
   if (generateDutiesButton) {
-    const endDate = `${ui.dutyMonth}-${String(daysInMonth(ui.dutyMonth)).padStart(2, '0')}`;
+    const { startDate, endDate } = nextWeekRange();
+    ui.dutyMonth = startDate.slice(0, 7);
     const result = await run(
-      () => window.counter.generateDuties({ startDate: `${ui.dutyMonth}-01`, endDate }),
+      () => window.counter.generateDuties({ startDate, endDate }),
       null,
     );
     if (result) {
       const message = result.shortages.length
-        ? `Заповнено днів: ${result.generated}. Не вистачило доступних людей для ${result.shortages.length} днів.`
-        : `Графік сформовано. Нових заповнених днів: ${result.generated}.`;
+        ? `Наступний тиждень: заповнено днів ${result.generated}, для ${result.shortages.length} днів бракує доступних людей.`
+        : `Графік на ${formatDate(startDate)} — ${formatDate(endDate)} сформовано.`;
       showToast(message, { error: result.shortages.length > 0, undo: true });
     }
     return;
@@ -1072,6 +1111,12 @@ window.addEventListener('pointerup', async (event) => {
 });
 
 appRoot.addEventListener('contextmenu', (event) => {
+  const dutyCell = event.target.closest('[data-duty-cell]');
+  if (dutyCell) {
+    event.preventDefault();
+    openDutyEmployeeModal(dutyCell.dataset.employeeId, dutyCell.dataset.date);
+    return;
+  }
   const sector = event.target.closest('.sector[data-employee-id]');
   if (!sector) return;
   event.preventDefault();
@@ -1082,7 +1127,7 @@ appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (event.target.id === 'duty-history-form') {
     await run(
-      () => window.counter.initializeDuties(dutyHistoryEntries(event.target)),
+      () => window.counter.initializeDuties(dutyHistoryEntries(event.target), dutyParticipantIds(event.target)),
       'Початкові підсумки чергувань збережено.',
     );
     return;
@@ -1189,6 +1234,16 @@ modalRoot.addEventListener('click', async (event) => {
     return;
   }
 
+  const toggleDutyButton = event.target.closest('[data-toggle-duty-assignment]');
+  if (toggleDutyButton) {
+    const result = await run(
+      () => window.counter.toggleDutyAssignment(toggleDutyButton.dataset.employeeId, toggleDutyButton.dataset.date),
+      'Позначку чергування знято.',
+    );
+    if (result) closeModal();
+    return;
+  }
+
   const dutyRestrictionButton = event.target.closest('[data-set-duty-restriction]');
   if (dutyRestrictionButton) {
     const note = modalRoot.querySelector('#duty-restriction-note')?.value || '';
@@ -1256,7 +1311,7 @@ modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (event.target.id === 'duty-history-form') {
     const result = await run(
-      () => window.counter.initializeDuties(dutyHistoryEntries(event.target)),
+      () => window.counter.initializeDuties(dutyHistoryEntries(event.target), dutyParticipantIds(event.target)),
       'Початкові підсумки чергувань оновлено.',
     );
     if (result) closeModal();
