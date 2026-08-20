@@ -6,14 +6,33 @@ contextBridge.exposeInMainWorld('counter', {
   archiveEmployee: (employeeId) => ipcRenderer.invoke('employee:archive', { employeeId }),
   restoreEmployee: (employeeId) => ipcRenderer.invoke('employee:restore', { employeeId }),
   recordSubmission: (payload) => ipcRenderer.invoke('submission:record', payload),
+  allocateBackward: (receiptId, units) => ipcRenderer.invoke('submission:allocate-backward', { receiptId, units }),
   allocateForward: (receiptId, units) => ipcRenderer.invoke('submission:allocate-forward', { receiptId, units }),
   setStatus: (payload) => ipcRenderer.invoke('record:set-status', payload),
   clearStatus: (employeeId, date) => ipcRenderer.invoke('record:clear', { employeeId, date }),
+  setWorkdayOverride: (employeeId, date, note = '') => (
+    ipcRenderer.invoke('workday-override:set', { employeeId, date, note })
+  ),
+  clearWorkdayOverride: (employeeId, date) => (
+    ipcRenderer.invoke('workday-override:clear', { employeeId, date })
+  ),
   getAnalytics: (filter) => ipcRenderer.invoke('analytics:get', filter),
+  initializeDuties: (entries) => ipcRenderer.invoke('duties:initialize', { entries }),
+  generateDuties: (filter) => ipcRenderer.invoke('duties:generate', filter),
+  setDutyAssignment: (payload) => ipcRenderer.invoke('duties:set-assignment', payload),
+  setDutyRealized: (date, employeeId, realized) => (
+    ipcRenderer.invoke('duties:set-realized', { date, employeeId, realized })
+  ),
+  setDutyRestriction: (payload) => ipcRenderer.invoke('duties:set-restriction', payload),
+  clearDutyRestriction: (employeeId, date) => (
+    ipcRenderer.invoke('duties:clear-restriction', { employeeId, date })
+  ),
+  getDutyStats: () => ipcRenderer.invoke('duties:stats'),
   undo: () => ipcRenderer.invoke('history:undo'),
   exportData: (format) => ipcRenderer.invoke('data:export', { format }),
   importData: () => ipcRenderer.invoke('data:import'),
   setWindowMode: (mode) => ipcRenderer.invoke('window:set-mode', { mode }),
+  resizeWidget: (size, persist = false) => ipcRenderer.invoke('window:resize-widget', { size, persist }),
   setAlwaysOnTop: (value) => ipcRenderer.invoke('window:set-always-on-top', { value }),
   minimize: () => ipcRenderer.invoke('window:minimize'),
   close: () => ipcRenderer.invoke('window:close'),

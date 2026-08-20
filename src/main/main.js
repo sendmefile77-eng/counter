@@ -3,36 +3,98 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   STATUS_LABELS,
+  allocateReceiptBackward,
   allocateReceiptForward,
   archiveEmployee,
+  calculateDutyStatistics,
   calculateStatistics,
+  clearDutyRestriction,
+  clearWorkdayOverride,
   clearManualRecord,
   clone,
   createEmployee,
   ensureAutomaticMisses,
+  generateDutySchedule,
+  initializeDutyHistory,
   normalizeState,
   recordSubmission,
   restoreEmployee,
   setManualStatus,
+  setDutyAssignment,
+  setDutyRealized,
+  setDutyRestriction,
+  setWorkdayOverride,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
 
 let mainWindow = null;
 let store = null;
 let closeTimer = null;
+let positionSaveTimer = null;
+let windowMode = 'widget';
 const undoStack = [];
 
+function clampWidgetSize(value) {
+  return Math.max(260, Math.min(700, Math.round(Number(value) || 380)));
+}
+
+function buildCircularShape(size) {
+  const rects = [];
+  const radius = size / 2;
+  const rowHeight = 3;
+  for (let y = 0; y < size; y += rowHeight) {
+    const sampleY = Math.min(size - 1, y + rowHeight / 2);
+    const distance = sampleY - radius;
+    const halfWidth = Math.sqrt(Math.max(0, radius * radius - distance * distance));
+    const x = Math.max(0, Math.floor(radius - halfWidth));
+    const width = Math.min(size - x, Math.ceil(halfWidth * 2));
+    if (width > 0) rects.push({ x, y, width, height: Math.min(rowHeight, size - y) });
+  }
+  return rects;
+}
+
+function applyWidgetShape(size) {
+  if (process.platform === 'win32' && mainWindow && typeof mainWindow.setShape === 'function') {
+    mainWindow.setShape(buildCircularShape(size));
+  }
+}
+
+function restoreWidgetPosition(size) {
+  const saved = store.state.settings.widgetPosition;
+  if (!saved || !Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return false;
+  const visible = screen.getAllDisplays().some((display) => {
+    const area = display.workArea;
+    return saved.x + 80 < area.x + area.width
+      && saved.y + 80 < area.y + area.height
+      && saved.x + size - 80 > area.x
+      && saved.y + size - 80 > area.y;
+  });
+  if (!visible) return false;
+  mainWindow.setPosition(Math.round(saved.x), Math.round(saved.y), false);
+  return true;
+}
+
+function saveWidgetBounds() {
+  if (!mainWindow || windowMode !== 'widget') return;
+  const bounds = mainWindow.getBounds();
+  store.state.settings.widgetSize = clampWidgetSize(Math.min(bounds.width, bounds.height));
+  store.state.settings.widgetPosition = { x: bounds.x, y: bounds.y };
+  store.save();
+}
+
 function createMainWindow() {
+  const widgetSize = clampWidgetSize(store.state.settings.widgetSize);
   mainWindow = new BrowserWindow({
-    width: 690,
-    height: 760,
-    minWidth: 560,
-    minHeight: 640,
+    width: widgetSize,
+    height: widgetSize,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
     alwaysOnTop: store.state.settings.alwaysOnTop,
-    resizable: true,
+    resizable: false,
+    hasShadow: false,
+    roundedCorners: false,
+    skipTaskbar: true,
     show: false,
     title: 'Щоденний облік',
     webPreferences: {
@@ -44,7 +106,16 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    applyWidgetShape(widgetSize);
+    if (!restoreWidgetPosition(widgetSize)) mainWindow.center();
+    mainWindow.show();
+  });
+  mainWindow.on('moved', () => {
+    if (windowMode !== 'widget') return;
+    clearTimeout(positionSaveTimer);
+    positionSaveTimer = setTimeout(saveWidgetBounds, 300);
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -88,6 +159,7 @@ function csvEscape(value) {
 
 function buildCsv(state) {
   const header = [
+    'Тип запису',
     'Дата',
     'Працівник',
     'Статус',
@@ -96,11 +168,12 @@ function buildCsv(state) {
     'Складний запит на 2 дні',
     'Примітка',
   ];
-  const rows = Object.values(state.records)
+  const requestRows = Object.values(state.records)
     .sort((a, b) => a.date.localeCompare(b.date) || a.employeeId.localeCompare(b.employeeId))
     .map((record) => {
       const employee = state.employees.find((item) => item.id === record.employeeId);
       return [
+        'Облік запитів',
         record.date,
         employee?.name || 'Невідомий працівник',
         STATUS_LABELS[record.status] || record.status,
@@ -110,6 +183,51 @@ function buildCsv(state) {
         record.note || '',
       ];
     });
+  const dutyRows = Object.values(state.duties.assignments).flatMap((assignment) => (
+    (assignment.employeeIds || []).map((employeeId) => {
+      const employee = state.employees.find((item) => item.id === employeeId);
+      return [
+        'Чергування',
+        assignment.date,
+        employee?.name || 'Невідомий працівник',
+        assignment.realizedEmployeeIds?.includes(employeeId) ? 'Реалізоване' : 'Заплановане',
+        '',
+        '',
+        '',
+        assignment.singleApproved ? 'Один черговий за дозволом' : '',
+      ];
+    })
+  ));
+  const dutyRestrictionRows = [
+    ...Object.values(state.duties.aDays).map((item) => ({ ...item, label: 'А' })),
+    ...Object.values(state.duties.unavailable).map((item) => ({ ...item, label: item.type })),
+  ].map((item) => {
+    const employee = state.employees.find((candidate) => candidate.id === item.employeeId);
+    return [
+      'Обмеження чергувань',
+      item.date,
+      employee?.name || 'Невідомий працівник',
+      item.label,
+      '',
+      '',
+      '',
+      item.note || '',
+    ];
+  });
+  const dutyBaselineRows = Object.entries(state.duties.baselines).map(([employeeId, baseline]) => {
+    const employee = state.employees.find((item) => item.id === employeeId);
+    return [
+      'Початковий підсумок чергувань',
+      '',
+      employee?.name || 'Невідомий працівник',
+      `Усього: ${baseline.total || 0}; реалізованих: ${baseline.realized || 0}`,
+      '',
+      '',
+      '',
+      '',
+    ];
+  });
+  const rows = [...requestRows, ...dutyRows, ...dutyRestrictionRows, ...dutyBaselineRows];
   return `\uFEFF${[header, ...rows].map((row) => row.map(csvEscape).join(';')).join('\r\n')}\r\n`;
 }
 
@@ -128,6 +246,9 @@ function registerIpc() {
   ipcMain.handle('submission:record', (_event, payload) => (
     mutate('submission:record', (state) => recordSubmission(state, payload))
   ));
+  ipcMain.handle('submission:allocate-backward', (_event, { receiptId, units }) => (
+    mutate('submission:allocate-backward', (state) => allocateReceiptBackward(state, receiptId, units))
+  ));
   ipcMain.handle('submission:allocate-forward', (_event, { receiptId, units }) => (
     mutate('submission:allocate-forward', (state) => allocateReceiptForward(state, receiptId, units))
   ));
@@ -137,7 +258,32 @@ function registerIpc() {
   ipcMain.handle('record:clear', (_event, { employeeId, date }) => (
     mutate('record:clear', (state) => clearManualRecord(state, employeeId, date))
   ));
+  ipcMain.handle('workday-override:set', (_event, { employeeId, date, note }) => (
+    mutate('workday-override:set', (state) => setWorkdayOverride(state, employeeId, date, note))
+  ));
+  ipcMain.handle('workday-override:clear', (_event, { employeeId, date }) => (
+    mutate('workday-override:clear', (state) => clearWorkdayOverride(state, employeeId, date))
+  ));
   ipcMain.handle('analytics:get', (_event, filter) => calculateStatistics(store.state, filter));
+  ipcMain.handle('duties:initialize', (_event, { entries }) => (
+    mutate('duties:initialize', (state) => initializeDutyHistory(state, entries))
+  ));
+  ipcMain.handle('duties:generate', (_event, filter) => (
+    mutate('duties:generate', (state) => generateDutySchedule(state, filter))
+  ));
+  ipcMain.handle('duties:set-assignment', (_event, payload) => (
+    mutate('duties:set-assignment', (state) => setDutyAssignment(state, payload))
+  ));
+  ipcMain.handle('duties:set-realized', (_event, payload) => (
+    mutate('duties:set-realized', (state) => setDutyRealized(state, payload.date, payload.employeeId, payload.realized))
+  ));
+  ipcMain.handle('duties:set-restriction', (_event, payload) => (
+    mutate('duties:set-restriction', (state) => setDutyRestriction(state, payload))
+  ));
+  ipcMain.handle('duties:clear-restriction', (_event, { employeeId, date }) => (
+    mutate('duties:clear-restriction', (state) => clearDutyRestriction(state, employeeId, date))
+  ));
+  ipcMain.handle('duties:stats', () => calculateDutyStatistics(store.state));
 
   ipcMain.handle('history:undo', () => {
     const last = undoStack.pop();
@@ -184,14 +330,42 @@ function registerIpc() {
     if (!mainWindow) return false;
     const display = screen.getDisplayMatching(mainWindow.getBounds());
     if (mode === 'dashboard') {
+      saveWidgetBounds();
+      windowMode = 'dashboard';
+      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
+      mainWindow.setSkipTaskbar(false);
       const width = Math.min(1240, display.workArea.width);
       const height = Math.min(860, display.workArea.height);
       mainWindow.setSize(width, height, true);
       mainWindow.center();
     } else {
-      mainWindow.setSize(Math.min(690, display.workArea.width), Math.min(760, display.workArea.height), true);
+      windowMode = 'widget';
+      const size = clampWidgetSize(store.state.settings.widgetSize);
+      mainWindow.setSkipTaskbar(true);
+      mainWindow.setSize(size, size, false);
+      if (!restoreWidgetPosition(size)) mainWindow.center();
+      applyWidgetShape(size);
     }
     return true;
+  });
+
+  ipcMain.handle('window:resize-widget', (_event, { size, persist }) => {
+    if (!mainWindow || windowMode !== 'widget') return null;
+    const nextSize = clampWidgetSize(size);
+    const bounds = mainWindow.getBounds();
+    const centerX = bounds.x + bounds.width / 2;
+    const centerY = bounds.y + bounds.height / 2;
+    const nextX = Math.round(centerX - nextSize / 2);
+    const nextY = Math.round(centerY - nextSize / 2);
+    mainWindow.setBounds({ x: nextX, y: nextY, width: nextSize, height: nextSize }, false);
+    applyWidgetShape(nextSize);
+    if (persist) {
+      store.state.settings.widgetSize = nextSize;
+      store.state.settings.widgetPosition = { x: nextX, y: nextY };
+      store.save();
+      broadcast();
+    }
+    return nextSize;
   });
 
   ipcMain.handle('window:set-always-on-top', (_event, { value }) => {
@@ -230,6 +404,8 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   if (closeTimer) clearInterval(closeTimer);
+  if (positionSaveTimer) clearTimeout(positionSaveTimer);
+  saveWidgetBounds();
 });
 
 app.on('window-all-closed', () => {

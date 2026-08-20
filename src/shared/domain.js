@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const STATUS = Object.freeze({
   SUBMITTED: 'submitted',
@@ -42,6 +42,23 @@ const SUBMITTED_STATUSES = new Set([
   STATUS.SUBMITTED,
   STATUS.SUBMITTED_LATE,
   STATUS.SUBMITTED_ADVANCE,
+]);
+
+const DUTY_UNAVAILABLE_TYPES = new Set([
+  'off',
+  'vacation',
+  'sick',
+  'day_off',
+  'personal',
+  'other',
+]);
+
+const DUTY_BLOCKING_RECORD_STATUSES = new Set([
+  STATUS.PERSONAL_PERMISSION,
+  STATUS.SICK,
+  STATUS.VACATION,
+  STATUS.DAY_OFF,
+  STATUS.HOLIDAY,
 ]);
 
 function dateKeyFromDate(date = new Date()) {
@@ -95,11 +112,21 @@ function defaultState(now = new Date()) {
     employees: [],
     records: {},
     receipts: [],
+    workdayOverrides: {},
+    duties: {
+      initialized: false,
+      baselines: {},
+      assignments: {},
+      aDays: {},
+      unavailable: {},
+    },
     settings: {
       closeHour: 18,
       closeMinute: 0,
       workdays: [1, 2, 3, 4, 5],
       alwaysOnTop: true,
+      widgetSize: 380,
+      widgetPosition: null,
     },
     audit: [{
       id: crypto.randomUUID(),
@@ -120,6 +147,25 @@ function normalizeState(input, now = new Date()) {
   state.employees = Array.isArray(input.employees) ? input.employees : [];
   state.records = input.records && typeof input.records === 'object' ? input.records : {};
   state.receipts = Array.isArray(input.receipts) ? input.receipts : [];
+  state.workdayOverrides = input.workdayOverrides && typeof input.workdayOverrides === 'object'
+    ? input.workdayOverrides
+    : {};
+  state.duties = {
+    ...state.duties,
+    ...(input.duties && typeof input.duties === 'object' ? input.duties : {}),
+    baselines: input.duties?.baselines && typeof input.duties.baselines === 'object'
+      ? input.duties.baselines
+      : {},
+    assignments: input.duties?.assignments && typeof input.duties.assignments === 'object'
+      ? input.duties.assignments
+      : {},
+    aDays: input.duties?.aDays && typeof input.duties.aDays === 'object'
+      ? input.duties.aDays
+      : {},
+    unavailable: input.duties?.unavailable && typeof input.duties.unavailable === 'object'
+      ? input.duties.unavailable
+      : {},
+  };
   state.audit = Array.isArray(input.audit) ? input.audit.slice(-5000) : [];
   state.settings = {
     ...state.settings,
@@ -232,6 +278,43 @@ function isWorkday(state, dateKey) {
   return state.settings.workdays.includes(dayOfWeek(dateKey));
 }
 
+function isEmployeeWorkday(state, employeeId, dateKey) {
+  return isWorkday(state, dateKey) || Boolean(state.workdayOverrides[recordKey(employeeId, dateKey)]);
+}
+
+function setWorkdayOverride(state, employeeId, date, note = '', now = new Date()) {
+  const employee = getEmployee(state, employeeId);
+  assertDateKey(date);
+  if (isWorkday(state, date)) {
+    throw new Error('Ця дата вже є звичайним робочим днем.');
+  }
+  if (!employeeExistsOnDate(employee, date)) {
+    throw new Error('Дата не входить до періоду обліку цього працівника.');
+  }
+  const key = recordKey(employeeId, date);
+  state.workdayOverrides[key] = {
+    employeeId,
+    date,
+    note: String(note || '').trim(),
+    createdAt: now.toISOString(),
+  };
+  appendAudit(state, 'weekend_made_workday', { employeeId, date }, now);
+  return state.workdayOverrides[key];
+}
+
+function clearWorkdayOverride(state, employeeId, date, now = new Date()) {
+  const key = recordKey(employeeId, date);
+  if (!state.workdayOverrides[key]) return false;
+  const record = state.records[key];
+  if (record?.receiptId) {
+    throw new Error('За цей день уже зараховано запит. Спочатку скасуйте зарахування.');
+  }
+  if (record) delete state.records[key];
+  delete state.workdayOverrides[key];
+  appendAudit(state, 'workday_returned_to_weekend', { employeeId, date }, now);
+  return true;
+}
+
 function isPastCloseTime(state, now) {
   const minutes = now.getHours() * 60 + now.getMinutes();
   return minutes >= state.settings.closeHour * 60 + state.settings.closeMinute;
@@ -245,7 +328,7 @@ function ensureAutomaticMisses(state, now = new Date()) {
   for (const employee of state.employees) {
     let cursor = employee.createdDate;
     while (cursor <= closeThrough) {
-      if (employeeExistsOnDate(employee, cursor) && isWorkday(state, cursor)) {
+      if (employeeExistsOnDate(employee, cursor) && isEmployeeWorkday(state, employee.id, cursor)) {
         const key = recordKey(employee.id, cursor);
         if (!state.records[key]) {
           state.records[key] = {
@@ -279,6 +362,10 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   assertDateKey(date);
   if (!MANUAL_STATUSES.has(status)) {
     throw new Error('Цей статус не можна встановити вручну.');
+  }
+  if (DUTY_BLOCKING_RECORD_STATUSES.has(status)
+    && state.duties.assignments[date]?.employeeIds?.includes(employeeId)) {
+    throw new Error('Працівник призначений черговим на цю дату. Спочатку змініть графік чергувань.');
   }
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
@@ -357,7 +444,7 @@ function recordSubmission(state, input, now = new Date()) {
     remaining -= 1;
   };
 
-  if (isWorkday(state, today) && employeeExistsOnDate(employee, today)) {
+  if (isEmployeeWorkday(state, employee.id, today) && employeeExistsOnDate(employee, today)) {
     const current = state.records[recordKey(employee.id, today)];
     if (!current || current.status === STATUS.MISSED) {
       const late = current?.status === STATUS.MISSED || isPastCloseTime(state, now);
@@ -402,7 +489,7 @@ function allocateReceiptForward(state, receiptId, requestedUnits, now = new Date
   let inspected = 0;
   while (remaining > 0 && inspected < 730) {
     const key = recordKey(employee.id, cursor);
-    if (isWorkday(state, cursor) && !state.records[key]) {
+    if (isEmployeeWorkday(state, employee.id, cursor) && !state.records[key]) {
       state.records[key] = {
         employeeId: employee.id,
         date: cursor,
@@ -428,6 +515,296 @@ function allocateReceiptForward(state, receiptId, requestedUnits, now = new Date
   }
   appendAudit(state, 'future_allocation_approved', { receiptId, units }, now);
   return receipt;
+}
+
+function allocateReceiptBackward(state, receiptId, requestedUnits, now = new Date()) {
+  const receipt = state.receipts.find((item) => item.id === receiptId);
+  if (!receipt) throw new Error('Запис про документ не знайдено.');
+  const employee = getEmployee(state, receipt.employeeId);
+  const units = Number(requestedUnits);
+  if (!Number.isInteger(units) || units < 1 || units > receipt.unallocatedCredit) {
+    throw new Error('Некоректна кількість днів для зарахування назад.');
+  }
+
+  const today = dateKeyFromDate(now);
+  let cursor = addDays(today, -1);
+  let remaining = units;
+  let inspected = 0;
+  while (remaining > 0 && inspected < 3650) {
+    const key = recordKey(employee.id, cursor);
+    const existing = state.records[key];
+    const beforeTrackingStarted = cursor < employee.createdDate;
+    const validExistingPeriod = employeeExistsOnDate(employee, cursor);
+    const available = !existing || existing.status === STATUS.MISSED;
+
+    if (isEmployeeWorkday(state, employee.id, cursor) && available && (beforeTrackingStarted || validExistingPeriod)) {
+      const previousRecord = existing ? clone(existing) : null;
+      if (beforeTrackingStarted) {
+        employee.createdDate = cursor;
+        const earliestPeriod = [...employee.activePeriods].sort((a, b) => a.start.localeCompare(b.start))[0];
+        if (earliestPeriod && cursor < earliestPeriod.start) earliestPeriod.start = cursor;
+      }
+      state.records[key] = {
+        employeeId: employee.id,
+        date: cursor,
+        status: STATUS.SUBMITTED_LATE,
+        source: 'receipt',
+        receiptId: receipt.id,
+        receivedDate: receipt.receivedDate,
+        recordedAt: now.toISOString(),
+        note: receipt.note,
+        documentRef: receipt.documentRef,
+        complexTwoDay: receipt.complexTwoDay,
+      };
+      receipt.allocations.push({ date: cursor, allocationType: 'approved_past', previousRecord });
+      receipt.unallocatedCredit -= 1;
+      remaining -= 1;
+    }
+    cursor = addDays(cursor, -1);
+    inspected += 1;
+  }
+
+  if (remaining > 0) {
+    throw new Error('Не вдалося знайти достатньо вільних минулих робочих днів.');
+  }
+  appendAudit(state, 'past_allocation_approved', { receiptId, units }, now);
+  return receipt;
+}
+
+function dutyRestriction(state, employeeId, date) {
+  const employee = getEmployee(state, employeeId);
+  assertDateKey(date);
+  if (!employeeExistsOnDate(employee, date)) return 'outside_period';
+  const key = recordKey(employeeId, date);
+  if (state.duties.aDays[key]) return 'a_day';
+  if (state.duties.aDays[recordKey(employeeId, addDays(date, -1))]) return 'after_a';
+  if (state.duties.unavailable[key]) return state.duties.unavailable[key].type;
+  const record = state.records[key];
+  if (record && DUTY_BLOCKING_RECORD_STATUSES.has(record.status)) return record.status;
+  return null;
+}
+
+function initializeDutyHistory(state, entries, now = new Date()) {
+  if (!Array.isArray(entries)) throw new Error('Не передано початкові дані чергувань.');
+  const baselines = {};
+  for (const entry of entries) {
+    const employee = getEmployee(state, entry.employeeId);
+    const total = Number(entry.total || 0);
+    const realized = Number(entry.realized || 0);
+    if (!Number.isInteger(total) || total < 0 || !Number.isInteger(realized) || realized < 0) {
+      throw new Error(`Кількість чергувань для «${employee.name}» має бути цілим невід’ємним числом.`);
+    }
+    if (realized > total) {
+      throw new Error(`Реалізованих чергувань у «${employee.name}» не може бути більше за загальну кількість.`);
+    }
+    baselines[employee.id] = { total, realized };
+  }
+  state.duties.baselines = { ...state.duties.baselines, ...baselines };
+  state.duties.initialized = true;
+  appendAudit(state, 'duty_history_initialized', { employees: entries.length }, now);
+  return state.duties;
+}
+
+function setDutyRestriction(state, { employeeId, date, type, note = '' }, now = new Date()) {
+  const employee = getEmployee(state, employeeId);
+  assertDateKey(date);
+  if (!employeeExistsOnDate(employee, date)) {
+    throw new Error('Дата не входить до періоду обліку цього працівника.');
+  }
+  const assignment = state.duties.assignments[date];
+  if (assignment?.employeeIds?.includes(employeeId)) {
+    throw new Error('Спочатку змініть склад чергових на цю дату.');
+  }
+  const key = recordKey(employeeId, date);
+  if (type === 'a') {
+    state.duties.aDays[key] = {
+      employeeId,
+      date,
+      note: String(note || '').trim(),
+      createdAt: now.toISOString(),
+    };
+    delete state.duties.unavailable[key];
+  } else {
+    if (!DUTY_UNAVAILABLE_TYPES.has(type)) throw new Error('Некоректний тип недоступності.');
+    state.duties.unavailable[key] = {
+      employeeId,
+      date,
+      type,
+      note: String(note || '').trim(),
+      createdAt: now.toISOString(),
+    };
+    delete state.duties.aDays[key];
+  }
+  appendAudit(state, 'duty_restriction_set', { employeeId, date, type }, now);
+  return type === 'a' ? state.duties.aDays[key] : state.duties.unavailable[key];
+}
+
+function clearDutyRestriction(state, employeeId, date, now = new Date()) {
+  getEmployee(state, employeeId);
+  assertDateKey(date);
+  const key = recordKey(employeeId, date);
+  const changed = Boolean(state.duties.aDays[key] || state.duties.unavailable[key]);
+  delete state.duties.aDays[key];
+  delete state.duties.unavailable[key];
+  if (changed) appendAudit(state, 'duty_restriction_cleared', { employeeId, date }, now);
+  return changed;
+}
+
+function setDutyAssignment(state, { date, employeeIds, singleApproved = false }, now = new Date()) {
+  assertDateKey(date);
+  if (!Array.isArray(employeeIds)) throw new Error('Не передано склад чергових.');
+  const ids = [...new Set(employeeIds.filter(Boolean))];
+  if (ids.length > 2) throw new Error('На один день можна призначити не більше двох чергових.');
+  if (ids.length === 1 && !singleApproved) {
+    throw new Error('Для чергування однієї людини потрібне окреме підтвердження.');
+  }
+  for (const employeeId of ids) {
+    const restriction = dutyRestriction(state, employeeId, date);
+    if (restriction) {
+      const employee = getEmployee(state, employeeId);
+      throw new Error(`«${employee.name}» недоступний для чергування на цю дату.`);
+    }
+  }
+  const previous = state.duties.assignments[date];
+  if (ids.length === 0) {
+    delete state.duties.assignments[date];
+  } else {
+    state.duties.assignments[date] = {
+      date,
+      employeeIds: ids,
+      realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      singleApproved: ids.length === 1 && Boolean(singleApproved),
+      source: 'manual',
+      updatedAt: now.toISOString(),
+    };
+  }
+  appendAudit(state, 'duty_assignment_set', { date, employeeIds: ids, singleApproved }, now);
+  return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
+}
+
+function setDutyRealized(state, date, employeeId, realized, now = new Date()) {
+  assertDateKey(date);
+  getEmployee(state, employeeId);
+  const assignment = state.duties.assignments[date];
+  if (!assignment?.employeeIds?.includes(employeeId)) {
+    throw new Error('Працівник не призначений черговим на цю дату.');
+  }
+  const ids = new Set(assignment.realizedEmployeeIds || []);
+  if (realized) ids.add(employeeId); else ids.delete(employeeId);
+  assignment.realizedEmployeeIds = [...ids];
+  assignment.updatedAt = now.toISOString();
+  appendAudit(state, 'duty_realized_changed', { date, employeeId, realized: Boolean(realized) }, now);
+  return assignment;
+}
+
+function dutyTotals(state, beforeDate = null) {
+  const totals = {};
+  for (const employee of state.employees) {
+    const baseline = state.duties.baselines[employee.id] || {};
+    totals[employee.id] = {
+      total: Number(baseline.total || 0),
+      realized: Number(baseline.realized || 0),
+    };
+  }
+  const assignments = Object.values(state.duties.assignments)
+    .filter((assignment) => !beforeDate || assignment.date < beforeDate);
+  for (const assignment of assignments) {
+    for (const employeeId of assignment.employeeIds || []) {
+      if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
+      totals[employeeId].total += 1;
+      if (assignment.realizedEmployeeIds?.includes(employeeId)) totals[employeeId].realized += 1;
+    }
+  }
+  return totals;
+}
+
+function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
+  assertDateKey(startDate);
+  assertDateKey(endDate);
+  if (startDate > endDate) throw new Error('Початкова дата не може бути пізнішою за кінцеву.');
+  let cursorCheck = startDate;
+  let span = 0;
+  while (cursorCheck <= endDate && span <= 367) {
+    span += 1;
+    cursorCheck = addDays(cursorCheck, 1);
+  }
+  if (span > 366) throw new Error('За один раз можна сформувати графік не більше ніж на 366 днів.');
+
+  const totals = dutyTotals(state, startDate);
+  const employeeOrder = new Map(state.employees.map((employee, index) => [employee.id, index]));
+  let previousIds = new Set(
+    state.duties.assignments[addDays(startDate, -1)]?.employeeIds || [],
+  );
+  const shortages = [];
+  let generated = 0;
+  let cursor = startDate;
+
+  while (cursor <= endDate) {
+    const existing = state.duties.assignments[cursor];
+    if (existing?.employeeIds?.length) {
+      for (const employeeId of existing.employeeIds) {
+        if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
+        totals[employeeId].total += 1;
+        if (existing.realizedEmployeeIds?.includes(employeeId)) totals[employeeId].realized += 1;
+      }
+      previousIds = new Set(existing.employeeIds);
+      cursor = addDays(cursor, 1);
+      continue;
+    }
+
+    const candidates = state.employees
+      .filter((employee) => employee.active && !dutyRestriction(state, employee.id, cursor))
+      .sort((left, right) => {
+        const leftTotals = totals[left.id] || { total: 0, realized: 0 };
+        const rightTotals = totals[right.id] || { total: 0, realized: 0 };
+        const leftScore = leftTotals.total * 1000
+          + leftTotals.realized * 10
+          + (previousIds.has(left.id) ? 1_000_000 : 0)
+          + (employeeOrder.get(left.id) || 0) / 100;
+        const rightScore = rightTotals.total * 1000
+          + rightTotals.realized * 10
+          + (previousIds.has(right.id) ? 1_000_000 : 0)
+          + (employeeOrder.get(right.id) || 0) / 100;
+        return leftScore - rightScore;
+      });
+
+    if (candidates.length < 2) {
+      shortages.push(cursor);
+      previousIds = new Set();
+      cursor = addDays(cursor, 1);
+      continue;
+    }
+
+    const selected = candidates.slice(0, 2).map((employee) => employee.id);
+    state.duties.assignments[cursor] = {
+      date: cursor,
+      employeeIds: selected,
+      realizedEmployeeIds: [],
+      singleApproved: false,
+      source: 'generated',
+      updatedAt: now.toISOString(),
+    };
+    for (const employeeId of selected) {
+      if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
+      totals[employeeId].total += 1;
+    }
+    generated += 1;
+    previousIds = new Set(selected);
+    cursor = addDays(cursor, 1);
+  }
+
+  appendAudit(state, 'duty_schedule_generated', { startDate, endDate, generated, shortages }, now);
+  return { startDate, endDate, generated, shortages };
+}
+
+function calculateDutyStatistics(state) {
+  const totals = dutyTotals(state);
+  return state.employees.map((employee) => ({
+    employeeId: employee.id,
+    name: employee.name,
+    total: totals[employee.id]?.total || 0,
+    realized: totals[employee.id]?.realized || 0,
+  }));
 }
 
 function calculateStatistics(state, { employeeId = null, startDate, endDate }) {
@@ -464,7 +841,7 @@ function calculateStatistics(state, { employeeId = null, startDate, endDate }) {
 
     let cursor = startDate;
     while (cursor <= endDate) {
-      if (employeeExistsOnDate(employee, cursor) && isWorkday(state, cursor)) {
+      if (employeeExistsOnDate(employee, cursor) && isEmployeeWorkday(state, employee.id, cursor)) {
         metrics.calendarWorkdays += 1;
         const record = state.records[recordKey(employee.id, cursor)];
         if (!record) {
@@ -530,9 +907,13 @@ module.exports = {
   STATUS_LABELS,
   SUBMITTED_STATUSES,
   addDays,
+  allocateReceiptBackward,
   allocateReceiptForward,
   archiveEmployee,
+  calculateDutyStatistics,
   calculateStatistics,
+  clearDutyRestriction,
+  clearWorkdayOverride,
   clearManualRecord,
   clone,
   createEmployee,
@@ -540,12 +921,19 @@ module.exports = {
   dayOfWeek,
   defaultState,
   ensureAutomaticMisses,
+  generateDutySchedule,
   getEmployee,
   isSubmitted,
+  isEmployeeWorkday,
   isWorkday,
+  initializeDutyHistory,
   normalizeState,
   recordKey,
   recordSubmission,
   restoreEmployee,
+  setDutyAssignment,
+  setDutyRealized,
+  setDutyRestriction,
   setManualStatus,
+  setWorkdayOverride,
 };

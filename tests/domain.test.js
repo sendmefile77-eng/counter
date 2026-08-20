@@ -2,16 +2,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   STATUS,
+  allocateReceiptBackward,
   allocateReceiptForward,
+  calculateDutyStatistics,
   calculateStatistics,
   createEmployee,
   defaultState,
   ensureAutomaticMisses,
+  generateDutySchedule,
+  initializeDutyHistory,
+  normalizeState,
   archiveEmployee,
   recordKey,
   recordSubmission,
   restoreEmployee,
+  setDutyAssignment,
+  setDutyRealized,
+  setDutyRestriction,
   setManualStatus,
+  setWorkdayOverride,
 } = require('../src/shared/domain');
 
 function localDate(year, monthIndex, day, hour = 9, minute = 0) {
@@ -147,4 +156,92 @@ test('період перебування працівника в архіві �
   assert.equal(state.records[recordKey(employee.id, '2026-08-03')].status, STATUS.MISSED);
   assert.equal(state.records[recordKey(employee.id, '2026-08-05')], undefined);
   assert.equal(state.records[recordKey(employee.id, '2026-08-10')].status, STATUS.MISSED);
+});
+
+test('субота й неділя автоматично не створюють пропусків, але ручний робочий вихідний створює', () => {
+  const state = defaultState(localDate(2026, 7, 21, 9, 0));
+  const employee = createEmployee(state, 'Литвин О. С.', localDate(2026, 7, 21, 9, 0));
+  setWorkdayOverride(state, employee.id, '2026-08-22', '', localDate(2026, 7, 21, 10, 0));
+
+  ensureAutomaticMisses(state, localDate(2026, 7, 24, 9, 0));
+
+  assert.equal(state.records[recordKey(employee.id, '2026-08-22')].status, STATUS.MISSED);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-23')], undefined);
+});
+
+test('нерозподілений залишок можна вручну зарахувати назад до початку обліку працівника', () => {
+  const now = localDate(2026, 7, 20, 10, 0);
+  const state = defaultState(now);
+  const employee = createEmployee(state, 'Мельник Т. В.', now);
+  const receipt = recordSubmission(state, {
+    employeeId: employee.id,
+    requestCount: 1,
+    complexTwoDay: true,
+  }, now);
+
+  assert.equal(receipt.unallocatedCredit, 1);
+  allocateReceiptBackward(state, receipt.id, 1, now);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-19')].status, STATUS.SUBMITTED_LATE);
+  assert.equal(employee.createdDate, '2026-08-19');
+});
+
+test('генератор чергувань розподіляє по двоє і уникає повтору наступного дня', () => {
+  const state = defaultState(localDate(2026, 7, 20, 9, 0));
+  const employees = ['Андрій', 'Богдан', 'Віра', 'Галина']
+    .map((name) => createEmployee(state, name, localDate(2026, 7, 20, 9, 0)));
+  initializeDutyHistory(state, employees.map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })));
+
+  const result = generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-26' });
+  assert.equal(result.generated, 3);
+  assert.equal(result.shortages.length, 0);
+  const first = new Set(state.duties.assignments['2026-08-24'].employeeIds);
+  const second = new Set(state.duties.assignments['2026-08-25'].employeeIds);
+  assert.equal([...first].some((id) => second.has(id)), false);
+  assert.equal(state.duties.assignments['2026-08-26'].employeeIds.length, 2);
+});
+
+test('«А» блокує чергування в цей і наступний день, а один черговий потребує дозволу', () => {
+  const state = defaultState(localDate(2026, 7, 20, 9, 0));
+  const first = createEmployee(state, 'Данило', localDate(2026, 7, 20, 9, 0));
+  const second = createEmployee(state, 'Євген', localDate(2026, 7, 20, 9, 0));
+  const third = createEmployee(state, 'Жанна', localDate(2026, 7, 20, 9, 0));
+  setDutyRestriction(state, { employeeId: first.id, date: '2026-08-24', type: 'a' });
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-25' });
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(first.id), false);
+  assert.equal(state.duties.assignments['2026-08-25'].employeeIds.includes(first.id), false);
+  assert.throws(() => setDutyAssignment(state, {
+    date: '2026-08-26',
+    employeeIds: [second.id],
+  }), /підтвердження/);
+  setDutyAssignment(state, {
+    date: '2026-08-26',
+    employeeIds: [second.id],
+    singleApproved: true,
+  });
+  assert.equal(state.duties.assignments['2026-08-26'].singleApproved, true);
+
+  setDutyRealized(state, '2026-08-26', second.id, true);
+  const stats = calculateDutyStatistics(state);
+  assert.equal(stats.find((row) => row.employeeId === second.id).realized, 1);
+  assert.ok(third.id);
+});
+
+test('база попередньої версії автоматично отримує нові поля без втрати записів', () => {
+  const oldState = defaultState(localDate(2026, 7, 20, 9, 0));
+  const employee = createEmployee(oldState, 'Зоряна', localDate(2026, 7, 20, 9, 0));
+  delete oldState.duties;
+  delete oldState.workdayOverrides;
+  oldState.schemaVersion = 1;
+
+  const normalized = normalizeState(oldState);
+  assert.equal(normalized.schemaVersion, 2);
+  assert.equal(normalized.employees[0].id, employee.id);
+  assert.deepEqual(normalized.workdayOverrides, {});
+  assert.equal(normalized.duties.initialized, false);
+  assert.deepEqual(normalized.duties.assignments, {});
 });

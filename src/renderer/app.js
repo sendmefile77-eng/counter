@@ -10,6 +10,7 @@ const STATUS_LABELS = {
   vacation: 'Відпустка',
   day_off: 'Відгул',
   holiday: 'Вихідний або святковий день',
+  weekend: 'Календарний вихідний',
 };
 
 const STATUS_COLORS = {
@@ -38,6 +39,7 @@ const STATUS_SYMBOLS = {
   vacation: 'ВП',
   day_off: 'ВГ',
   holiday: 'СВ',
+  weekend: 'ВХ',
 };
 
 const VALID_ABSENCE_STATUSES = new Set([
@@ -51,11 +53,22 @@ const VALID_ABSENCE_STATUSES = new Set([
 
 const SUBMITTED_STATUSES = new Set(['submitted', 'submitted_late', 'submitted_advance']);
 
+const DUTY_MARK_LABELS = {
+  a: 'А',
+  off: 'В',
+  vacation: 'ВП',
+  sick: 'ЛК',
+  day_off: 'ВГ',
+  personal: 'ОС',
+  other: 'НД',
+};
+
 const appRoot = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
 const toastRoot = document.querySelector('#toast-root');
 
 let snapshot = null;
+let resizeGesture = null;
 let ui = {
   mode: 'widget',
   tab: 'today',
@@ -64,6 +77,8 @@ let ui = {
   analyticsEnd: localDateKey(),
   analyticsEmployee: '',
   analytics: null,
+  dutyMonth: localDateKey().slice(0, 7),
+  dutyStats: null,
 };
 
 function h(value) {
@@ -112,6 +127,10 @@ function statusFor(employeeId, date = localDateKey()) {
   return recordFor(employeeId, date)?.status || 'pending';
 }
 
+function hasWorkdayOverride(employeeId, date) {
+  return Boolean(snapshot.workdayOverrides?.[`${employeeId}|${date}`]);
+}
+
 function employeeActiveOnDate(employee, date) {
   if (Array.isArray(employee.activePeriods) && employee.activePeriods.length) {
     return employee.activePeriods.some((period) => date >= period.start && (!period.end || date < period.end));
@@ -135,14 +154,21 @@ function daysInMonth(month) {
   return new Date(year, monthNumber, 0).getDate();
 }
 
+function shiftDate(date, delta) {
+  const value = dateFromKey(date);
+  value.setDate(value.getDate() + delta);
+  return localDateKey(value);
+}
+
 function statusBadge(status) {
   return `<span class="status-badge" data-status="${status}">${h(STATUS_LABELS[status] || status)}</span>`;
 }
 
 function renderShell() {
+  document.body.className = `mode-${ui.mode}`;
   appRoot.innerHTML = `
     <section class="window-shell ${ui.mode}">
-      <header class="titlebar">
+      ${ui.mode === 'dashboard' ? `<header class="titlebar">
         <div class="brand-mark">Щ</div>
         <div class="title-copy">
           <strong>Щоденний облік</strong>
@@ -154,7 +180,7 @@ function renderShell() {
           <button class="icon-button" data-action="minimize" title="Згорнути">—</button>
           <button class="icon-button danger" data-action="close" title="Закрити">×</button>
         </div>
-      </header>
+      </header>` : ''}
       <main class="main-content">
         ${ui.mode === 'widget' ? renderWidget() : renderDashboard()}
       </main>
@@ -187,10 +213,8 @@ function annularSectorPath(index, count, outerRadius = 270, innerRadius = 116) {
 }
 
 function renderRadial(employees) {
-  const today = localDateKey();
-  const submitted = employees.filter((employee) => SUBMITTED_STATUSES.has(statusFor(employee.id, today))).length;
   const sectors = employees.map((employee, index) => {
-    const status = statusFor(employee.id, today);
+    const status = statusFor(employee.id, localDateKey());
     const sweep = 360 / employees.length;
     const labelPoint = polar(300, 300, employees.length > 11 ? 195 : 202, (index + 0.5) * sweep);
     const dotPoint = polar(300, 300, employees.length > 11 ? 232 : 238, (index + 0.5) * sweep);
@@ -206,10 +230,6 @@ function renderRadial(employees) {
   return `
     <svg class="radial-svg" viewBox="0 0 600 600" aria-label="Стан працівників на сьогодні">
       ${sectors}
-      <circle class="center-disc" cx="300" cy="300" r="104"></circle>
-      <text class="center-date" x="300" y="260" text-anchor="middle">${h(formatDate(today, { day: 'numeric', month: 'long' }))}</text>
-      <text class="center-value" x="300" y="313" text-anchor="middle">${submitted}/${employees.length}</text>
-      <text class="center-caption" x="300" y="340" text-anchor="middle">подали запит</text>
     </svg>
   `;
 }
@@ -218,30 +238,34 @@ function renderWidget() {
   const employees = activeEmployees();
   const statuses = employees.map((employee) => statusFor(employee.id));
   const submitted = statuses.filter((status) => SUBMITTED_STATUSES.has(status)).length;
-  const missed = statuses.filter((status) => status === 'missed').length;
-  const excused = statuses.filter((status) => VALID_ABSENCE_STATUSES.has(status)).length;
   return `
     <section class="widget-view">
-      <div class="radial-wrap">
-        ${employees.length ? renderRadial(employees) : `
-          <div class="empty-widget">
-            <h2>Додайте працівників</h2>
-            <p>У віджеті можна розмістити до 15 людей. Після цього один клік на секторі зараховуватиме один запит.</p>
-            <button class="button primary" data-action="open-employees">Додати першого працівника</button>
+      <div class="widget-circle">
+        <div class="radial-wrap">
+          ${employees.length ? renderRadial(employees) : `
+            <div class="empty-widget">
+              <h2>Немає працівників</h2>
+              <p>Відкрийте журнал і додайте до 15 людей.</p>
+              <button class="button primary small" data-action="open-employees">Додати</button>
+            </div>
+          `}
+        </div>
+        ${employees.length ? `
+          <div class="widget-center" data-widget-drag title="Перетягніть, щоб перемістити">
+            <span>${h(formatDate(localDateKey(), { day: 'numeric', month: 'long' }))}</span>
+            <strong>${submitted}/${employees.length}</strong>
+            <small>подали запит</small>
           </div>
-        `}
+        ` : ''}
+        <div class="widget-controls">
+          <button data-action="resize-decrease" title="Зменшити">−</button>
+          <button data-action="resize-increase" title="Збільшити">+</button>
+          <button data-action="undo" title="Скасувати останнє">↶</button>
+          <button data-action="toggle-mode" title="Відкрити журнал">▦</button>
+          <button data-action="close" title="Закрити">×</button>
+        </div>
+        <div class="widget-resize-handle" data-widget-resize title="Потягніть, щоб змінити розмір">⌟</div>
       </div>
-      <footer class="widget-footer">
-        <div class="widget-summary">
-          <div class="mini-stat"><strong>${submitted}</strong><span>подали</span></div>
-          <div class="mini-stat"><strong>${missed}</strong><span>не подали</span></div>
-          <div class="mini-stat"><strong>${excused}</strong><span>інші статуси</span></div>
-        </div>
-        <div class="footer-actions">
-          <button class="button" data-action="undo">↶ Скасувати останнє</button>
-          <button class="button primary" data-action="toggle-mode">Відкрити журнал</button>
-        </div>
-      </footer>
     </section>
   `;
 }
@@ -250,6 +274,7 @@ function renderDashboard() {
   const nav = [
     ['today', '●', 'Сьогодні'],
     ['journal', '▦', 'Табель'],
+    ['duties', '◫', 'Чергування'],
     ['analytics', '⌁', 'Аналітика'],
     ['employees', '♙', 'Працівники'],
     ['data', '⇅', 'Дані'],
@@ -272,6 +297,7 @@ function renderDashboard() {
 
 function renderActivePage() {
   if (ui.tab === 'journal') return renderJournalPage();
+  if (ui.tab === 'duties') return renderDutyPage();
   if (ui.tab === 'analytics') return renderAnalyticsPage();
   if (ui.tab === 'employees') return renderEmployeesPage();
   if (ui.tab === 'data') return renderDataPage();
@@ -351,17 +377,143 @@ function renderJournalPage() {
               ${dates.map((date) => {
                 const day = dateFromKey(date).getDay();
                 const outsideEmployment = !employeeActiveOnDate(employee, date);
-                if (outsideEmployment || day === 0 || day === 6) {
-                  return `<td class="matrix-cell weekend" title="Неробочий день">·</td>`;
+                const weekend = day === 0 || day === 6;
+                const workdayOverride = hasWorkdayOverride(employee.id, date);
+                if (outsideEmployment) {
+                  return `<td class="matrix-cell weekend" title="Поза періодом обліку">·</td>`;
+                }
+                if (weekend && !workdayOverride) {
+                  return `<td class="matrix-cell cell-weekend" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
                 }
                 const status = statusFor(employee.id, date);
                 const record = recordFor(employee.id, date);
-                const tooltip = `${employee.name}\n${formatDate(date)}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
-                return `<td class="matrix-cell cell-${status}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(tooltip)}">${STATUS_SYMBOLS[status]}</td>`;
+                const tooltip = `${employee.name}\n${formatDate(date)}${workdayOverride ? '\nРобочий день замість вихідного' : ''}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
+                const symbol = workdayOverride && status === 'pending' ? 'РД' : STATUS_SYMBOLS[status];
+                const overrideClass = workdayOverride && status === 'pending' ? ' cell-workday-override' : '';
+                return `<td class="matrix-cell cell-${status}${overrideClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(tooltip)}">${symbol}</td>`;
               }).join('')}
             </tr>
           `).join('')}
         </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function dutyCell(employee, date) {
+  const key = `${employee.id}|${date}`;
+  const assignment = snapshot.duties.assignments[date];
+  if (assignment?.employeeIds?.includes(employee.id)) {
+    const realized = assignment.realizedEmployeeIds?.includes(employee.id);
+    return {
+      symbol: '1',
+      className: realized ? 'duty-realized' : 'duty-assigned',
+      title: realized ? 'Чергування реалізоване: були завдання' : 'Призначено чергування',
+    };
+  }
+  if (snapshot.duties.aDays[key]) return { symbol: 'А', className: 'duty-a', title: 'Залучення «А»' };
+  const unavailable = snapshot.duties.unavailable[key];
+  if (unavailable) {
+    return {
+      symbol: DUTY_MARK_LABELS[unavailable.type] || 'НД',
+      className: 'duty-unavailable',
+      title: `Не бере участі: ${unavailable.type}`,
+    };
+  }
+  if (snapshot.duties.aDays[`${employee.id}|${shiftDate(date, -1)}`]) {
+    return { symbol: 'п/А', className: 'duty-after-a', title: 'Не можна чергувати наступного дня після «А»' };
+  }
+  const record = recordFor(employee.id, date);
+  const linkedMarks = {
+    personal_permission: 'ОС',
+    sick: 'ЛК',
+    vacation: 'ВП',
+    day_off: 'ВГ',
+    holiday: 'В',
+  };
+  if (linkedMarks[record?.status]) {
+    return { symbol: linkedMarks[record.status], className: 'duty-unavailable', title: STATUS_LABELS[record.status] };
+  }
+  return { symbol: '·', className: 'duty-empty', title: 'Доступний для чергування' };
+}
+
+function renderDutyPage() {
+  const employees = activeEmployees();
+  if (!employees.length) {
+    return `<div class="page-header"><div><h1>Чергування</h1><p>Спочатку додайте працівників.</p></div></div><div class="panel"><button class="button primary" data-action="open-employees">Додати працівника</button></div>`;
+  }
+  if (!snapshot.duties.initialized) {
+    return `
+      <div class="page-header">
+        <div><h1>Початкові дані чергувань</h1><p>Введіть накопичені підсумки, щоб перший графік одразу був справедливим.</p></div>
+      </div>
+      <form id="duty-history-form" class="panel duty-history-form">
+        <div class="confirm-box">Загальна кількість — усі попередні чергування. Реалізовані — ті, під час яких фактично були завдання.</div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Працівник</th><th>Усього чергувань</th><th>Реалізованих</th></tr></thead>
+            <tbody>${employees.map((employee) => `
+              <tr data-duty-history-row="${h(employee.id)}">
+                <td>${h(employee.name)}</td>
+                <td><input name="total-${h(employee.id)}" type="number" min="0" step="1" value="0" required></td>
+                <td><input name="realized-${h(employee.id)}" type="number" min="0" step="1" value="0" required></td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+        <div class="form-actions"><button class="button primary" type="submit">Зберегти й відкрити графік</button></div>
+      </form>
+    `;
+  }
+
+  const count = daysInMonth(ui.dutyMonth);
+  const dates = Array.from({ length: count }, (_, index) => `${ui.dutyMonth}-${String(index + 1).padStart(2, '0')}`);
+  const stats = new Map((ui.dutyStats || []).map((row) => [row.employeeId, row]));
+  const totals = employees.map((employee) => stats.get(employee.id)?.total || 0);
+  const minTotal = Math.min(...totals);
+  const maxTotal = Math.max(...totals);
+  return `
+    <div class="page-header">
+      <div>
+        <h1>Графік чергувань</h1>
+        <p>Щодня — двоє чергових, включно із суботою та неділею. Один — лише за вашим дозволом.</p>
+      </div>
+      <button class="button" data-duty-history>Початкові підсумки</button>
+    </div>
+    <div class="metrics-grid duty-metrics">
+      <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон чергувань</span></div>
+      <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>усього з історією</span></div>
+      <div class="metric-card"><strong>${(ui.dutyStats || []).reduce((sum, row) => sum + row.realized, 0)}</strong><span>реалізованих</span></div>
+    </div>
+    <div class="table-toolbar">
+      <button class="button small" data-duty-month-shift="-1">← Попередній</button>
+      <div class="month-title">${h(formatMonth(ui.dutyMonth))}</div>
+      <button class="button small" data-duty-month-shift="1">Наступний →</button>
+      <button class="button primary small" data-generate-duties>Сформувати порожні дні</button>
+    </div>
+    <div class="duty-legend">
+      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
+    </div>
+    <div class="table-scroll">
+      <table class="matrix duty-matrix">
+        <thead><tr>
+          <th class="sticky-name">Працівник</th><th>Σ</th><th>Р</th>
+          ${dates.map((date) => {
+            const day = dateFromKey(date).getDay();
+            return `<th class="${day === 0 || day === 6 ? 'weekend' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}">${Number(date.slice(-2))}</button></th>`;
+          }).join('')}
+        </tr></thead>
+        <tbody>${employees.map((employee) => {
+          const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
+          return `<tr>
+            <td class="sticky-name" title="${h(employee.name)}">${h(shortName(employee.name))}</td>
+            <td class="duty-total">${rowStats.total}</td><td class="duty-total duty-realized-total">${rowStats.realized}</td>
+            ${dates.map((date) => {
+              const cell = dutyCell(employee, date);
+              return `<td class="matrix-cell ${cell.className}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}">${cell.symbol}</td>`;
+            }).join('')}
+          </tr>`;
+        }).join('')}</tbody>
       </table>
     </div>
   `;
@@ -514,6 +666,94 @@ function closeModal() {
   modalRoot.innerHTML = '';
 }
 
+function openDutyHistoryModal() {
+  const employees = activeEmployees();
+  openModal(`
+    <form id="duty-history-form">
+      <header class="modal-head"><div><h2>Початкові підсумки</h2><p>Накопичені дані до початку роботи в програмі</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        <div class="confirm-box">Зміна цих чисел вплине на наступні автоматичні розподіли, але не видалить уже складений графік.</div>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Працівник</th><th>Усього</th><th>Реалізованих</th></tr></thead>
+          <tbody>${employees.map((employee) => {
+            const baseline = snapshot.duties.baselines[employee.id] || { total: 0, realized: 0 };
+            return `<tr data-duty-history-row="${h(employee.id)}"><td>${h(employee.name)}</td><td><input name="total-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.total}" required></td><td><input name="realized-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.realized}" required></td></tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>
+      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти</button></footer>
+    </form>
+  `, true);
+}
+
+function dutyRestrictionText(employeeId, date) {
+  const key = `${employeeId}|${date}`;
+  if (snapshot.duties.aDays[key]) return '«А» цього дня';
+  if (snapshot.duties.aDays[`${employeeId}|${shiftDate(date, -1)}`]) return 'наступний день після «А»';
+  const unavailable = snapshot.duties.unavailable[key];
+  if (unavailable) return `позначка ${DUTY_MARK_LABELS[unavailable.type] || 'недоступний'}`;
+  const record = recordFor(employeeId, date);
+  if (['personal_permission', 'sick', 'vacation', 'day_off', 'holiday'].includes(record?.status)) {
+    return STATUS_LABELS[record.status];
+  }
+  return '';
+}
+
+function openDutyDayModal(date) {
+  const assignment = snapshot.duties.assignments[date] || { employeeIds: [], singleApproved: false };
+  openModal(`
+    <form id="duty-day-form" data-date="${date}">
+      <header class="modal-head"><div><h2>Склад чергових</h2><p>${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        <div class="confirm-box">Оберіть двох працівників. Якщо обрано одного, окремо підтвердьте дозвіл на одиночне чергування.</div>
+        <div class="duty-picker">${activeEmployees().map((employee) => {
+          const restriction = dutyRestrictionText(employee.id, date);
+          const checked = assignment.employeeIds.includes(employee.id);
+          return `<label class="duty-pick ${restriction ? 'restricted' : ''}"><input type="checkbox" name="employeeIds" value="${h(employee.id)}" ${checked ? 'checked' : ''} ${restriction ? 'disabled' : ''}><span><strong>${h(employee.name)}</strong>${restriction ? `<small>${h(restriction)}</small>` : '<small>Доступний</small>'}</span></label>`;
+        }).join('')}</div>
+        <label class="check-row"><input type="checkbox" name="singleApproved" ${assignment.singleApproved ? 'checked' : ''}><span><strong>Дозволяю чергування однієї людини</strong><span>Потрібно лише тоді, коли в списку залишено одного працівника.</span></span></label>
+      </div>
+      <footer class="modal-foot"><button class="button danger" type="button" data-clear-duty-day="${date}">Очистити день</button><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти склад</button></footer>
+    </form>
+  `, true);
+}
+
+function openDutyEmployeeModal(employeeId, date) {
+  const employee = employeeById(employeeId);
+  const key = `${employeeId}|${date}`;
+  const assignment = snapshot.duties.assignments[date];
+  const assigned = assignment?.employeeIds?.includes(employeeId);
+  const realized = assignment?.realizedEmployeeIds?.includes(employeeId);
+  const aDay = snapshot.duties.aDays[key];
+  const unavailable = snapshot.duties.unavailable[key];
+  const linkedRestriction = dutyRestrictionText(employeeId, date);
+  openModal(`
+    <header class="modal-head"><div><h2>Чергування працівника</h2><p>${h(employee?.name || '')} · ${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+    <div class="modal-body">
+      <div>Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
+      ${assigned ? `
+        <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-date="${date}" data-employee-id="${h(employeeId)}" data-realized="${realized ? 'false' : 'true'}">${realized ? 'Скасувати позначку «реалізоване»' : 'Позначити: під час чергування були завдання'}</button>
+        <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
+      ` : `
+        <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || '')}</textarea></label>
+        <div class="status-grid duty-status-grid">
+          <button class="status-choice" data-set-duty-restriction="a" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>А</strong><span>Не чергує цього й наступного дня</span></button>
+          <button class="status-choice" data-set-duty-restriction="off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Вихідний</strong><span>Не бере участі в чергуванні</span></button>
+          <button class="status-choice" data-set-duty-restriction="vacation" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпустка</strong><span>Недоступний</span></button>
+          <button class="status-choice" data-set-duty-restriction="sick" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Лікарняний</strong><span>Недоступний</span></button>
+          <button class="status-choice" data-set-duty-restriction="day_off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відгул</strong><span>Недоступний</span></button>
+          <button class="status-choice" data-set-duty-restriction="personal" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Особисті справи</strong><span>Недоступний</span></button>
+        </div>
+      `}
+    </div>
+    <footer class="modal-foot">
+      ${!assigned && (aDay || unavailable) ? `<button class="button danger" data-clear-duty-restriction data-employee-id="${h(employeeId)}" data-date="${date}">Очистити позначку</button>` : ''}
+      <button class="button" data-open-duty-day="${date}">Налаштувати склад дня</button>
+      <button class="button" data-close-modal>Закрити</button>
+    </footer>
+  `, true);
+}
+
 function openSubmissionModal(employeeId) {
   const employee = employeeById(employeeId);
   openModal(`
@@ -541,30 +781,45 @@ function openFutureApproval(receipt) {
   openModal(`
     <header class="modal-head"><div><h2>Є нерозподілений залишок</h2><p>${h(employee?.name || '')}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
     <div class="modal-body">
-      <div class="confirm-box">Після закриття поточного дня та найближчих попередніх пропусків залишилося <strong>${receipt.unallocatedCredit}</strong> одиниць. Зарахувати їх на найближчі майбутні робочі дні?</div>
-      <p class="panel-copy">Без вашого підтвердження майбутні дні не зміняться, а залишок збережеться в записі документа.</p>
+      <div class="confirm-box">Після закриття поточного дня та найближчих попередніх пропусків залишилося <strong>${receipt.unallocatedCredit}</strong> одиниць.</div>
+      <p class="panel-copy">Ви можете зарахувати залишок на найближчі вільні робочі дні назад або наперед. Без підтвердження він збережеться в записі документа.</p>
     </div>
-    <footer class="modal-foot"><button class="button" type="button" data-close-modal>Ні, залишити нерозподіленими</button><button class="button primary" type="button" data-approve-future="${h(receipt.id)}" data-units="${receipt.unallocatedCredit}">Так, зарахувати наперед</button></footer>
+    <footer class="modal-foot three-way">
+      <button class="button" type="button" data-approve-backward="${h(receipt.id)}" data-units="${receipt.unallocatedCredit}">Зарахувати назад</button>
+      <button class="button ghost" type="button" data-close-modal>Залишити залишок</button>
+      <button class="button primary" type="button" data-approve-future="${h(receipt.id)}" data-units="${receipt.unallocatedCredit}">Зарахувати наперед</button>
+    </footer>
   `);
 }
 
 function openStatusModal(employeeId, date) {
   const employee = employeeById(employeeId);
   const record = recordFor(employeeId, date);
+  const day = dateFromKey(date).getDay();
+  const calendarWeekend = day === 0 || day === 6;
+  const workdayOverride = hasWorkdayOverride(employeeId, date);
+  const canEditWorkday = !calendarWeekend || workdayOverride;
   openModal(`
     <header class="modal-head"><div><h2>Статус дня</h2><p>${h(employee?.name || '')} · ${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
     <div class="modal-body">
-      <div>Поточний статус: ${statusBadge(record?.status || 'pending')}</div>
-      ${date === localDateKey() ? `
+      <div>Поточний статус: ${calendarWeekend && !workdayOverride ? statusBadge('weekend') : statusBadge(record?.status || 'pending')}</div>
+      ${calendarWeekend && !workdayOverride ? `
+        <div class="confirm-box">Субота й неділя автоматично позначаються «ВХ» і не входять до норми та відпрацьованих днів.</div>
+        <button class="button primary" type="button" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>
+      ` : ''}
+      ${calendarWeekend && workdayOverride ? `
+        <div class="confirm-box success-box">Цей календарний вихідний вручну зроблено робочим. Він входить у норму й закривається о 18:00 як звичайний робочий день.</div>
+      ` : ''}
+      ${date === localDateKey() && canEditWorkday ? `
         <div class="button-row">
           <button class="button success" data-modal-submit-one="${h(employeeId)}">+ Зарахувати 1 запит</button>
           <button class="button" data-modal-submission="${h(employeeId)}">Кілька / складний</button>
         </div>
       ` : ''}
-      <label class="field"><span>Примітка до нового статусу</span><textarea id="status-note" maxlength="500" placeholder="Необов’язково">${h(record?.note || '')}</textarea></label>
-      ${record?.receiptId ? `
+      ${canEditWorkday ? `<label class="field"><span>Примітка до нового статусу</span><textarea id="status-note" maxlength="500" placeholder="Необов’язково">${h(record?.note || '')}</textarea></label>` : ''}
+      ${canEditWorkday && record?.receiptId ? `
         <div class="confirm-box">Цей день пов’язаний із зарахованим документом. Щоб не пошкодити розподіл запиту між датами, окреме ручне редагування заблоковано. За потреби скасуйте останнє зарахування.</div>
-      ` : `<div class="status-grid">
+      ` : canEditWorkday ? `<div class="status-grid">
         <button class="status-choice" data-set-status="missed" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Не подав</strong><span>Утворює незакритий пропуск</span></button>
         <button class="status-choice" data-set-status="other_tasks" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Інші завдання</strong><span>Рахується відпрацьованим днем</span></button>
         <button class="status-choice" data-set-status="personal_permission" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Особисті справи</strong><span>Окремий дозвіл керівника</span></button>
@@ -572,9 +827,10 @@ function openStatusModal(employeeId, date) {
         <button class="status-choice" data-set-status="vacation" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпустка</strong><span>Не входить у норму</span></button>
         <button class="status-choice" data-set-status="day_off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відгул</strong><span>Не входить у норму</span></button>
         <button class="status-choice" data-set-status="holiday" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Святковий / вихідний</strong><span>Не входить у норму</span></button>
-      </div>`}
+      </div>` : ''}
     </div>
     <footer class="modal-foot">
+      ${calendarWeekend && workdayOverride && !record?.receiptId ? `<button class="button danger" type="button" data-clear-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Повернути «ВХ»</button>` : ''}
       ${record && !record.receiptId ? `<button class="button danger" type="button" data-clear-status data-employee-id="${h(employeeId)}" data-date="${date}">Очистити</button>` : ''}
       <button class="button" type="button" data-close-modal>Закрити</button>
     </footer>
@@ -589,7 +845,7 @@ function showToast(message, { error = false, undo = false } = {}) {
   setTimeout(() => toast.remove(), error ? 6500 : 4200);
 }
 
-async function refresh({ analytics = ui.tab === 'analytics' } = {}) {
+async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab === 'duties' } = {}) {
   snapshot = await window.counter.getSnapshot();
   if (analytics) {
     ui.analytics = await window.counter.getAnalytics({
@@ -597,6 +853,9 @@ async function refresh({ analytics = ui.tab === 'analytics' } = {}) {
       startDate: ui.analyticsStart,
       endDate: ui.analyticsEnd,
     });
+  }
+  if (duties && snapshot.duties?.initialized) {
+    ui.dutyStats = await window.counter.getDutyStats();
   }
   renderShell();
 }
@@ -621,6 +880,23 @@ async function submitOne(employeeId) {
   if (receipt?.unallocatedCredit > 0) openFutureApproval(receipt);
 }
 
+async function resizeWidgetBy(delta) {
+  try {
+    await window.counter.resizeWidget(window.innerWidth + delta, true);
+  } catch (error) {
+    showToast(error.message || String(error), { error: true });
+  }
+}
+
+function dutyHistoryEntries(formElement) {
+  const form = new FormData(formElement);
+  return activeEmployees().map((employee) => ({
+    employeeId: employee.id,
+    total: Number(form.get(`total-${employee.id}`)),
+    realized: Number(form.get(`realized-${employee.id}`)),
+  }));
+}
+
 appRoot.addEventListener('click', async (event) => {
   const actionButton = event.target.closest('[data-action]');
   if (actionButton) {
@@ -638,6 +914,8 @@ appRoot.addEventListener('click', async (event) => {
       renderShell();
       return;
     }
+    if (action === 'resize-decrease') return resizeWidgetBy(-40);
+    if (action === 'resize-increase') return resizeWidgetBy(40);
     if (action === 'minimize') return window.counter.minimize();
     if (action === 'close') return window.counter.close();
     if (action === 'undo') {
@@ -657,6 +935,8 @@ appRoot.addEventListener('click', async (event) => {
     ui.tab = tabButton.dataset.tab;
     if (ui.tab === 'analytics' && !ui.analytics) {
       await refresh({ analytics: true });
+    } else if (ui.tab === 'duties' && !ui.dutyStats && snapshot.duties?.initialized) {
+      await refresh({ duties: true });
     } else {
       renderShell();
     }
@@ -682,6 +962,38 @@ appRoot.addEventListener('click', async (event) => {
   if (monthButton) {
     ui.month = monthShift(ui.month, Number(monthButton.dataset.monthShift));
     renderShell();
+    return;
+  }
+
+  const dutyMonthButton = event.target.closest('[data-duty-month-shift]');
+  if (dutyMonthButton) {
+    ui.dutyMonth = monthShift(ui.dutyMonth, Number(dutyMonthButton.dataset.dutyMonthShift));
+    renderShell();
+    return;
+  }
+
+  const dutyHistoryButton = event.target.closest('[data-duty-history]');
+  if (dutyHistoryButton) return openDutyHistoryModal();
+
+  const dutyDayButton = event.target.closest('[data-duty-day]');
+  if (dutyDayButton) return openDutyDayModal(dutyDayButton.dataset.dutyDay);
+
+  const dutyCellButton = event.target.closest('[data-duty-cell]');
+  if (dutyCellButton) return openDutyEmployeeModal(dutyCellButton.dataset.employeeId, dutyCellButton.dataset.date);
+
+  const generateDutiesButton = event.target.closest('[data-generate-duties]');
+  if (generateDutiesButton) {
+    const endDate = `${ui.dutyMonth}-${String(daysInMonth(ui.dutyMonth)).padStart(2, '0')}`;
+    const result = await run(
+      () => window.counter.generateDuties({ startDate: `${ui.dutyMonth}-01`, endDate }),
+      null,
+    );
+    if (result) {
+      const message = result.shortages.length
+        ? `Заповнено днів: ${result.generated}. Не вистачило доступних людей для ${result.shortages.length} днів.`
+        : `Графік сформовано. Нових заповнених днів: ${result.generated}.`;
+      showToast(message, { error: result.shortages.length > 0, undo: true });
+    }
     return;
   }
 
@@ -716,6 +1028,49 @@ appRoot.addEventListener('click', async (event) => {
   }
 });
 
+appRoot.addEventListener('pointerdown', (event) => {
+  const handle = event.target.closest('[data-widget-resize]');
+  if (!handle) return;
+  event.preventDefault();
+  resizeGesture = {
+    pointerId: event.pointerId,
+    startX: event.screenX,
+    startY: event.screenY,
+    startSize: window.innerWidth,
+    nextSize: window.innerWidth,
+    frame: null,
+  };
+  handle.setPointerCapture?.(event.pointerId);
+});
+
+window.addEventListener('pointermove', (event) => {
+  if (!resizeGesture || event.pointerId !== resizeGesture.pointerId) return;
+  const delta = ((event.screenX - resizeGesture.startX) + (event.screenY - resizeGesture.startY)) / 2;
+  resizeGesture.nextSize = Math.max(260, Math.min(700, Math.round(resizeGesture.startSize + delta)));
+  if (resizeGesture.frame) return;
+  resizeGesture.frame = window.requestAnimationFrame(async () => {
+    if (!resizeGesture) return;
+    resizeGesture.frame = null;
+    try {
+      await window.counter.resizeWidget(resizeGesture.nextSize, false);
+    } catch (error) {
+      showToast(error.message || String(error), { error: true });
+    }
+  });
+});
+
+window.addEventListener('pointerup', async (event) => {
+  if (!resizeGesture || event.pointerId !== resizeGesture.pointerId) return;
+  const finalSize = resizeGesture.nextSize;
+  if (resizeGesture.frame) window.cancelAnimationFrame(resizeGesture.frame);
+  resizeGesture = null;
+  try {
+    await window.counter.resizeWidget(finalSize, true);
+  } catch (error) {
+    showToast(error.message || String(error), { error: true });
+  }
+});
+
 appRoot.addEventListener('contextmenu', (event) => {
   const sector = event.target.closest('.sector[data-employee-id]');
   if (!sector) return;
@@ -725,6 +1080,13 @@ appRoot.addEventListener('contextmenu', (event) => {
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'duty-history-form') {
+    await run(
+      () => window.counter.initializeDuties(dutyHistoryEntries(event.target)),
+      'Початкові підсумки чергувань збережено.',
+    );
+    return;
+  }
   if (event.target.id === 'employee-form') {
     const form = new FormData(event.target);
     const employee = await run(() => window.counter.addEmployee(form.get('name')), 'Працівника додано.');
@@ -782,6 +1144,88 @@ modalRoot.addEventListener('click', async (event) => {
     return;
   }
 
+  const backwardButton = event.target.closest('[data-approve-backward]');
+  if (backwardButton) {
+    const result = await run(
+      () => window.counter.allocateBackward(backwardButton.dataset.approveBackward, Number(backwardButton.dataset.units)),
+      'Попередні вільні робочі дні зараховано з вашого дозволу.',
+    );
+    if (result) closeModal();
+    return;
+  }
+
+  const setWorkdayButton = event.target.closest('[data-set-workday-override]');
+  if (setWorkdayButton) {
+    const result = await run(
+      () => window.counter.setWorkdayOverride(setWorkdayButton.dataset.employeeId, setWorkdayButton.dataset.date),
+      'Вихідний зроблено робочим днем.',
+    );
+    if (result) closeModal();
+    return;
+  }
+
+  const clearWorkdayButton = event.target.closest('[data-clear-workday-override]');
+  if (clearWorkdayButton) {
+    if (!window.confirm('Повернути позначку «ВХ»? Установлений вручну статус цього дня буде очищено.')) return;
+    const result = await run(
+      () => window.counter.clearWorkdayOverride(clearWorkdayButton.dataset.employeeId, clearWorkdayButton.dataset.date),
+      'День знову позначено календарним вихідним.',
+    );
+    if (result !== null) closeModal();
+    return;
+  }
+
+  const openDutyDayButton = event.target.closest('[data-open-duty-day]');
+  if (openDutyDayButton) return openDutyDayModal(openDutyDayButton.dataset.openDutyDay);
+
+  const realizedButton = event.target.closest('[data-set-duty-realized]');
+  if (realizedButton) {
+    const realized = realizedButton.dataset.realized === 'true';
+    const result = await run(
+      () => window.counter.setDutyRealized(realizedButton.dataset.date, realizedButton.dataset.employeeId, realized),
+      realized ? 'Чергування позначено реалізованим.' : 'Позначку реалізованого чергування знято.',
+    );
+    if (result) closeModal();
+    return;
+  }
+
+  const dutyRestrictionButton = event.target.closest('[data-set-duty-restriction]');
+  if (dutyRestrictionButton) {
+    const note = modalRoot.querySelector('#duty-restriction-note')?.value || '';
+    const result = await run(
+      () => window.counter.setDutyRestriction({
+        employeeId: dutyRestrictionButton.dataset.employeeId,
+        date: dutyRestrictionButton.dataset.date,
+        type: dutyRestrictionButton.dataset.setDutyRestriction,
+        note,
+      }),
+      'Обмеження для графіка збережено.',
+    );
+    if (result) closeModal();
+    return;
+  }
+
+  const clearDutyRestrictionButton = event.target.closest('[data-clear-duty-restriction]');
+  if (clearDutyRestrictionButton) {
+    const result = await run(
+      () => window.counter.clearDutyRestriction(clearDutyRestrictionButton.dataset.employeeId, clearDutyRestrictionButton.dataset.date),
+      'Позначку графіка очищено.',
+    );
+    if (result !== null) closeModal();
+    return;
+  }
+
+  const clearDutyDayButton = event.target.closest('[data-clear-duty-day]');
+  if (clearDutyDayButton) {
+    if (!window.confirm('Очистити склад чергових на цей день?')) return;
+    const result = await run(
+      () => window.counter.setDutyAssignment({ date: clearDutyDayButton.dataset.clearDutyDay, employeeIds: [], singleApproved: false }),
+      'Склад чергових очищено.',
+    );
+    if (result) closeModal();
+    return;
+  }
+
   const statusButton = event.target.closest('[data-set-status]');
   if (statusButton) {
     const note = modalRoot.querySelector('#status-note')?.value || '';
@@ -810,6 +1254,27 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'duty-history-form') {
+    const result = await run(
+      () => window.counter.initializeDuties(dutyHistoryEntries(event.target)),
+      'Початкові підсумки чергувань оновлено.',
+    );
+    if (result) closeModal();
+    return;
+  }
+  if (event.target.id === 'duty-day-form') {
+    const form = new FormData(event.target);
+    const result = await run(
+      () => window.counter.setDutyAssignment({
+        date: event.target.dataset.date,
+        employeeIds: form.getAll('employeeIds').map(String),
+        singleApproved: form.get('singleApproved') === 'on',
+      }),
+      'Склад чергових збережено.',
+    );
+    if (result) closeModal();
+    return;
+  }
   if (event.target.id !== 'submission-form') return;
   const form = new FormData(event.target);
   const payload = {
@@ -840,6 +1305,13 @@ window.counter.onChanged(async (nextSnapshot) => {
         startDate: ui.analyticsStart,
         endDate: ui.analyticsEnd,
       });
+    } catch (error) {
+      showToast(error.message || String(error), { error: true });
+    }
+  }
+  if (ui.tab === 'duties' && snapshot.duties?.initialized) {
+    try {
+      ui.dutyStats = await window.counter.getDutyStats();
     } catch (error) {
       showToast(error.message || String(error), { error: true });
     }
