@@ -1,0 +1,36 @@
+{
+  "name": "counter-widget",
+  "version": "0.1.0",
+  "description": "Локальний Windows-віджет щоденного обліку запитів працівників",
+  "main": "src/main/main.js",
+  "author": "sendmefile77-eng",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "dist:win": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ua.local.counterwidget",
+    "productName": "Щоденний облік",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Counter.${ext}"
+    }
+  }
+}
