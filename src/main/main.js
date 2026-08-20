@@ -39,6 +39,16 @@ function clampWidgetSize(value) {
   return Math.max(260, Math.min(700, Math.round(Number(value) || 380)));
 }
 
+function applicationDataDirectory() {
+  const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR
+    || (process.env.PORTABLE_EXECUTABLE_FILE
+      ? path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
+      : null);
+  const applicationDirectory = portableDirectory
+    || (app.isPackaged ? path.dirname(process.execPath) : app.getAppPath());
+  return path.join(applicationDirectory, 'Counter-data');
+}
+
 function buildCircularShape(size) {
   const rects = [];
   const radius = size / 2;
@@ -245,7 +255,7 @@ function buildCsv(state) {
     const employee = state.employees.find((item) => item.id === employeeId);
     return [
       'Початковий підсумок чергувань',
-      '',
+      state.duties.baselineYear || '',
       employee?.name || 'Невідомий працівник',
       `Усього: ${baseline.total || 0}; реалізованих: ${baseline.realized || 0}`,
       '',
@@ -313,7 +323,7 @@ function registerIpc() {
   ipcMain.handle('duties:clear-restriction', (_event, { employeeId, date }) => (
     mutate('duties:clear-restriction', (state) => clearDutyRestriction(state, employeeId, date))
   ));
-  ipcMain.handle('duties:stats', () => calculateDutyStatistics(store.state));
+  ipcMain.handle('duties:stats', (_event, { year } = {}) => calculateDutyStatistics(store.state, year));
 
   ipcMain.handle('history:undo', () => {
     const last = undoStack.pop();
@@ -360,7 +370,17 @@ function registerIpc() {
     if (!mainWindow) return false;
     const display = screen.getDisplayMatching(mainWindow.getBounds());
     mainWindow.hide();
-    if (mode === 'dashboard') {
+    if (mode === 'dialog') {
+      if (windowMode === 'widget') saveWidgetBounds();
+      windowMode = 'dialog';
+      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
+      mainWindow.setSkipTaskbar(true);
+      const width = Math.min(640, display.workArea.width);
+      const height = Math.min(800, display.workArea.height);
+      const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
+      const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
+      await setWindowBoundsAndWait({ x, y, width, height });
+    } else if (mode === 'dashboard') {
       saveWidgetBounds();
       windowMode = 'dashboard';
       if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
@@ -426,7 +446,7 @@ function registerIpc() {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
-  store = new DataStore(app.getPath('userData'));
+  store = new DataStore(applicationDataDirectory(), app.getPath('userData'));
   store.load();
   ensureAutomaticMisses(store.state, new Date());
   store.save();

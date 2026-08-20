@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const STATUS = Object.freeze({
   SUBMITTED: 'submitted',
@@ -116,6 +116,7 @@ function defaultState(now = new Date()) {
     duties: {
       initialized: false,
       participantIds: [],
+      baselineYear: String(now.getFullYear()),
       baselines: {},
       assignments: {},
       aDays: {},
@@ -169,6 +170,9 @@ function normalizeState(input, now = new Date()) {
     participantIds: Array.isArray(input.duties?.participantIds)
       ? input.duties.participantIds
       : state.employees.map((employee) => employee.id),
+    baselineYear: /^\d{4}$/.test(input.duties?.baselineYear || '')
+      ? input.duties.baselineYear
+      : String(now.getFullYear()),
   };
   state.audit = Array.isArray(input.audit) ? input.audit.slice(-5000) : [];
   state.settings = {
@@ -628,7 +632,11 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
       assignment.updatedAt = now.toISOString();
     }
   }
-  state.duties.baselines = { ...state.duties.baselines, ...baselines };
+  const baselineYear = dateKeyFromDate(now).slice(0, 4);
+  state.duties.baselines = state.duties.baselineYear === baselineYear
+    ? { ...state.duties.baselines, ...baselines }
+    : baselines;
+  state.duties.baselineYear = baselineYear;
   state.duties.participantIds = selectedIds;
   state.duties.initialized = true;
   appendAudit(state, 'duty_history_initialized', { employees: entries.length, participantIds: selectedIds }, now);
@@ -761,17 +769,23 @@ function setDutyRealized(state, date, employeeId, realized, now = new Date()) {
   return assignment;
 }
 
-function dutyTotals(state, beforeDate = null) {
+function dutyTotals(state, year = dateKeyFromDate().slice(0, 4), beforeDate = null) {
+  if (!/^\d{4}$/.test(year || '')) throw new Error('Некоректний рік чергувань.');
   const totals = {};
   for (const employee of state.employees) {
-    const baseline = state.duties.baselines[employee.id] || {};
+    const baseline = state.duties.baselineYear === year
+      ? state.duties.baselines[employee.id] || {}
+      : {};
     totals[employee.id] = {
       total: Number(baseline.total || 0),
       realized: Number(baseline.realized || 0),
     };
   }
   const assignments = Object.values(state.duties.assignments)
-    .filter((assignment) => !beforeDate || assignment.date < beforeDate);
+    .filter((assignment) => (
+      assignment.date.startsWith(`${year}-`)
+      && (!beforeDate || assignment.date < beforeDate)
+    ));
   for (const assignment of assignments) {
     for (const employeeId of assignment.employeeIds || []) {
       if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
@@ -780,6 +794,46 @@ function dutyTotals(state, beforeDate = null) {
     }
   }
   return totals;
+}
+
+function dutyLastDates(state, beforeDate) {
+  const year = beforeDate.slice(0, 4);
+  const lastDates = {};
+  for (const assignment of Object.values(state.duties.assignments)) {
+    if (!assignment.date.startsWith(`${year}-`) || assignment.date >= beforeDate) continue;
+    for (const employeeId of assignment.employeeIds || []) {
+      if (!lastDates[employeeId] || assignment.date > lastDates[employeeId]) {
+        lastDates[employeeId] = assignment.date;
+      }
+    }
+  }
+  return lastDates;
+}
+
+function buildDutyQueue(state, beforeDate) {
+  const lastDates = dutyLastDates(state, beforeDate);
+  const participantOrder = new Map(
+    state.duties.participantIds.map((employeeId, index) => [employeeId, index]),
+  );
+  return [...state.duties.participantIds].sort((leftId, rightId) => {
+    const leftLast = lastDates[leftId] || '';
+    const rightLast = lastDates[rightId] || '';
+    if (leftLast !== rightLast) {
+      if (!leftLast) return -1;
+      if (!rightLast) return 1;
+      return leftLast.localeCompare(rightLast);
+    }
+    return (participantOrder.get(leftId) || 0) - (participantOrder.get(rightId) || 0);
+  });
+}
+
+function moveDutyQueueToEnd(queue, employeeIds) {
+  for (const employeeId of employeeIds) {
+    const index = queue.indexOf(employeeId);
+    if (index < 0) continue;
+    queue.splice(index, 1);
+    queue.push(employeeId);
+  }
 }
 
 function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
@@ -794,56 +848,40 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
   }
   if (span > 366) throw new Error('За один раз можна сформувати графік не більше ніж на 366 днів.');
 
-  const totals = dutyTotals(state, startDate);
-  const employeeOrder = new Map(state.employees.map((employee, index) => [employee.id, index]));
+  let cycleYear = startDate.slice(0, 4);
+  let dutyQueue = buildDutyQueue(state, startDate);
+  const employeesById = new Map(state.employees.map((employee) => [employee.id, employee]));
   const shortages = [];
   let generated = 0;
   let cursor = startDate;
 
   while (cursor <= endDate) {
+    if (cursor.slice(0, 4) !== cycleYear) {
+      cycleYear = cursor.slice(0, 4);
+      dutyQueue = buildDutyQueue(state, cursor);
+    }
     const existing = state.duties.assignments[cursor];
     const existingIds = [...(existing?.employeeIds || [])];
     const existingComplete = existingIds.length >= 2
       || (existingIds.length === 1 && existing.singleApproved);
     if (existingComplete) {
-      for (const employeeId of existing.employeeIds) {
-        if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
-        totals[employeeId].total += 1;
-        if (existing.realizedEmployeeIds?.includes(employeeId)) totals[employeeId].realized += 1;
-      }
+      moveDutyQueueToEnd(dutyQueue, existing.employeeIds);
       cursor = addDays(cursor, 1);
       continue;
     }
 
-    for (const employeeId of existingIds) {
-      if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
-      totals[employeeId].total += 1;
-      if (existing?.realizedEmployeeIds?.includes(employeeId)) totals[employeeId].realized += 1;
-    }
+    moveDutyQueueToEnd(dutyQueue, existingIds);
 
     const recentIds = new Set([
       ...(state.duties.assignments[addDays(cursor, -1)]?.employeeIds || []),
       ...(state.duties.assignments[addDays(cursor, -2)]?.employeeIds || []),
     ]);
-    const candidates = state.employees
-      .filter((employee) => (
-        employee.active
-        && !existingIds.includes(employee.id)
-        && !dutyRestriction(state, employee.id, cursor)
-      ))
-      .sort((left, right) => {
-        const leftTotals = totals[left.id] || { total: 0, realized: 0 };
-        const rightTotals = totals[right.id] || { total: 0, realized: 0 };
-        const leftScore = leftTotals.total * 1000
-          + leftTotals.realized * 10
-          + (recentIds.has(left.id) ? 1_000_000 : 0)
-          + (employeeOrder.get(left.id) || 0) / 100;
-        const rightScore = rightTotals.total * 1000
-          + rightTotals.realized * 10
-          + (recentIds.has(right.id) ? 1_000_000 : 0)
-          + (employeeOrder.get(right.id) || 0) / 100;
-        return leftScore - rightScore;
-      });
+    const candidates = dutyQueue.filter((employeeId) => {
+      const employee = employeesById.get(employeeId);
+      return employee?.active
+        && !existingIds.includes(employeeId)
+        && !dutyRestriction(state, employeeId, cursor);
+    });
 
     const needed = 2 - existingIds.length;
     if (candidates.length < needed) {
@@ -852,7 +890,11 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
       continue;
     }
 
-    const addedIds = candidates.slice(0, needed).map((employee) => employee.id);
+    const preferred = candidates.filter((employeeId) => !recentIds.has(employeeId));
+    const addedIds = (preferred.length >= needed
+      ? preferred
+      : [...preferred, ...candidates.filter((employeeId) => recentIds.has(employeeId))]
+    ).slice(0, needed);
     const selected = [...existingIds, ...addedIds];
     state.duties.assignments[cursor] = {
       date: cursor,
@@ -862,10 +904,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
       source: existingIds.length ? 'generated_completion' : 'generated',
       updatedAt: now.toISOString(),
     };
-    for (const employeeId of addedIds) {
-      if (!totals[employeeId]) totals[employeeId] = { total: 0, realized: 0 };
-      totals[employeeId].total += 1;
-    }
+    moveDutyQueueToEnd(dutyQueue, addedIds);
     generated += 1;
     cursor = addDays(cursor, 1);
   }
@@ -874,8 +913,8 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
   return { startDate, endDate, generated, shortages };
 }
 
-function calculateDutyStatistics(state) {
-  const totals = dutyTotals(state);
+function calculateDutyStatistics(state, year = dateKeyFromDate().slice(0, 4)) {
+  const totals = dutyTotals(state, year);
   return state.employees.map((employee) => ({
     employeeId: employee.id,
     name: employee.name,

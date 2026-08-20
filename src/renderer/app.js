@@ -71,6 +71,8 @@ const toastRoot = document.querySelector('#toast-root');
 
 let snapshot = null;
 let resizeGesture = null;
+let widgetDialogExpanded = false;
+let widgetWindowTransition = Promise.resolve();
 let ui = {
   mode: 'widget',
   tab: 'today',
@@ -81,6 +83,7 @@ let ui = {
   analytics: null,
   dutyMonth: localDateKey().slice(0, 7),
   dutyStats: null,
+  scrollPositions: {},
 };
 
 function h(value) {
@@ -181,7 +184,26 @@ function statusBadge(status) {
   return `<span class="status-badge" data-status="${status}">${h(STATUS_LABELS[status] || status)}</span>`;
 }
 
+function rememberScrollPositions() {
+  appRoot.querySelectorAll('[data-scroll-key]').forEach((element) => {
+    ui.scrollPositions[element.dataset.scrollKey] = {
+      left: element.scrollLeft,
+      top: element.scrollTop,
+    };
+  });
+}
+
+function restoreScrollPositions() {
+  appRoot.querySelectorAll('[data-scroll-key]').forEach((element) => {
+    const saved = ui.scrollPositions[element.dataset.scrollKey];
+    if (!saved) return;
+    element.scrollLeft = saved.left;
+    element.scrollTop = saved.top;
+  });
+}
+
 function renderShell() {
+  rememberScrollPositions();
   document.body.className = `mode-${ui.mode}`;
   appRoot.innerHTML = `
     <section class="window-shell ${ui.mode}">
@@ -203,6 +225,7 @@ function renderShell() {
       </main>
     </section>
   `;
+  restoreScrollPositions();
 }
 
 function polar(cx, cy, radius, angleDegrees) {
@@ -462,10 +485,10 @@ function renderDutyPage() {
   if (!snapshot.duties.initialized) {
     return `
       <div class="page-header">
-        <div><h1>Початкові дані чергувань</h1><p>Введіть накопичені підсумки, щоб перший графік одразу був справедливим.</p></div>
+        <div><h1>Початкові дані чергувань</h1><p>Введіть річні підсумки для статистики, а потім вручну позначте останні чергування.</p></div>
       </div>
       <form id="duty-history-form" class="panel duty-history-form">
-        <div class="confirm-box">Позначте, хто бере участь у графіку. Загальна кількість — усі попередні чергування. Реалізовані — ті, під час яких фактично були завдання.</div>
+        <div class="confirm-box">Позначте учасників графіка. Кількість потрібна лише для річної статистики: порядок продовжиться за фактичними позначками у календарі.</div>
         <div class="table-scroll">
           <table class="data-table">
             <thead><tr><th>У графіку</th><th>Працівник</th><th>Усього чергувань</th><th>Реалізованих</th></tr></thead>
@@ -490,6 +513,7 @@ function renderDutyPage() {
   }
 
   const count = daysInMonth(ui.dutyMonth);
+  const dutyYear = ui.dutyMonth.slice(0, 4);
   const dates = Array.from({ length: count }, (_, index) => `${ui.dutyMonth}-${String(index + 1).padStart(2, '0')}`);
   const stats = new Map((ui.dutyStats || []).map((row) => [row.employeeId, row]));
   const totals = participants.map((employee) => stats.get(employee.id)?.total || 0);
@@ -504,9 +528,9 @@ function renderDutyPage() {
       <button class="button" data-duty-history>Учасники й підсумки</button>
     </div>
     <div class="metrics-grid duty-metrics">
-      <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон чергувань</span></div>
-      <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>усього з історією</span></div>
-      <div class="metric-card"><strong>${participants.reduce((sum, employee) => sum + (stats.get(employee.id)?.realized || 0), 0)}</strong><span>реалізованих</span></div>
+      <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон за ${dutyYear} рік</span></div>
+      <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>чергувань за ${dutyYear} рік</span></div>
+      <div class="metric-card"><strong>${participants.reduce((sum, employee) => sum + (stats.get(employee.id)?.realized || 0), 0)}</strong><span>реалізованих за рік</span></div>
     </div>
     <div class="table-toolbar">
       <button class="button small" data-duty-month-shift="-1">← Попередній</button>
@@ -518,7 +542,7 @@ function renderDutyPage() {
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
-    <div class="table-scroll">
+    <div class="table-scroll" data-scroll-key="duty-matrix">
       <table class="matrix duty-matrix">
         <thead><tr>
           <th class="sticky-name">Працівник</th><th>Σ</th><th>Р</th>
@@ -684,12 +708,27 @@ function renderDataPage() {
   `;
 }
 
+function queueWidgetWindowMode(mode) {
+  widgetWindowTransition = widgetWindowTransition
+    .catch(() => null)
+    .then(() => window.counter.setWindowMode(mode))
+    .catch((error) => showToast(error.message || String(error), { error: true }));
+}
+
 function openModal(content, wide = false) {
   modalRoot.innerHTML = `<div class="modal-backdrop" data-modal-close><section class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${content}</section></div>`;
+  if (ui.mode === 'widget' && !widgetDialogExpanded) {
+    widgetDialogExpanded = true;
+    queueWidgetWindowMode('dialog');
+  }
 }
 
 function closeModal() {
   modalRoot.innerHTML = '';
+  if (widgetDialogExpanded) {
+    widgetDialogExpanded = false;
+    queueWidgetWindowMode('widget');
+  }
 }
 
 function openDutyHistoryModal() {
@@ -697,9 +736,9 @@ function openDutyHistoryModal() {
   const selectedIds = new Set(snapshot.duties.participantIds || []);
   openModal(`
     <form id="duty-history-form">
-      <header class="modal-head"><div><h2>Початкові підсумки</h2><p>Накопичені дані до початку роботи в програмі</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <header class="modal-head"><div><h2>Учасники й підсумки</h2><p>Річні дані для статистики та склад циклічної черги</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
-        <div class="confirm-box">Зніміть прапорець із тих, кого не потрібно включати до графіка. Зміна підсумків вплине на наступні розподіли, але не видалить уже внесену історію.</div>
+        <div class="confirm-box">Зніміть прапорець із тих, кого не потрібно включати. Старі підсумки відображаються у статистиці, але не можуть викинути людину з черги.</div>
         <div class="table-scroll"><table class="data-table">
           <thead><tr><th>У графіку</th><th>Працівник</th><th>Усього</th><th>Реалізованих</th></tr></thead>
           <tbody>${employees.map((employee) => {
@@ -883,7 +922,7 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
     });
   }
   if (duties && snapshot.duties?.initialized) {
-    ui.dutyStats = await window.counter.getDutyStats();
+    ui.dutyStats = await window.counter.getDutyStats(ui.dutyMonth.slice(0, 4));
   }
   renderShell();
 }
@@ -1000,7 +1039,7 @@ appRoot.addEventListener('click', async (event) => {
   const dutyMonthButton = event.target.closest('[data-duty-month-shift]');
   if (dutyMonthButton) {
     ui.dutyMonth = monthShift(ui.dutyMonth, Number(dutyMonthButton.dataset.dutyMonthShift));
-    renderShell();
+    await refresh({ analytics: false, duties: true });
     return;
   }
 
@@ -1366,7 +1405,7 @@ window.counter.onChanged(async (nextSnapshot) => {
   }
   if (ui.tab === 'duties' && snapshot.duties?.initialized) {
     try {
-      ui.dutyStats = await window.counter.getDutyStats();
+      ui.dutyStats = await window.counter.getDutyStats(ui.dutyMonth.slice(0, 4));
     } catch (error) {
       showToast(error.message || String(error), { error: true });
     }

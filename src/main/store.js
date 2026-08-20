@@ -3,14 +3,32 @@ const path = require('node:path');
 const { defaultState, normalizeState, clone } = require('../shared/domain');
 
 class DataStore {
-  constructor(directory) {
+  constructor(directory, legacyDirectory = null) {
     this.directory = directory;
+    this.legacyDirectory = legacyDirectory;
     this.filePath = path.join(directory, 'counter-data.json');
     this.backupPath = path.join(directory, 'counter-data.backup.json');
     this.state = null;
   }
 
+  migrateLegacyData() {
+    if (!this.legacyDirectory) return false;
+    if (path.resolve(this.legacyDirectory) === path.resolve(this.directory)) return false;
+    if (fs.existsSync(this.filePath)) return false;
+    const legacyFilePath = path.join(this.legacyDirectory, 'counter-data.json');
+    if (!fs.existsSync(legacyFilePath)) return false;
+
+    fs.mkdirSync(this.directory, { recursive: true });
+    fs.copyFileSync(legacyFilePath, this.filePath);
+    const legacyBackupPath = path.join(this.legacyDirectory, 'counter-data.backup.json');
+    if (fs.existsSync(legacyBackupPath)) {
+      fs.copyFileSync(legacyBackupPath, this.backupPath);
+    }
+    return true;
+  }
+
   load() {
+    this.migrateLegacyData();
     fs.mkdirSync(this.directory, { recursive: true });
     if (!fs.existsSync(this.filePath)) {
       this.state = defaultState();

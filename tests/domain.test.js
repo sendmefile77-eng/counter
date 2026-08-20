@@ -232,7 +232,7 @@ test('«А» блокує чергування в цей і наступний �
   assert.equal(state.duties.assignments['2026-08-26'].singleApproved, true);
 
   setDutyRealized(state, '2026-08-26', second.id, true);
-  const stats = calculateDutyStatistics(state);
+  const stats = calculateDutyStatistics(state, '2026');
   assert.equal(stats.find((row) => row.employeeId === second.id).realized, 1);
   assert.ok(third.id);
 });
@@ -244,13 +244,14 @@ test('база попередньої версії автоматично отр
   delete oldState.workdayOverrides;
   oldState.schemaVersion = 1;
 
-  const normalized = normalizeState(oldState);
-  assert.equal(normalized.schemaVersion, 2);
+  const normalized = normalizeState(oldState, localDate(2026, 7, 20, 9, 0));
+  assert.equal(normalized.schemaVersion, 3);
   assert.equal(normalized.employees[0].id, employee.id);
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);
   assert.deepEqual(normalized.duties.assignments, {});
   assert.deepEqual(normalized.duties.participantIds, [employee.id]);
+  assert.equal(normalized.duties.baselineYear, '2026');
 });
 
 test('учасників чергувань можна обрати окремо від загального списку працівників', () => {
@@ -308,6 +309,76 @@ test('за достатнього складу генератор залишає
   const counts = [...dutyDates.values()].map((dates) => dates.length);
   assert.ok(Math.max(...counts) - Math.min(...counts) <= 1);
   assert.equal(counts.every((count) => count > 0), true);
+});
+
+test('стара різниця у кількості не виключає працівника з нового кола чергувань', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 7 }, (_, index) => (
+    createEmployee(state, `Черговий ${index + 1}`, now)
+  ));
+  initializeDutyHistory(state, employees.map((employee, index) => ({
+    employeeId: employee.id,
+    total: index === 0 ? 47 : 3,
+    realized: 0,
+  })), null, now);
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' }, now);
+  const generatedCounts = employees.map((employee) => (
+    Object.values(state.duties.assignments)
+      .filter((assignment) => assignment.employeeIds.includes(employee.id)).length
+  ));
+  assert.equal(generatedCounts.every((count) => count === 2), true);
+});
+
+test('генератор продовжує чергу після вручну заповненого графіка', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 6 }, (_, index) => (
+    createEmployee(state, `Працівник ${index + 1}`, now)
+  ));
+  initializeDutyHistory(state, employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  setDutyAssignment(state, { date: '2026-08-21', employeeIds: [employees[0].id, employees[1].id] }, now);
+  setDutyAssignment(state, { date: '2026-08-22', employeeIds: [employees[2].id, employees[3].id] }, now);
+  setDutyAssignment(state, { date: '2026-08-23', employeeIds: [employees[4].id, employees[5].id] }, now);
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' }, now);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [
+    employees[0].id,
+    employees[1].id,
+  ]);
+});
+
+test('тимчасова відсутність пропускає день, але не викидає працівника з черги', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 6 }, (_, index) => (
+    createEmployee(state, `Учасник ${index + 1}`, now)
+  ));
+  initializeDutyHistory(state, employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  setDutyRestriction(state, { employeeId: employees[0].id, date: '2026-08-24', type: 'off' }, now);
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-25' }, now);
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(employees[0].id), false);
+  assert.equal(state.duties.assignments['2026-08-25'].employeeIds.includes(employees[0].id), true);
+});
+
+test('підсумки чергувань рахуються окремо для кожного року', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Ігор', now);
+  const second = createEmployee(state, 'Лариса', now);
+  initializeDutyHistory(state, [
+    { employeeId: first.id, total: 5, realized: 2 },
+    { employeeId: second.id, total: 0, realized: 0 },
+  ], null, now);
+  setDutyAssignment(state, { date: '2026-12-20', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2027-01-03', employeeIds: [first.id, second.id] }, now);
+
+  const stats2026 = calculateDutyStatistics(state, '2026');
+  const stats2027 = calculateDutyStatistics(state, '2027');
+  assert.equal(stats2026.find((row) => row.employeeId === first.id).total, 6);
+  assert.equal(stats2027.find((row) => row.employeeId === first.id).total, 1);
 });
 
 test('генератор доповнює вручну розпочату пару другим доступним черговим', () => {

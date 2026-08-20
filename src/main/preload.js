@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld('counter', {
   clearDutyRestriction: (employeeId, date) => (
     ipcRenderer.invoke('duties:clear-restriction', { employeeId, date })
   ),
-  getDutyStats: () => ipcRenderer.invoke('duties:stats'),
+  getDutyStats: (year) => ipcRenderer.invoke('duties:stats', { year }),
   undo: () => ipcRenderer.invoke('history:undo'),
   exportData: (format) => ipcRenderer.invoke('data:export', { format }),
   importData: () => ipcRenderer.invoke('data:import'),
