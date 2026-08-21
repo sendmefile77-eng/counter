@@ -9,8 +9,12 @@ const {
   calculateStatistics,
   clearDutyRestriction,
   clone,
+  createDutySchedule,
   createEmployee,
+  createTimeOffEntry,
   defaultState,
+  deleteDutySchedule,
+  deleteTimeOffEntry,
   ensureAutomaticMisses,
   generateDutySchedule,
   initializeDutyHistory,
@@ -19,12 +23,14 @@ const {
   recordKey,
   recordSubmission,
   removeDutyAssignment,
+  renameDutySchedule,
   restoreEmployee,
   setDutyAssignment,
   setDutyRealized,
   setDutyRestriction,
   setManualStatus,
   setWorkdayOverride,
+  switchDutySchedule,
   toggleDutyAssignment,
 } = require('../src/shared/domain');
 
@@ -347,11 +353,14 @@ test('база попередньої версії автоматично отр
   const oldState = defaultState(localDate(2026, 7, 20, 9, 0));
   const employee = createEmployee(oldState, 'Зоряна', localDate(2026, 7, 20, 9, 0));
   delete oldState.duties;
+  delete oldState.dutySchedules;
+  delete oldState.activeDutyScheduleId;
+  delete oldState.timeOffEntries;
   delete oldState.workdayOverrides;
   oldState.schemaVersion = 1;
 
   const normalized = normalizeState(oldState, localDate(2026, 7, 20, 9, 0));
-  assert.equal(normalized.schemaVersion, 5);
+  assert.equal(normalized.schemaVersion, 6);
   assert.equal(normalized.employees[0].id, employee.id);
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);
@@ -360,6 +369,10 @@ test('база попередньої версії автоматично отр
   assert.deepEqual(normalized.duties.participantIds, [employee.id]);
   assert.equal(normalized.duties.baselineYear, '2026');
   assert.equal(normalized.duties.baselineThroughDate, '2026-08-23');
+  assert.equal(normalized.dutySchedules.length, 1);
+  assert.equal(normalized.dutySchedules[0].name, 'Основний');
+  assert.equal(normalized.activeDutyScheduleId, normalized.dutySchedules[0].id);
+  assert.equal(normalized.duties, normalized.dutySchedules[0].data);
 });
 
 test('початкові Σ і Р не дублюють ручну історію та зростають лише після контрольної дати', () => {
@@ -936,4 +949,113 @@ test('архівований працівник не залишається не
   assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [second.id]);
   assert.equal(state.duties.assignments['2026-08-24'].singleApproved, false);
   assert.equal(state.duties.assignments['2026-08-24'].source, 'participant_archived');
+});
+
+test('окремі графіки зберігають власних учасників, історію та підсумки', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Андрій', now);
+  const second = createEmployee(state, 'Богдан', now);
+  const third = createEmployee(state, 'Віра', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 4,
+    realized: 1,
+  })), [first.id, second.id], now);
+  setDutyAssignment(state, {
+    date: '2026-08-24',
+    employeeIds: [first.id, second.id],
+  }, now);
+  const primaryId = state.activeDutyScheduleId;
+
+  const secondSchedule = createDutySchedule(state, 'Резервна група', now);
+  initializeDutyHistory(state, [second, third].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), [second.id, third.id], now);
+  setDutyAssignment(state, {
+    date: '2026-08-25',
+    employeeIds: [second.id, third.id],
+  }, now);
+
+  switchDutySchedule(state, primaryId, now);
+  assert.deepEqual(state.duties.participantIds, [first.id, second.id]);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [first.id, second.id]);
+  assert.equal(state.duties.assignments['2026-08-25'], undefined);
+
+  renameDutySchedule(state, secondSchedule.id, 'Друга зміна', now);
+  switchDutySchedule(state, secondSchedule.id, now);
+  assert.deepEqual(state.duties.participantIds, [second.id, third.id]);
+  assert.deepEqual(state.duties.assignments['2026-08-25'].employeeIds, [second.id, third.id]);
+  assert.equal(state.dutySchedules.find((item) => item.id === secondSchedule.id).name, 'Друга зміна');
+
+  deleteDutySchedule(state, secondSchedule.id, now);
+  assert.equal(state.dutySchedules.length, 1);
+  assert.equal(state.activeDutyScheduleId, primaryId);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [first.id, second.id]);
+});
+
+test('архівація прибирає майбутні призначення з усіх окремих графіків', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Ірина', now);
+  const second = createEmployee(state, 'Марко', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, now);
+  setDutyAssignment(state, { date: '2026-08-19', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: [first.id, second.id] }, now);
+  const primaryId = state.activeDutyScheduleId;
+
+  const extra = createDutySchedule(state, 'Пост 2', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, now);
+  setDutyAssignment(state, { date: '2026-08-19', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2026-08-25', employeeIds: [first.id, second.id] }, now);
+
+  archiveEmployee(state, first.id, now);
+  for (const scheduleId of [primaryId, extra.id]) {
+    switchDutySchedule(state, scheduleId, now);
+    assert.equal(state.duties.participantIds.includes(first.id), false);
+    assert.equal(state.duties.assignments['2026-08-19'].employeeIds.includes(first.id), true);
+  }
+  switchDutySchedule(state, primaryId, now);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [second.id]);
+  switchDutySchedule(state, extra.id, now);
+  assert.deepEqual(state.duties.assignments['2026-08-25'].employeeIds, [second.id]);
+});
+
+test('журнал «Відпросився» рахує час окремо й не змінює табель', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employee = createEmployee(state, 'Оксана', now);
+  const entry = createTimeOffEntry(state, {
+    employeeId: employee.id,
+    date: '2026-08-20',
+    startTime: '10:15',
+    endTime: '12:45',
+    destination: 'До лікаря',
+    note: 'Повернулася вчасно',
+  }, now);
+
+  assert.equal(entry.durationMinutes, 150);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-20')], undefined);
+  const stats = calculateStatistics(state, {
+    employeeId: employee.id,
+    startDate: '2026-08-20',
+    endDate: '2026-08-20',
+  });
+  assert.equal(stats.rows[0].pending, 1);
+  assert.equal(stats.rows[0].personalPermission, 0);
+
+  const normalized = normalizeState(clone(state), now);
+  assert.equal(normalized.timeOffEntries[0].durationMinutes, 150);
+  deleteTimeOffEntry(normalized, entry.id, now);
+  assert.deepEqual(normalized.timeOffEntries, []);
 });

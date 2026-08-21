@@ -34,6 +34,18 @@ contextBridge.exposeInMainWorld('counter', {
     ipcRenderer.invoke('duties:clear-restriction', { employeeId, date })
   ),
   getDutyStats: (year) => ipcRenderer.invoke('duties:stats', { year }),
+  createDutySchedule: (name) => ipcRenderer.invoke('duties:schedule-create', { name }),
+  renameDutySchedule: (scheduleId, name) => (
+    ipcRenderer.invoke('duties:schedule-rename', { scheduleId, name })
+  ),
+  switchDutySchedule: (scheduleId) => (
+    ipcRenderer.invoke('duties:schedule-switch', { scheduleId })
+  ),
+  deleteDutySchedule: (scheduleId) => (
+    ipcRenderer.invoke('duties:schedule-delete', { scheduleId })
+  ),
+  createTimeOffEntry: (payload) => ipcRenderer.invoke('time-off:create', payload),
+  deleteTimeOffEntry: (entryId) => ipcRenderer.invoke('time-off:delete', { entryId }),
   undo: () => ipcRenderer.invoke('history:undo'),
   exportData: (format) => ipcRenderer.invoke('data:export', { format }),
   importData: () => ipcRenderer.invoke('data:import'),
