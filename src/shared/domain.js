@@ -1059,6 +1059,45 @@ function dutyBalanceMetrics(counts, employeeIds) {
   };
 }
 
+function dutyWeekStart(date) {
+  const weekday = dayOfWeek(date);
+  return addDays(date, weekday === 0 ? -6 : 1 - weekday);
+}
+
+function dutyCountsBetween(state, startDate, endDate) {
+  const counts = Object.fromEntries(
+    state.duties.participantIds.map((employeeId) => [employeeId, 0]),
+  );
+  for (const assignment of Object.values(state.duties.assignments)) {
+    if (assignment.date < startDate || assignment.date > endDate) continue;
+    for (const employeeId of assignment.employeeIds || []) {
+      counts[employeeId] = (counts[employeeId] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function dutyCompensationTargets(state, startDate, eligibleEmployeeIds) {
+  const currentWeekStart = dutyWeekStart(startDate);
+  const previousWeekStart = addDays(currentWeekStart, -7);
+  const previousWeekEnd = addDays(currentWeekStart, -1);
+  const previousWeekCounts = dutyCountsBetween(state, previousWeekStart, previousWeekEnd);
+  const eligible = new Set(eligibleEmployeeIds);
+  return new Map(
+    state.duties.participantIds
+      .filter((employeeId) => eligible.has(employeeId) && previousWeekCounts[employeeId] === 1)
+      .map((employeeId) => [employeeId, 2]),
+  );
+}
+
+function dutyCompensationDeficit(counts, compensationTargets) {
+  let deficit = 0;
+  for (const [employeeId, target] of compensationTargets) {
+    deficit += Math.max(0, target - (counts[employeeId] || 0));
+  }
+  return deficit;
+}
+
 function exactDutyBlockPlan(
   state,
   dates,
@@ -1067,6 +1106,7 @@ function exactDutyBlockPlan(
   rangeCounts,
   balanceEmployeeIds,
   pairCounts,
+  compensationTargets,
 ) {
   const optionsByDate = dates.map((date) => dutyAssignmentOptions(
     state,
@@ -1099,7 +1139,7 @@ function exactDutyBlockPlan(
     weekendReservePenalty: 0,
     repeatedPairPenalty: 0,
     queueCost: 0,
-    score: [0, 0, 0, 0, 0, 0, 0],
+    score: [0, 0, dutyCompensationDeficit(rangeCounts, compensationTargets), 0, 0, 0, 0, 0],
     signature: '',
   }];
 
@@ -1153,13 +1193,15 @@ function exactDutyBlockPlan(
         const repeatedPairPenalty = partial.repeatedPairPenalty + addedPairPenalty;
         const queueCost = partial.queueCost + addedQueueCost;
         const balance = dutyBalanceMetrics(nextCounts, balanceEmployeeIds);
+        const compensationDeficit = dutyCompensationDeficit(nextCounts, compensationTargets);
         const score = [
           missingSlots,
           balance.spread,
-          balance.squares,
+          compensationDeficit,
           cooldownViolations,
           weekendReservePenalty,
           repeatedPairPenalty,
+          balance.squares,
           queueCost,
         ];
         expanded.push({
@@ -1241,12 +1283,15 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
   );
   const pairCounts = new Map();
   for (const assignment of Object.values(state.duties.assignments)) {
-    if (assignment.date < startDate || assignment.date > endDate) continue;
-    for (const employeeId of assignment.employeeIds || []) {
-      rangeCounts[employeeId] = (rangeCounts[employeeId] || 0) + 1;
+    if (assignment.date >= startDate && assignment.date <= endDate) {
+      for (const employeeId of assignment.employeeIds || []) {
+        rangeCounts[employeeId] = (rangeCounts[employeeId] || 0) + 1;
+      }
     }
-    const pairKey = dutyPairKey(assignment.employeeIds || []);
-    if (pairKey) pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+    if (assignment.date.startsWith(`${cycleYear}-`) && assignment.date <= endDate) {
+      const pairKey = dutyPairKey(assignment.employeeIds || []);
+      if (pairKey) pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+    }
   }
   const balanceEmployeeIds = state.duties.participantIds.filter((employeeId) => {
     const employee = employeesById.get(employeeId);
@@ -1258,6 +1303,11 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
     }
     return false;
   });
+  const compensationTargets = dutyCompensationTargets(
+    state,
+    startDate,
+    balanceEmployeeIds,
+  );
   const shortages = [];
   const weekendConflicts = [];
   let generated = 0;
@@ -1276,6 +1326,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
       rangeCounts,
       balanceEmployeeIds,
       pairCounts,
+      compensationTargets,
     );
     shortages.push(...plan.shortages);
     for (const date of planningDates) {
@@ -1331,6 +1382,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         rangeCounts,
         balanceEmployeeIds,
         pairCounts,
+        compensationTargets,
       );
       shortages.push(...plan.shortages);
       for (const date of blockDates) {
@@ -1405,6 +1457,10 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         queueCost += queueIndex < 0 ? dutyQueue.length : queueIndex;
       }
       const balance = dutyBalanceMetrics(simulatedCounts, balanceEmployeeIds);
+      const compensationDeficit = dutyCompensationDeficit(
+        simulatedCounts,
+        compensationTargets,
+      );
       const pairKey = dutyPairKey(option.employeeIds);
       const repeatedPairPenalty = pairKey ? pairCounts.get(pairKey) || 0 : 0;
       const score = [
@@ -1412,8 +1468,9 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         nextDayMissing,
         cooldownViolations,
         balance.spread,
-        balance.squares,
+        compensationDeficit,
         repeatedPairPenalty,
+        balance.squares,
         queueCost,
       ];
       const signature = option.employeeIds.join(',');
