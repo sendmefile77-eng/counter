@@ -13,6 +13,7 @@ const {
   clearManualRecord,
   clone,
   createEmployee,
+  dateKeyFromDate,
   ensureAutomaticMisses,
   generateDutySchedule,
   initializeDutyHistory,
@@ -34,6 +35,7 @@ let store = null;
 let closeTimer = null;
 let positionSaveTimer = null;
 let windowMode = 'widget';
+let lastBroadcastDate = null;
 const undoStack = [];
 
 function clampWidgetSize(value) {
@@ -160,11 +162,13 @@ function createMainWindow() {
 }
 
 function currentSnapshot() {
-  const changed = ensureAutomaticMisses(store.state, new Date());
+  const now = new Date();
+  const changed = ensureAutomaticMisses(store.state, now);
   if (changed) store.save();
+  lastBroadcastDate = dateKeyFromDate(now);
   return {
     ...store.snapshot(),
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
     dataFilePath: store.filePath,
   };
 }
@@ -467,11 +471,11 @@ app.whenReady().then(() => {
   createMainWindow();
 
   closeTimer = setInterval(() => {
-    const changed = ensureAutomaticMisses(store.state, new Date());
-    if (changed) {
-      store.save();
-      broadcast();
-    }
+    const now = new Date();
+    const changed = ensureAutomaticMisses(store.state, now);
+    const currentDate = dateKeyFromDate(now);
+    if (changed) store.save();
+    if (changed || currentDate !== lastBroadcastDate) broadcast();
   }, 30_000);
 
   app.on('activate', () => {

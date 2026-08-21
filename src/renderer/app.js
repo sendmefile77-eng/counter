@@ -351,7 +351,7 @@ function renderDashboard() {
     ['duties', '◫', 'Чергування'],
     ['analytics', '⌁', 'Аналітика'],
     ['employees', '♙', 'Працівники'],
-    ['data', '⇅', 'Дані'],
+    ['data', '⚙', 'Налаштування'],
   ];
   return `
     <div class="dashboard-layout">
@@ -734,23 +734,73 @@ function renderEmployeesPage() {
 function renderDataPage() {
   return `
     <div class="page-header">
-      <div><h1>Дані та резервні копії</h1><p>Програма не передає дані в інтернет.</p></div>
+      <div><h1>Налаштування та дані</h1><p>Поведінка програми, умовні позначення й резервні копії.</p></div>
     </div>
-    <section class="panel">
-      <div class="data-actions">
-        <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, розподіли та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
-        <div class="data-action"><h3>Таблиця CSV</h3><p>Плоска таблиця для відкриття в Excel або іншій програмі.</p><button class="button" data-export="csv">Експортувати таблицю</button></div>
-        <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
-      </div>
-    </section>
     <section class="panel">
       <h2>Поведінка віджета</h2>
       <label class="check-row">
         <input id="always-on-top" type="checkbox" ${snapshot.settings.alwaysOnTop ? 'checked' : ''}>
         <span><strong>Завжди поверх інших вікон</strong><span>Віджет залишатиметься видимим під час роботи в інших програмах.</span></span>
       </label>
-      <p class="panel-copy">Автоматичне закриття дня зафіксовано на 18:00. Якщо програма не працювала, пропущені дні будуть оброблені під час наступного запуску.</p>
-      <p class="panel-copy">Локальний файл: ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
+    </section>
+    <section class="panel rules-panel">
+      <div class="rules-heading">
+        <div><h2>Як працює облік</h2><p>Часові правила та умови, за якими змінюється колір віджета.</p></div>
+        <span class="rules-local-badge">Місцевий час комп’ютера</span>
+      </div>
+      <div class="rules-grid">
+        <article class="rule-card">
+          <div class="rule-time">00:00</div>
+          <div><strong>Початок нового дня</strong><p>Не пізніше ніж за 30 секунд віджет переходить до поточного дня. Новий незаповнений робочий день сірий; учорашній червоний пропуск залишається в табелі.</p></div>
+        </article>
+        <article class="rule-card">
+          <div class="rule-time danger">18:00</div>
+          <div><strong>Автоматичне закриття</strong><p>Упродовж 30 секунд незаповнений робочий день стає червоним — «Не подав». Якщо програма була закрита, пропущені дні обробляються під час наступного запуску.</p></div>
+        </article>
+        <article class="rule-card">
+          <div class="rule-icon">↶</div>
+          <div><strong>Додаткові одиниці</strong><p>Після поточного дня вони закривають найближчі попередні пропуски. Зарахування наперед виконується лише після окремого підтвердження.</p></div>
+        </article>
+        <article class="rule-card">
+          <div class="rule-icon">ВХ</div>
+          <div><strong>Субота й неділя</strong><p>Автоматично позначаються вихідними й не вимагають запиту. Конкретний вихідний можна вручну зробити робочим днем.</p></div>
+        </article>
+      </div>
+
+      <h3 class="rules-subtitle">Кольори щоденного обліку</h3>
+      <div class="legend-grid">
+        <div class="legend-item"><span class="legend-swatch pending"></span><span><strong>Сірий · Очікується</strong><small>Робочий день ще не закрито</small></span></div>
+        <div class="legend-item"><span class="legend-swatch submitted"></span><span><strong>Зелений · Подав</strong><small>Запит зараховано вчасно</small></span></div>
+        <div class="legend-item"><span class="legend-swatch late"></span><span><strong>Світло-зелений · Із запізненням</strong><small>Подано після 18:00</small></span></div>
+        <div class="legend-item"><span class="legend-swatch advance"></span><span><strong>М’ятний · Наперед</strong><small>Майбутній день закрито з дозволу</small></span></div>
+        <div class="legend-item"><span class="legend-swatch missed"></span><span><strong>Червоний · Не подав</strong><small>Незаповнений день після 18:00</small></span></div>
+        <div class="legend-item"><span class="legend-swatch other-tasks"></span><span><strong>Бірюзовий · Інші завдання</strong><small>Зараховується як відпрацьований день</small></span></div>
+        <div class="legend-item"><span class="legend-swatch personal"></span><span><strong>Рожевий · Особисті справи</strong><small>Окремо, не є відпрацьованим днем</small></span></div>
+        <div class="legend-item"><span class="legend-swatch sick"></span><span><strong>Помаранчевий · Лікарняний</strong><small>Не є відпрацьованим днем</small></span></div>
+        <div class="legend-item"><span class="legend-swatch vacation"></span><span><strong>Фіолетовий · Відпустка</strong><small>Не є відпрацьованим днем</small></span></div>
+        <div class="legend-item"><span class="legend-swatch day-off"></span><span><strong>Синій · Відгул</strong><small>Не є відпрацьованим днем</small></span></div>
+        <div class="legend-item"><span class="legend-swatch holiday"></span><span><strong>Сіро-синій · Свято / вихідний</strong><small>Не є відпрацьованим днем</small></span></div>
+      </div>
+
+      <h3 class="rules-subtitle">Позначення чергувань</h3>
+      <div class="legend-grid duty-legend-grid">
+        <div class="legend-item"><span class="legend-duty duty"></span><span><strong>Синя «1»</strong><small>Призначене чергування</small></span></div>
+        <div class="legend-item"><span class="legend-duty realized"></span><span><strong>Зелена «1»</strong><small>Під час чергування були завдання</small></span></div>
+        <div class="legend-item"><span class="legend-duty a-mark"></span><span><strong>Коричнева «А»</strong><small>Залучення; після чергування наступного дня не ставиться</small></span></div>
+        <div class="legend-item"><span class="legend-duty planning">—</span><span><strong>Жовтий · Не планувати</strong><small>Не входить до статистики</small></span></div>
+        <div class="legend-item"><span class="legend-duty unavailable">ВП</span><span><strong>Сіро-синій · Відсутність</strong><small>Не бере участі в розподілі чергувань</small></span></div>
+      </div>
+      <div class="workday-note"><strong>До відпрацьованих днів входять:</strong> дні, закриті запитами, та «Інші завдання». Особисті справи, лікарняний, відпустка, відгул, свято, вихідний і пропуск не зараховуються.</div>
+    </section>
+    <section class="panel">
+      <h2>Резервні копії</h2>
+      <p class="panel-copy settings-privacy">Програма не передає дані в інтернет. Усі записи зберігаються поруч із застосунком.</p>
+      <div class="data-actions">
+        <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, розподіли та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
+        <div class="data-action"><h3>Таблиця CSV</h3><p>Плоска таблиця для відкриття в Excel або іншій програмі.</p><button class="button" data-export="csv">Експортувати таблицю</button></div>
+        <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
+      </div>
+      <p class="panel-copy data-file-path"><strong>Локальний файл:</strong> ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
     <section class="panel danger-zone">
       <div>
