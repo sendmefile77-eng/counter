@@ -944,8 +944,20 @@ body.mode-widget #app {
   border-bottom-color: rgba(148, 174, 211, 0.38);
 }
 
+.duty-matrix tbody tr td {
+  border-bottom-color: hsla(var(--employee-row-hue), 42%, 67%, 0.42);
+  background-image: linear-gradient(
+    hsla(var(--employee-row-hue), 38%, 60%, 0.045),
+    hsla(var(--employee-row-hue), 38%, 60%, 0.045)
+  );
+}
+
 .duty-matrix .sticky-name {
   border-right-color: rgba(148, 174, 211, 0.58);
+}
+
+.duty-matrix tbody tr .sticky-name {
+  box-shadow: inset 3px 0 0 hsla(var(--employee-row-hue), 48%, 66%, 0.58);
 }
 
 .weekend {

@@ -574,9 +574,10 @@ function renderDutyPage() {
             return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[day]}</small></button></th>`;
           }).join('')}
         </tr></thead>
-        <tbody>${participants.map((employee) => {
+        <tbody>${participants.map((employee, employeeIndex) => {
           const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
-          return `<tr>
+          const rowHue = (208 + employeeIndex * 43) % 360;
+          return `<tr style="--employee-row-hue:${rowHue}">
             <td class="sticky-name" title="${h(employee.name)}">${h(shortName(employee.name))}</td>
             <td class="duty-total">${rowStats.total}</td><td class="duty-total duty-realized-total">${rowStats.realized}</td>
             ${dates.map((date) => {

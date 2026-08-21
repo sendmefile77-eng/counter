@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   STATUS,
+  addDays,
   allocateReceiptBackward,
   allocateReceiptForward,
   calculateDutyStatistics,
@@ -480,7 +481,7 @@ test('за достатнього складу генератор залишає
   assert.equal(counts.every((count) => count > 0), true);
 });
 
-test('точна модель не ставить працівника у два сусідні календарні вікенди', () => {
+test('тижнева модель не дає трьох чергувань одним, поки інші мають лише одне', () => {
   const now = localDate(2026, 7, 20, 9, 0);
   const state = defaultState(now);
   const employees = Array.from({ length: 9 }, (_, index) => (
@@ -500,33 +501,43 @@ test('точна модель не ставить працівника у два
     date: '2026-08-23',
     employeeIds: [employees[2].id, employees[3].id],
   }, now);
+  for (let date = '2026-08-24'; date <= '2026-08-30'; date = addDays(date, 1)) {
+    setDutyRestriction(state, {
+      employeeId: employees[8].id,
+      date,
+      type: 'vacation',
+    }, now);
+  }
 
   const result = generateDutySchedule(state, {
     startDate: '2026-08-24',
     endDate: '2026-08-30',
   }, now);
-  const previousWeekend = new Set(employees.slice(0, 4).map((employee) => employee.id));
-  const saturday = new Set(state.duties.assignments['2026-08-29'].employeeIds);
-  const sunday = new Set(state.duties.assignments['2026-08-30'].employeeIds);
-
-  assert.equal([...saturday, ...sunday].some((employeeId) => previousWeekend.has(employeeId)), false);
-  assert.equal([...saturday].some((employeeId) => sunday.has(employeeId)), false);
+  const datesByEmployee = new Map(employees.slice(0, 8).map((employee) => [employee.id, []]));
+  const pairKeys = new Set();
+  for (let date = '2026-08-24'; date <= '2026-08-30'; date = addDays(date, 1)) {
+    const ids = state.duties.assignments[date].employeeIds;
+    assert.equal(ids.length, 2);
+    const previousIds = new Set(state.duties.assignments[addDays(date, -1)]?.employeeIds || []);
+    assert.equal(ids.some((employeeId) => previousIds.has(employeeId)), false);
+    for (const employeeId of ids) datesByEmployee.get(employeeId).push(date);
+    pairKeys.add([...ids].sort().join('|'));
+  }
+  const counts = [...datesByEmployee.values()].map((dates) => dates.length);
+  assert.equal(Math.max(...counts), 2);
+  assert.equal(Math.min(...counts), 1);
+  assert.equal(pairKeys.size, 7);
+  for (const dates of datesByEmployee.values()) {
+    for (let index = 1; index < dates.length; index += 1) {
+      const gap = (new Date(`${dates[index]}T12:00:00Z`) - new Date(`${dates[index - 1]}T12:00:00Z`)) / 86_400_000;
+      assert.ok(gap >= 3);
+    }
+  }
+  assert.deepEqual(result.shortages, []);
   assert.deepEqual(result.weekendConflicts, []);
-
-  const followingResult = generateDutySchedule(state, {
-    startDate: '2026-08-31',
-    endDate: '2026-09-06',
-  }, now);
-  const currentWeekend = new Set([...saturday, ...sunday]);
-  const followingWeekend = [
-    ...state.duties.assignments['2026-09-05'].employeeIds,
-    ...state.duties.assignments['2026-09-06'].employeeIds,
-  ];
-  assert.equal(followingWeekend.some((employeeId) => currentWeekend.has(employeeId)), false);
-  assert.deepEqual(followingResult.weekendConflicts, []);
 });
 
-test('якщо правила вихідних математично несумісні, генератор зберігає добову ротацію і повідомляє конфлікт', () => {
+test('сусідній календарний вікенд не переважає добовий відпочинок і рівність тижня', () => {
   const now = localDate(2026, 7, 20, 9, 0);
   const state = defaultState(now);
   const employees = Array.from({ length: 4 }, (_, index) => (
@@ -554,7 +565,9 @@ test('якщо правила вихідних математично несум
   const saturday = new Set(state.duties.assignments['2026-08-29'].employeeIds);
   const sunday = new Set(state.duties.assignments['2026-08-30'].employeeIds);
   assert.equal([...saturday].some((employeeId) => sunday.has(employeeId)), false);
-  assert.equal(result.weekendConflicts.filter((item) => item.type === 'consecutive_weekends').length, 4);
+  assert.deepEqual(new Set([...saturday, ...sunday]), new Set(employees.map((employee) => employee.id)));
+  assert.deepEqual(result.shortages, []);
+  assert.deepEqual(result.weekendConflicts, []);
 });
 
 test('повторне формування не змінює вже готовий автоматичний або ручний графік', () => {
