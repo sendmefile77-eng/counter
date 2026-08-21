@@ -66,6 +66,24 @@ const DUTY_MARK_LABELS = {
 
 const WEEKDAY_SHORT = ['нд', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
+const DUTY_ROW_COLORS = [
+  '104, 152, 214',
+  '83, 166, 156',
+  '145, 119, 190',
+  '184, 143, 83',
+  '73, 151, 176',
+  '181, 105, 126',
+  '103, 159, 109',
+  '102, 126, 184',
+  '171, 119, 87',
+  '88, 155, 136',
+  '158, 111, 156',
+  '112, 145, 169',
+  '145, 155, 94',
+  '132, 108, 157',
+  '164, 145, 105',
+];
+
 const appRoot = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
 const toastRoot = document.querySelector('#toast-root');
@@ -576,9 +594,9 @@ function renderDutyPage() {
         </tr></thead>
         <tbody>${participants.map((employee, employeeIndex) => {
           const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
-          const rowHue = (208 + employeeIndex * 43) % 360;
-          return `<tr style="--employee-row-hue:${rowHue}">
-            <td class="sticky-name" title="${h(employee.name)}">${h(shortName(employee.name))}</td>
+          const rowColor = DUTY_ROW_COLORS[employeeIndex % DUTY_ROW_COLORS.length];
+          return `<tr style="--employee-row-rgb:${rowColor}">
+            <td class="sticky-name" title="${h(employee.name)}"><span class="employee-name-content"><i class="employee-row-marker" aria-hidden="true"></i>${h(shortName(employee.name))}</span></td>
             <td class="duty-total">${rowStats.total}</td><td class="duty-total duty-realized-total">${rowStats.realized}</td>
             ${dates.map((date) => {
               const cell = dutyCell(employee, date);

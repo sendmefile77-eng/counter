@@ -945,10 +945,10 @@ body.mode-widget #app {
 }
 
 .duty-matrix tbody tr td {
-  border-bottom-color: hsla(var(--employee-row-hue), 42%, 67%, 0.42);
+  border-bottom-color: rgba(var(--employee-row-rgb), 0.68);
   background-image: linear-gradient(
-    hsla(var(--employee-row-hue), 38%, 60%, 0.045),
-    hsla(var(--employee-row-hue), 38%, 60%, 0.045)
+    rgba(var(--employee-row-rgb), 0.09),
+    rgba(var(--employee-row-rgb), 0.09)
   );
 }
 
@@ -957,7 +957,22 @@ body.mode-widget #app {
 }
 
 .duty-matrix tbody tr .sticky-name {
-  box-shadow: inset 3px 0 0 hsla(var(--employee-row-hue), 48%, 66%, 0.58);
+  box-shadow: inset 5px 0 0 rgba(var(--employee-row-rgb), 0.92);
+}
+
+.employee-name-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.employee-row-marker {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: rgb(var(--employee-row-rgb));
+  box-shadow: 0 0 0 2px rgba(var(--employee-row-rgb), 0.18);
 }
 
 .weekend {
