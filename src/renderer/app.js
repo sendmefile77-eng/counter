@@ -386,7 +386,10 @@ function renderTodayPage() {
 function renderJournalPage() {
   const count = daysInMonth(ui.month);
   const dates = Array.from({ length: count }, (_, index) => `${ui.month}-${String(index + 1).padStart(2, '0')}`);
-  const employees = snapshot.employees.filter((employee) => dates.some((date) => employeeActiveOnDate(employee, date)));
+  const employees = snapshot.employees.filter((employee) => (
+    employee.active
+    || dates.some((date) => employeeActiveOnDate(employee, date) || recordFor(employee.id, date))
+  ));
   return `
     <div class="page-header">
       <div>
@@ -419,17 +422,14 @@ function renderJournalPage() {
                 const outsideEmployment = !employeeActiveOnDate(employee, date);
                 const weekend = day === 0 || day === 6;
                 const workdayOverride = hasWorkdayOverride(employee.id, date);
-                if (outsideEmployment) {
-                  return `<td class="matrix-cell weekend" title="Поза періодом обліку">·</td>`;
-                }
                 if (weekend && !workdayOverride) {
-                  return `<td class="matrix-cell cell-weekend" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
+                  return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
                 }
                 const status = statusFor(employee.id, date);
                 const record = recordFor(employee.id, date);
-                const tooltip = `${employee.name}\n${formatDate(date)}${workdayOverride ? '\nРобочий день замість вихідного' : ''}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
+                const tooltip = `${employee.name}\n${formatDate(date)}${outsideEmployment ? '\nІсторична дата — можна заповнити вручну' : ''}${workdayOverride ? '\nРобочий день замість вихідного' : ''}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
                 const symbol = workdayOverride && status === 'pending' ? 'РД' : STATUS_SYMBOLS[status];
-                const overrideClass = workdayOverride && status === 'pending' ? ' cell-workday-override' : '';
+                const overrideClass = `${workdayOverride && status === 'pending' ? ' cell-workday-override' : ''}${outsideEmployment ? ' cell-history' : ''}`;
                 return `<td class="matrix-cell cell-${status}${overrideClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(tooltip)}">${symbol}</td>`;
               }).join('')}
             </tr>
@@ -460,8 +460,8 @@ function dutyCell(employee, date) {
       title: `Не бере участі: ${unavailable.type}`,
     };
   }
-  if (snapshot.duties.aDays[`${employee.id}|${shiftDate(date, -1)}`]) {
-    return { symbol: 'п/А', className: 'duty-after-a', title: 'Не можна чергувати наступного дня після «А»' };
+  if (snapshot.duties.aDays[`${employee.id}|${shiftDate(date, 1)}`]) {
+    return { symbol: 'до/А', className: 'duty-after-a', title: 'Не можна чергувати напередодні «А»' };
   }
   const record = recordFor(employee.id, date);
   const linkedMarks = {
@@ -755,7 +755,7 @@ function openDutyHistoryModal() {
 function dutyRestrictionText(employeeId, date) {
   const key = `${employeeId}|${date}`;
   if (snapshot.duties.aDays[key]) return '«А» цього дня';
-  if (snapshot.duties.aDays[`${employeeId}|${shiftDate(date, -1)}`]) return 'наступний день після «А»';
+  if (snapshot.duties.aDays[`${employeeId}|${shiftDate(date, 1)}`]) return 'наступного дня позначено «А»';
   const unavailable = snapshot.duties.unavailable[key];
   if (unavailable) return `позначка ${DUTY_MARK_LABELS[unavailable.type] || 'недоступний'}`;
   const record = recordFor(employeeId, date);
@@ -792,6 +792,7 @@ function openDutyEmployeeModal(employeeId, date) {
   const realized = assignment?.realizedEmployeeIds?.includes(employeeId);
   const aDay = snapshot.duties.aDays[key];
   const unavailable = snapshot.duties.unavailable[key];
+  const previousDuty = snapshot.duties.assignments[shiftDate(date, -1)]?.employeeIds?.includes(employeeId);
   const linkedRestriction = dutyRestrictionText(employeeId, date);
   openModal(`
     <header class="modal-head"><div><h2>Чергування працівника</h2><p>${h(employee?.name || '')} · ${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
@@ -804,7 +805,7 @@ function openDutyEmployeeModal(employeeId, date) {
       ` : `
         <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || '')}</textarea></label>
         <div class="status-grid duty-status-grid">
-          <button class="status-choice" data-set-duty-restriction="a" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>А</strong><span>Не чергує цього й наступного дня</span></button>
+          <button class="status-choice" data-set-duty-restriction="a" data-employee-id="${h(employeeId)}" data-date="${date}" ${previousDuty ? 'disabled' : ''}><strong>А</strong><span>${previousDuty ? 'Заборонено після чергування попереднього дня' : 'Не чергує лише цього дня'}</span></button>
           <button class="status-choice" data-set-duty-restriction="off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Вихідний</strong><span>Не бере участі в чергуванні</span></button>
           <button class="status-choice" data-set-duty-restriction="vacation" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпустка</strong><span>Недоступний</span></button>
           <button class="status-choice" data-set-duty-restriction="sick" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Лікарняний</strong><span>Недоступний</span></button>

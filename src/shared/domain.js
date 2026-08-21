@@ -298,7 +298,7 @@ function setWorkdayOverride(state, employeeId, date, note = '', now = new Date()
   if (isWorkday(state, date)) {
     throw new Error('Ця дата вже є звичайним робочим днем.');
   }
-  if (!employeeExistsOnDate(employee, date)) {
+  if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) {
     throw new Error('Дата не входить до періоду обліку цього працівника.');
   }
   const key = recordKey(employeeId, date);
@@ -588,7 +588,7 @@ function dutyRestriction(state, employeeId, date) {
   if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) return 'outside_period';
   const key = recordKey(employeeId, date);
   if (state.duties.aDays[key]) return 'a_day';
-  if (state.duties.aDays[recordKey(employeeId, addDays(date, -1))]) return 'after_a';
+  if (state.duties.aDays[recordKey(employeeId, addDays(date, 1))]) return 'before_a';
   if (state.duties.unavailable[key]) return state.duties.unavailable[key].type;
   const record = state.records[key];
   if (record && DUTY_BLOCKING_RECORD_STATUSES.has(record.status)) return record.status;
@@ -655,6 +655,10 @@ function setDutyRestriction(state, { employeeId, date, type, note = '' }, now = 
   }
   const key = recordKey(employeeId, date);
   if (type === 'a') {
+    const previousAssignment = state.duties.assignments[addDays(date, -1)];
+    if (previousAssignment?.employeeIds?.includes(employeeId)) {
+      throw new Error('Після чергування не можна встановлювати «А» на наступний день.');
+    }
     state.duties.aDays[key] = {
       employeeId,
       date,
@@ -957,9 +961,11 @@ function calculateStatistics(state, { employeeId = null, startDate, endDate }) {
 
     let cursor = startDate;
     while (cursor <= endDate) {
-      if (employeeExistsOnDate(employee, cursor) && isEmployeeWorkday(state, employee.id, cursor)) {
+      const record = state.records[recordKey(employee.id, cursor)];
+      const hasHistoricalEntry = Boolean(record || state.workdayOverrides[recordKey(employee.id, cursor)]);
+      if ((employeeExistsOnDate(employee, cursor) || hasHistoricalEntry)
+        && isEmployeeWorkday(state, employee.id, cursor)) {
         metrics.calendarWorkdays += 1;
-        const record = state.records[recordKey(employee.id, cursor)];
         if (!record) {
           metrics.pending += 1;
         } else {

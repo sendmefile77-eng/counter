@@ -170,6 +170,34 @@ test('субота й неділя автоматично не створюют�
   assert.equal(state.records[recordKey(employee.id, '2026-08-23')], undefined);
 });
 
+test('історичні дні до додавання працівника можна заповнювати вручну', () => {
+  const createdAt = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(createdAt);
+  const employee = createEmployee(state, 'Архівний працівник', createdAt);
+  setManualStatus(state, {
+    employeeId: employee.id,
+    date: '2026-08-03',
+    status: STATUS.OTHER_TASKS,
+  }, createdAt);
+  setWorkdayOverride(state, employee.id, '2026-08-01', '', createdAt);
+  setManualStatus(state, {
+    employeeId: employee.id,
+    date: '2026-08-01',
+    status: STATUS.SICK,
+  }, createdAt);
+
+  ensureAutomaticMisses(state, localDate(2026, 7, 21, 9, 0));
+  assert.equal(state.records[recordKey(employee.id, '2026-08-04')], undefined);
+  const stats = calculateStatistics(state, {
+    employeeId: employee.id,
+    startDate: '2026-08-01',
+    endDate: '2026-08-19',
+  });
+  assert.equal(stats.rows[0].otherTasks, 1);
+  assert.equal(stats.rows[0].sick, 1);
+  assert.equal(stats.rows[0].workedDays, 1);
+});
+
 test('нерозподілений залишок можна вручну зарахувати назад до початку обліку працівника', () => {
   const now = localDate(2026, 7, 20, 10, 0);
   const state = defaultState(now);
@@ -205,7 +233,7 @@ test('генератор чергувань розподіляє по двоє �
   assert.equal(state.duties.assignments['2026-08-26'].employeeIds.length, 2);
 });
 
-test('«А» блокує чергування в цей і наступний день, а один черговий потребує дозволу', () => {
+test('після «А» чергування дозволене, але «А» після чергування заборонена', () => {
   const state = defaultState(localDate(2026, 7, 20, 9, 0));
   const first = createEmployee(state, 'Данило', localDate(2026, 7, 20, 9, 0));
   const second = createEmployee(state, 'Євген', localDate(2026, 7, 20, 9, 0));
@@ -217,9 +245,12 @@ test('«А» блокує чергування в цей і наступний �
   })));
   setDutyRestriction(state, { employeeId: first.id, date: '2026-08-24', type: 'a' });
 
-  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-25' });
-  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(first.id), false);
-  assert.equal(state.duties.assignments['2026-08-25'].employeeIds.includes(first.id), false);
+  assert.throws(() => setDutyAssignment(state, {
+    date: '2026-08-23',
+    employeeIds: [first.id, third.id],
+  }), /недоступний/);
+  generateDutySchedule(state, { startDate: '2026-08-25', endDate: '2026-08-25' });
+  assert.equal(state.duties.assignments['2026-08-25'].employeeIds.includes(first.id), true);
   assert.throws(() => setDutyAssignment(state, {
     date: '2026-08-26',
     employeeIds: [second.id],
@@ -230,6 +261,11 @@ test('«А» блокує чергування в цей і наступний �
     singleApproved: true,
   });
   assert.equal(state.duties.assignments['2026-08-26'].singleApproved, true);
+  assert.throws(() => setDutyRestriction(state, {
+    employeeId: second.id,
+    date: '2026-08-27',
+    type: 'a',
+  }), /Після чергування/);
 
   setDutyRealized(state, '2026-08-26', second.id, true);
   const stats = calculateDutyStatistics(state, '2026');
