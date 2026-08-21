@@ -34,3 +34,26 @@ test('портативна база автоматично копіюється 
   assert.equal(fs.existsSync(path.join(portableDirectory, 'counter-data.backup.json')), true);
   assert.equal(fs.existsSync(path.join(legacyDirectory, 'counter-data.json')), true);
 });
+
+test('повне обнулення видаляє дані та внутрішню резервну копію', (t) => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'counter-reset-'));
+  t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+  const store = new DataStore(temporaryRoot);
+  store.load();
+  createEmployee(store.state, 'Працівник для видалення', new Date(2026, 7, 20, 9, 0));
+  store.save();
+  assert.equal(fs.existsSync(store.backupPath), true);
+  const corruptCopyPath = path.join(temporaryRoot, 'counter-data.corrupt-123.json');
+  fs.writeFileSync(corruptCopyPath, '{}', 'utf8');
+
+  store.reset(new Date(2026, 7, 21, 9, 0));
+
+  assert.deepEqual(store.state.employees, []);
+  assert.deepEqual(store.state.records, {});
+  assert.deepEqual(store.state.duties.assignments, {});
+  assert.equal(store.state.duties.initialized, false);
+  assert.equal(fs.existsSync(store.backupPath), false);
+  assert.equal(fs.existsSync(corruptCopyPath), false);
+  const persisted = JSON.parse(fs.readFileSync(store.filePath, 'utf8'));
+  assert.deepEqual(persisted.employees, []);
+});

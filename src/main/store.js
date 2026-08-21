@@ -71,6 +71,21 @@ class DataStore {
     return this.state;
   }
 
+  reset(now = new Date()) {
+    fs.mkdirSync(this.directory, { recursive: true });
+    this.state = defaultState(now);
+    const temporaryPath = `${this.filePath}.tmp`;
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8');
+    fs.renameSync(temporaryPath, this.filePath);
+    if (fs.existsSync(this.backupPath)) fs.unlinkSync(this.backupPath);
+    for (const fileName of fs.readdirSync(this.directory)) {
+      if (fileName.startsWith('counter-data.corrupt-') && fileName.endsWith('.json')) {
+        fs.unlinkSync(path.join(this.directory, fileName));
+      }
+    }
+    return this.state;
+  }
+
   snapshot() {
     return clone(this.state);
   }

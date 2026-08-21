@@ -17,6 +17,7 @@ const {
   generateDutySchedule,
   initializeDutyHistory,
   normalizeState,
+  removeDutyAssignment,
   recordSubmission,
   restoreEmployee,
   setManualStatus,
@@ -316,6 +317,9 @@ function registerIpc() {
   ipcMain.handle('duties:toggle-assignment', (_event, { employeeId, date }) => (
     mutate('duties:toggle-assignment', (state) => toggleDutyAssignment(state, employeeId, date))
   ));
+  ipcMain.handle('duties:remove-assignment', (_event, { employeeId, date }) => (
+    mutate('duties:remove-assignment', (state) => removeDutyAssignment(state, employeeId, date))
+  ));
   ipcMain.handle('duties:set-realized', (_event, payload) => (
     mutate('duties:set-realized', (state) => setDutyRealized(state, payload.date, payload.employeeId, payload.realized))
   ));
@@ -366,6 +370,13 @@ function registerIpc() {
     undoStack.push({ action: 'data:import', before });
     broadcast();
     return { canceled: false, filePath: result.filePaths[0] };
+  });
+
+  ipcMain.handle('data:reset-all', () => {
+    store.reset();
+    undoStack.length = 0;
+    broadcast();
+    return { reset: true };
   });
 
   ipcMain.handle('window:set-mode', async (_event, { mode }) => {

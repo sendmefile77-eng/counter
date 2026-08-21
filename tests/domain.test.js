@@ -7,6 +7,7 @@ const {
   calculateDutyStatistics,
   calculateStatistics,
   clearDutyRestriction,
+  clone,
   createEmployee,
   defaultState,
   ensureAutomaticMisses,
@@ -16,6 +17,7 @@ const {
   archiveEmployee,
   recordKey,
   recordSubmission,
+  removeDutyAssignment,
   restoreEmployee,
   setDutyAssignment,
   setDutyRealized,
@@ -316,7 +318,7 @@ test('база попередньої версії автоматично отр
   oldState.schemaVersion = 1;
 
   const normalized = normalizeState(oldState, localDate(2026, 7, 20, 9, 0));
-  assert.equal(normalized.schemaVersion, 4);
+  assert.equal(normalized.schemaVersion, 5);
   assert.equal(normalized.employees[0].id, employee.id);
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);
@@ -324,6 +326,37 @@ test('база попередньої версії автоматично отр
   assert.deepEqual(normalized.duties.planningBlocks, {});
   assert.deepEqual(normalized.duties.participantIds, [employee.id]);
   assert.equal(normalized.duties.baselineYear, '2026');
+  assert.equal(normalized.duties.baselineThroughDate, '2026-08-23');
+});
+
+test('початкові Σ і Р не дублюють ручну історію та зростають лише після контрольної дати', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Перший', now);
+  const second = createEmployee(state, 'Другий', now);
+  initializeDutyHistory(state, [
+    { employeeId: first.id, total: 5, realized: 2 },
+    { employeeId: second.id, total: 4, realized: 1 },
+  ], null, now);
+  assert.equal(state.duties.baselineThroughDate, '2026-08-23');
+
+  setDutyAssignment(state, {
+    date: '2026-08-22',
+    employeeIds: [first.id, second.id],
+  }, now);
+  setDutyRealized(state, '2026-08-22', first.id, true, now);
+  let stats = calculateDutyStatistics(state, '2026');
+  assert.deepEqual(stats.map((row) => [row.total, row.realized]), [[5, 2], [4, 1]]);
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' }, now);
+  stats = calculateDutyStatistics(state, '2026');
+  assert.deepEqual(stats.map((row) => [row.total, row.realized]), [[6, 2], [5, 1]]);
+  setDutyRealized(state, '2026-08-24', first.id, true, now);
+  stats = calculateDutyStatistics(state, '2026');
+  assert.deepEqual(stats.map((row) => [row.total, row.realized]), [[6, 3], [5, 1]]);
+
+  const nextYear = calculateDutyStatistics(state, '2027');
+  assert.deepEqual(nextYear.map((row) => [row.total, row.realized]), [[0, 0], [0, 0]]);
 });
 
 test('учасників чергувань можна обрати окремо від загального списку працівників', () => {
@@ -344,7 +377,7 @@ test('учасників чергувань можна обрати окремо
   assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(employees[1].id), false);
 });
 
-test('лівий клік може поетапно поставити двох чергових і повторним кліком зняти позначку', () => {
+test('лівий клік циклічно змінює порожню клітинку на 1, зелену 1 та знову порожню', () => {
   const state = defaultState(localDate(2026, 7, 20, 9, 0));
   const first = createEmployee(state, 'Марія', localDate(2026, 7, 20, 9, 0));
   const second = createEmployee(state, 'Назар', localDate(2026, 7, 20, 9, 0));
@@ -356,7 +389,39 @@ test('лівий клік може поетапно поставити двох 
   toggleDutyAssignment(state, second.id, '2026-08-24');
   assert.equal(state.duties.assignments['2026-08-24'].employeeIds.length, 2);
   toggleDutyAssignment(state, first.id, '2026-08-24');
+  assert.equal(state.duties.assignments['2026-08-24'].realizedEmployeeIds.includes(first.id), true);
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(first.id), true);
+  toggleDutyAssignment(state, first.id, '2026-08-24');
   assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [second.id]);
+});
+
+test('реалізоване чергування з’являється лише після ручного другого кліку', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Марко', now);
+  const second = createEmployee(state, 'Олена', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, now);
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' }, now);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].realizedEmployeeIds, []);
+
+  toggleDutyAssignment(state, first.id, '2026-08-24', now);
+  let firstStats = calculateDutyStatistics(state, '2026')
+    .find((row) => row.employeeId === first.id);
+  assert.equal(firstStats.total, 1);
+  assert.equal(firstStats.realized, 1);
+
+  toggleDutyAssignment(state, first.id, '2026-08-24', now);
+  firstStats = calculateDutyStatistics(state, '2026')
+    .find((row) => row.employeeId === first.id);
+  assert.equal(firstStats.total, 0);
+  assert.equal(firstStats.realized, 0);
+
+  removeDutyAssignment(state, second.id, '2026-08-24', now);
+  assert.equal(state.duties.assignments['2026-08-24'], undefined);
 });
 
 test('за достатнього складу генератор залишає щонайменше два повних дні між чергуваннями', () => {
@@ -460,7 +525,7 @@ test('якщо правила вихідних математично несум
   assert.equal(result.weekendConflicts.filter((item) => item.type === 'consecutive_weekends').length, 4);
 });
 
-test('повторне формування замінює старий автоматичний вікенд, але береже ручні позначки', () => {
+test('повторне формування не змінює вже готовий автоматичний або ручний графік', () => {
   const now = localDate(2026, 7, 20, 9, 0);
   const state = defaultState(now);
   const employees = Array.from({ length: 9 }, (_, index) => (
@@ -480,25 +545,79 @@ test('повторне формування замінює старий авто
     date: '2026-08-23',
     employeeIds: [employees[2].id, employees[3].id],
   }, now);
-  toggleDutyAssignment(state, employees[4].id, '2026-08-29', now);
-  state.duties.assignments['2026-08-29'].source = 'generated_completion';
-  state.duties.assignments['2026-08-29'].employeeIds.push(employees[0].id);
-  state.duties.assignments['2026-08-30'] = {
-    date: '2026-08-30',
-    employeeIds: [employees[1].id, employees[2].id],
-    realizedEmployeeIds: [],
-    singleApproved: false,
-    source: 'generated',
-    updatedAt: now.toISOString(),
+  setDutyAssignment(state, {
+    date: '2026-08-24',
+    employeeIds: [employees[4].id, employees[5].id],
+  }, now);
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' }, now);
+  const beforeAssignments = clone(state.duties.assignments);
+  const beforeAuditLength = state.audit.length;
+
+  const result = generateDutySchedule(state, {
+    startDate: '2026-08-24',
+    endDate: '2026-08-30',
+  }, localDate(2026, 7, 20, 10, 0));
+
+  assert.equal(result.generated, 0);
+  assert.deepEqual(state.duties.assignments, beforeAssignments);
+  assert.equal(state.audit.length, beforeAuditLength);
+  assert.equal(state.duties.assignments['2026-08-24'].source, 'manual');
+});
+
+test('формування нового тижня не змінює жодних даних за його межами', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 9 }, (_, index) => (
+    createEmployee(state, `Працівник ${index + 1}`, now)
+  ));
+  initializeDutyHistory(
+    state,
+    employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })),
+    null,
+    now,
+  );
+  setDutyAssignment(state, {
+    date: '2026-08-17',
+    employeeIds: [employees[0].id, employees[1].id],
+  }, now);
+  setDutyAssignment(state, {
+    date: '2026-08-18',
+    employeeIds: [employees[2].id, employees[3].id],
+  }, now);
+  setDutyRestriction(state, {
+    employeeId: employees[8].id,
+    date: '2026-08-19',
+    type: 'planning_block',
+    note: 'Ручне обмеження',
+  }, now);
+  setDutyAssignment(state, {
+    date: '2026-08-24',
+    employeeIds: [employees[4].id, employees[5].id],
+  }, now);
+  const beforeOutsideAssignments = Object.fromEntries(
+    Object.entries(state.duties.assignments)
+      .filter(([date]) => date < '2026-08-24' || date > '2026-08-30'),
+  );
+  const beforeRestrictions = {
+    aDays: clone(state.duties.aDays),
+    unavailable: clone(state.duties.unavailable),
+    planningBlocks: clone(state.duties.planningBlocks),
   };
+  const manualTargetDay = clone(state.duties.assignments['2026-08-24']);
 
   generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' }, now);
-  const weekendIds = [
-    ...state.duties.assignments['2026-08-29'].employeeIds,
-    ...state.duties.assignments['2026-08-30'].employeeIds,
-  ];
-  assert.equal(state.duties.assignments['2026-08-29'].employeeIds.includes(employees[4].id), true);
-  assert.equal(weekendIds.some((employeeId) => employees.slice(0, 4).some((item) => item.id === employeeId)), false);
+
+  const afterOutsideAssignments = Object.fromEntries(
+    Object.entries(state.duties.assignments)
+      .filter(([date]) => date < '2026-08-24' || date > '2026-08-30'),
+  );
+  assert.deepEqual(afterOutsideAssignments, beforeOutsideAssignments);
+  assert.deepEqual({
+    aDays: state.duties.aDays,
+    unavailable: state.duties.unavailable,
+    planningBlocks: state.duties.planningBlocks,
+  }, beforeRestrictions);
+  assert.deepEqual(state.duties.assignments['2026-08-24'], manualTargetDay);
 });
 
 test('жовта позначка блокує лише планування чергування і знімається окремо', () => {

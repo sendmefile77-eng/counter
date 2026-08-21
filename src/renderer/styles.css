@@ -1012,6 +1012,19 @@ body.mode-widget #app {
   line-height: 1.5;
 }
 
+.danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-color: rgba(223, 85, 93, 0.48);
+  background: rgba(223, 85, 93, 0.06);
+}
+
+.danger-zone h2 { color: #ff9ca3; }
+.danger-zone .panel-copy { margin-bottom: 0; }
+.danger-zone .button { flex: 0 0 auto; }
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

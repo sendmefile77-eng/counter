@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('counter', {
   toggleDutyAssignment: (employeeId, date) => (
     ipcRenderer.invoke('duties:toggle-assignment', { employeeId, date })
   ),
+  removeDutyAssignment: (employeeId, date) => (
+    ipcRenderer.invoke('duties:remove-assignment', { employeeId, date })
+  ),
   setDutyRealized: (date, employeeId, realized) => (
     ipcRenderer.invoke('duties:set-realized', { date, employeeId, realized })
   ),
@@ -34,6 +37,7 @@ contextBridge.exposeInMainWorld('counter', {
   undo: () => ipcRenderer.invoke('history:undo'),
   exportData: (format) => ipcRenderer.invoke('data:export', { format }),
   importData: () => ipcRenderer.invoke('data:import'),
+  resetAllData: () => ipcRenderer.invoke('data:reset-all'),
   setWindowMode: (mode) => ipcRenderer.invoke('window:set-mode', { mode }),
   resizeWidget: (size, persist = false) => ipcRenderer.invoke('window:resize-widget', { size, persist }),
   setAlwaysOnTop: (value) => ipcRenderer.invoke('window:set-always-on-top', { value }),

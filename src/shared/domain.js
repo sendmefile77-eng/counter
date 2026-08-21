@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const STATUS = Object.freeze({
   SUBMITTED: 'submitted',
@@ -99,6 +99,11 @@ function dayOfWeek(dateKey) {
   return dateKeyToUtc(dateKey).getUTCDay();
 }
 
+function endOfCalendarWeek(dateKey) {
+  const day = dayOfWeek(dateKey);
+  return addDays(dateKey, day === 0 ? 0 : 7 - day);
+}
+
 function recordKey(employeeId, dateKey) {
   return `${employeeId}|${dateKey}`;
 }
@@ -118,6 +123,7 @@ function defaultState(now = new Date()) {
       initialized: false,
       participantIds: [],
       baselineYear: String(now.getFullYear()),
+      baselineThroughDate: endOfCalendarWeek(dateKeyFromDate(now)),
       baselines: {},
       assignments: {},
       aDays: {},
@@ -154,6 +160,16 @@ function normalizeState(input, now = new Date()) {
   state.workdayOverrides = input.workdayOverrides && typeof input.workdayOverrides === 'object'
     ? input.workdayOverrides
     : {};
+  const currentYear = String(now.getFullYear());
+  const inputBaselineYear = /^\d{4}$/.test(input.duties?.baselineYear || '')
+    ? input.duties.baselineYear
+    : currentYear;
+  const inputBaselineThroughDate = /^\d{4}-\d{2}-\d{2}$/.test(input.duties?.baselineThroughDate || '')
+    && input.duties.baselineThroughDate.startsWith(`${inputBaselineYear}-`)
+    ? input.duties.baselineThroughDate
+    : (inputBaselineYear === currentYear
+      ? endOfCalendarWeek(dateKeyFromDate(now))
+      : `${inputBaselineYear}-12-31`);
   state.duties = {
     ...state.duties,
     ...(input.duties && typeof input.duties === 'object' ? input.duties : {}),
@@ -175,9 +191,8 @@ function normalizeState(input, now = new Date()) {
     participantIds: Array.isArray(input.duties?.participantIds)
       ? input.duties.participantIds
       : state.employees.map((employee) => employee.id),
-    baselineYear: /^\d{4}$/.test(input.duties?.baselineYear || '')
-      ? input.duties.baselineYear
-      : String(now.getFullYear()),
+    baselineYear: inputBaselineYear,
+    baselineThroughDate: inputBaselineThroughDate,
   };
   state.audit = Array.isArray(input.audit) ? input.audit.slice(-5000) : [];
   state.settings = {
@@ -642,10 +657,16 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
     }
   }
   const baselineYear = dateKeyFromDate(now).slice(0, 4);
+  const keepBaselineCutoff = state.duties.initialized
+    && state.duties.baselineYear === baselineYear
+    && /^\d{4}-\d{2}-\d{2}$/.test(state.duties.baselineThroughDate || '');
   state.duties.baselines = state.duties.baselineYear === baselineYear
     ? { ...state.duties.baselines, ...baselines }
     : baselines;
   state.duties.baselineYear = baselineYear;
+  if (!keepBaselineCutoff) {
+    state.duties.baselineThroughDate = endOfCalendarWeek(dateKeyFromDate(now));
+  }
   state.duties.participantIds = selectedIds;
   state.duties.initialized = true;
   appendAudit(state, 'duty_history_initialized', { employees: entries.length, participantIds: selectedIds }, now);
@@ -761,7 +782,19 @@ function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
   const ids = [...(previous?.employeeIds || [])];
   const existingIndex = ids.indexOf(employeeId);
   if (existingIndex >= 0) {
-    ids.splice(existingIndex, 1);
+    const realizedIds = new Set(previous?.realizedEmployeeIds || []);
+    if (!realizedIds.has(employeeId)) {
+      realizedIds.add(employeeId);
+      previous.realizedEmployeeIds = [...realizedIds];
+      previous.updatedAt = now.toISOString();
+      appendAudit(state, 'duty_assignment_cycled', {
+        employeeId,
+        date,
+        state: 'realized',
+      }, now);
+      return previous;
+    }
+    return removeDutyAssignment(state, employeeId, date, now, 'duty_assignment_cycled');
   } else {
     const restriction = dutyRestriction(state, employeeId, date);
     if (restriction) throw new Error(`«${employee.name}» недоступний для чергування на цю дату.`);
@@ -781,7 +814,43 @@ function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
       updatedAt: now.toISOString(),
     };
   }
-  appendAudit(state, 'duty_assignment_toggled', { employeeId, date, assigned: existingIndex < 0 }, now);
+  appendAudit(state, 'duty_assignment_cycled', {
+    employeeId,
+    date,
+    state: 'assigned',
+  }, now);
+  return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
+}
+
+function removeDutyAssignment(
+  state,
+  employeeId,
+  date,
+  now = new Date(),
+  auditAction = 'duty_assignment_removed',
+) {
+  getEmployee(state, employeeId);
+  assertDateKey(date);
+  const previous = state.duties.assignments[date];
+  if (!previous?.employeeIds?.includes(employeeId)) return false;
+  const ids = previous.employeeIds.filter((id) => id !== employeeId);
+  if (ids.length === 0) {
+    delete state.duties.assignments[date];
+  } else {
+    state.duties.assignments[date] = {
+      ...previous,
+      employeeIds: ids,
+      realizedEmployeeIds: (previous.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      singleApproved: false,
+      source: 'manual_quick',
+      updatedAt: now.toISOString(),
+    };
+  }
+  appendAudit(state, auditAction, {
+    employeeId,
+    date,
+    state: 'empty',
+  }, now);
   return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
 }
 
@@ -812,9 +881,13 @@ function dutyTotals(state, year = dateKeyFromDate().slice(0, 4), beforeDate = nu
       realized: Number(baseline.realized || 0),
     };
   }
+  const baselineThroughDate = state.duties.baselineYear === year
+    ? state.duties.baselineThroughDate || `${year}-01-01`
+    : null;
   const assignments = Object.values(state.duties.assignments)
     .filter((assignment) => (
       assignment.date.startsWith(`${year}-`)
+      && (!baselineThroughDate || assignment.date > baselineThroughDate)
       && (!beforeDate || assignment.date < beforeDate)
     ));
   for (const assignment of assignments) {
@@ -864,36 +937,6 @@ function moveDutyQueueToEnd(queue, employeeIds) {
     if (index < 0) continue;
     queue.splice(index, 1);
     queue.push(employeeId);
-  }
-}
-
-function resetGeneratedDutyRange(state, startDate, endDate, now) {
-  let cursor = startDate;
-  while (cursor <= endDate) {
-    const assignment = state.duties.assignments[cursor];
-    if (assignment && ['generated', 'generated_completion'].includes(assignment.source)
-      && !(assignment.realizedEmployeeIds || []).length) {
-      const inferredManualIds = assignment.source === 'generated_completion'
-        ? (assignment.manualEmployeeIds || assignment.employeeIds?.slice(0, 1) || [])
-        : [];
-      const manualIds = inferredManualIds.filter((employeeId) => (
-        assignment.employeeIds?.includes(employeeId)
-      ));
-      if (manualIds.length) {
-        state.duties.assignments[cursor] = {
-          date: cursor,
-          employeeIds: manualIds,
-          realizedEmployeeIds: (assignment.realizedEmployeeIds || [])
-            .filter((employeeId) => manualIds.includes(employeeId)),
-          singleApproved: false,
-          source: 'manual_quick',
-          updatedAt: now.toISOString(),
-        };
-      } else {
-        delete state.duties.assignments[cursor];
-      }
-    }
-    cursor = addDays(cursor, 1);
   }
 }
 
@@ -1054,8 +1097,6 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
   }
   if (span > 366) throw new Error('За один раз можна сформувати графік не більше ніж на 366 днів.');
 
-  resetGeneratedDutyRange(state, startDate, endDate, now);
-
   let cycleYear = startDate.slice(0, 4);
   let dutyQueue = buildDutyQueue(state, startDate);
   const employeesById = new Map(state.employees.map((employee) => [employee.id, employee]));
@@ -1147,13 +1188,15 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
     cursor = addDays(cursor, 1);
   }
 
-  appendAudit(state, 'duty_schedule_generated', {
-    startDate,
-    endDate,
-    generated,
-    shortages,
-    weekendConflicts,
-  }, now);
+  if (generated > 0) {
+    appendAudit(state, 'duty_schedule_generated', {
+      startDate,
+      endDate,
+      generated,
+      shortages,
+      weekendConflicts,
+    }, now);
+  }
   return {
     startDate,
     endDate,
@@ -1296,6 +1339,7 @@ module.exports = {
   isWorkday,
   initializeDutyHistory,
   normalizeState,
+  removeDutyAssignment,
   recordKey,
   recordSubmission,
   restoreEmployee,

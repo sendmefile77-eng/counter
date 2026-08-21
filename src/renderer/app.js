@@ -490,10 +490,10 @@ function renderDutyPage() {
   if (!snapshot.duties.initialized) {
     return `
       <div class="page-header">
-        <div><h1>Початкові дані чергувань</h1><p>Введіть річні підсумки для статистики, а потім вручну позначте останні чергування.</p></div>
+        <div><h1>Початкові дані чергувань</h1><p>Один раз введіть річні підсумки станом на кінець поточного тижня.</p></div>
       </div>
       <form id="duty-history-form" class="panel duty-history-form">
-        <div class="confirm-box">Позначте учасників графіка. Кількість потрібна лише для річної статистики: порядок продовжиться за фактичними позначками у календарі.</div>
+        <div class="confirm-box">Ці числа стануть початковими значеннями колонок Σ і Р. Ручне заповнення старого календаря не додасть їх повторно; нові дежурства з наступного тижня збільшуватимуть підсумки автоматично.</div>
         <div class="table-scroll">
           <table class="data-table">
             <thead><tr><th>У графіку</th><th>Працівник</th><th>Усього чергувань</th><th>Реалізованих</th></tr></thead>
@@ -543,7 +543,7 @@ function renderDutyPage() {
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
       <button class="button primary small" data-generate-duties>Сформувати наступний тиждень</button>
     </div>
-    <p class="duty-help">Лівий клік — поставити або зняти чергування. Правий клік — «А», відсутність, жовта заборона планування або реалізоване чергування.</p>
+    <p class="duty-help">Лівий клік по колу: порожньо → чергування → реалізоване чергування → порожньо. Правий клік — «А», відсутність або жовта заборона планування.</p>
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
@@ -710,6 +710,13 @@ function renderDataPage() {
       <p class="panel-copy">Автоматичне закриття дня зафіксовано на 18:00. Якщо програма не працювала, пропущені дні будуть оброблені під час наступного запуску.</p>
       <p class="panel-copy">Локальний файл: ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
+    <section class="panel danger-zone">
+      <div>
+        <h2>Повне очищення</h2>
+        <p class="panel-copy">Видаляє всіх працівників, табель, документи, чергування, обмеження, підсумки та внутрішню резервну копію. Застосунок повернеться до першого запуску.</p>
+      </div>
+      <button class="button danger" data-action="reset-all-data">Обнулити всі дані</button>
+    </section>
   `;
 }
 
@@ -739,15 +746,20 @@ function closeModal() {
 function openDutyHistoryModal() {
   const employees = activeEmployees();
   const selectedIds = new Set(snapshot.duties.participantIds || []);
+  const currentYear = localDateKey().slice(0, 4);
+  const baselineForCurrentYear = snapshot.duties.baselineYear === currentYear;
+  const cutoff = baselineForCurrentYear ? snapshot.duties.baselineThroughDate : null;
   openModal(`
     <form id="duty-history-form">
       <header class="modal-head"><div><h2>Учасники й підсумки</h2><p>Річні дані для статистики та склад циклічної черги</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
-        <div class="confirm-box">Зніміть прапорець із тих, кого не потрібно включати. Старі підсумки відображаються у статистиці, але не можуть викинути людину з черги.</div>
+        <div class="confirm-box">Початкові Σ і Р враховані${cutoff ? ` станом на ${h(formatDate(cutoff))}` : ''}. Усі дежурства після цієї дати додаються автоматично. З 1 січня нового року підрахунок почнеться з нуля.</div>
         <div class="table-scroll"><table class="data-table">
           <thead><tr><th>У графіку</th><th>Працівник</th><th>Усього</th><th>Реалізованих</th></tr></thead>
           <tbody>${employees.map((employee) => {
-            const baseline = snapshot.duties.baselines[employee.id] || { total: 0, realized: 0 };
+            const baseline = baselineForCurrentYear
+              ? snapshot.duties.baselines[employee.id] || { total: 0, realized: 0 }
+              : { total: 0, realized: 0 };
             return `<tr data-duty-history-row="${h(employee.id)}"><td><input name="participantIds" type="checkbox" value="${h(employee.id)}" ${selectedIds.has(employee.id) ? 'checked' : ''} aria-label="Участь ${h(employee.name)} у графіку"></td><td>${h(employee.name)}</td><td><input name="total-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.total}" required></td><td><input name="realized-${h(employee.id)}" type="number" min="0" step="1" value="${baseline.realized}" required></td></tr>`;
           }).join('')}</tbody>
         </table></div>
@@ -806,8 +818,8 @@ function openDutyEmployeeModal(employeeId, date) {
     <div class="modal-body">
       <div>Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
       ${assigned ? `
-        <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-date="${date}" data-employee-id="${h(employeeId)}" data-realized="${realized ? 'false' : 'true'}">${realized ? 'Скасувати позначку «реалізоване»' : 'Позначити: під час чергування були завдання'}</button>
-        <button class="button danger" data-toggle-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
+        <div class="confirm-box">Реалізоване чергування позначається лише другим лівим кліком по синій одиниці.</div>
+        <button class="button danger" data-remove-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
         <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
       ` : `
         <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || planningBlock?.note || '')}</textarea></label>
@@ -1009,6 +1021,23 @@ appRoot.addEventListener('click', async (event) => {
       if (result && !result.canceled) showToast('Резервну копію імпортовано.', { undo: true });
       return;
     }
+    if (action === 'reset-all-data') {
+      if (!window.confirm('Це назавжди видалить УСІ дані застосунку. Продовжити?')) return;
+      if (!window.confirm('Останнє підтвердження: видалити працівників, табель, документи й графік чергувань без можливості скасування?')) return;
+      const result = await run(
+        () => window.counter.resetAllData(),
+        null,
+        { undo: false },
+      );
+      if (result?.reset) {
+        ui.tab = 'today';
+        ui.analytics = null;
+        ui.dutyStats = null;
+        renderShell();
+        showToast('Усі дані видалено. Застосунок повернуто до першого запуску.');
+      }
+      return;
+    }
   }
 
   const tabButton = event.target.closest('[data-tab]');
@@ -1079,7 +1108,9 @@ appRoot.addEventListener('click', async (event) => {
     if (result) {
       const weekendConflictCount = result.weekendConflicts?.length || 0;
       let message = `Графік на ${formatDate(startDate)} — ${formatDate(endDate)} сформовано.`;
-      if (result.shortages.length) {
+      if (result.generated === 0 && !result.shortages.length) {
+        message = 'Наступний тиждень уже заповнений. Існуючий графік не змінено.';
+      } else if (result.shortages.length) {
         message = `Наступний тиждень: заповнено днів ${result.generated}, для ${result.shortages.length} днів бракує доступних людей.`;
       } else if (weekendConflictCount) {
         message = `Графік сформовано, але ${weekendConflictCount} порушень правил вихідних неможливо уникнути через ручні позначки або недоступність.`;
@@ -1279,21 +1310,10 @@ modalRoot.addEventListener('click', async (event) => {
   const openDutyDayButton = event.target.closest('[data-open-duty-day]');
   if (openDutyDayButton) return openDutyDayModal(openDutyDayButton.dataset.openDutyDay);
 
-  const realizedButton = event.target.closest('[data-set-duty-realized]');
-  if (realizedButton) {
-    const realized = realizedButton.dataset.realized === 'true';
+  const removeDutyButton = event.target.closest('[data-remove-duty-assignment]');
+  if (removeDutyButton) {
     const result = await run(
-      () => window.counter.setDutyRealized(realizedButton.dataset.date, realizedButton.dataset.employeeId, realized),
-      realized ? 'Чергування позначено реалізованим.' : 'Позначку реалізованого чергування знято.',
-    );
-    if (result) closeModal();
-    return;
-  }
-
-  const toggleDutyButton = event.target.closest('[data-toggle-duty-assignment]');
-  if (toggleDutyButton) {
-    const result = await run(
-      () => window.counter.toggleDutyAssignment(toggleDutyButton.dataset.employeeId, toggleDutyButton.dataset.date),
+      () => window.counter.removeDutyAssignment(removeDutyButton.dataset.employeeId, removeDutyButton.dataset.date),
       'Позначку чергування знято.',
     );
     if (result) closeModal();
