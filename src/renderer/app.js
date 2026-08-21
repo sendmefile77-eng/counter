@@ -221,6 +221,20 @@ function restoreScrollPositions() {
   });
 }
 
+function updateDutyScrollExtent() {
+  const scroll = appRoot.querySelector('[data-scroll-key="duty-matrix"]');
+  if (!scroll) return;
+  const nameCell = scroll.querySelector('th.sticky-name');
+  const firstDayCell = scroll.querySelector('th [data-duty-day]')?.closest('th');
+  if (!nameCell || !firstDayCell) return;
+  const weekWidth = firstDayCell.getBoundingClientRect().width * 7;
+  const tailWidth = Math.max(
+    0,
+    scroll.clientWidth - nameCell.getBoundingClientRect().width - weekWidth,
+  );
+  scroll.style.setProperty('--duty-scroll-tail-width', `${Math.ceil(tailWidth)}px`);
+}
+
 function renderShell() {
   rememberScrollPositions();
   document.body.className = `mode-${ui.mode}`;
@@ -244,6 +258,7 @@ function renderShell() {
       </main>
     </section>
   `;
+  updateDutyScrollExtent();
   restoreScrollPositions();
 }
 
@@ -581,7 +596,7 @@ function renderDutyPage() {
               && (assignment.employeeIds?.length || 0) < 2
               && !assignment.singleApproved;
             return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[day]}</small></button></th>`;
-          }).join('')}
+          }).join('')}<th class="duty-scroll-tail" aria-hidden="true"></th>
         </tr></thead>
         <tbody>${participants.map((employee, employeeIndex) => {
           const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
@@ -593,7 +608,7 @@ function renderDutyPage() {
               const cell = dutyCell(employee, date);
               const incompleteClass = incompleteDateSet.has(date) ? ' duty-column-incomplete' : '';
               return `<td class="matrix-cell ${cell.className}${incompleteClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}">${cell.symbol}</td>`;
-            }).join('')}
+            }).join('')}<td class="duty-scroll-tail" aria-hidden="true"></td>
           </tr>`;
         }).join('')}</tbody>
       </table>
@@ -1493,6 +1508,8 @@ window.counter.onChanged(async (nextSnapshot) => {
   }
   renderShell();
 });
+
+window.addEventListener('resize', updateDutyScrollExtent);
 
 refresh({ analytics: false }).catch((error) => {
   appRoot.innerHTML = `<section class="window-shell"><div class="empty-widget"><h2>Не вдалося запустити програму</h2><p>${h(error.message || String(error))}</p></div></section>`;

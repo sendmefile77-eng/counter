@@ -935,11 +935,23 @@ body.mode-widget #app {
 }
 
 .duty-matrix tbody tr td {
-  border-bottom-color: rgba(var(--employee-row-rgb), 0.68);
+  border-bottom: 2px solid rgb(var(--employee-row-rgb));
   background-image: linear-gradient(
-    rgba(var(--employee-row-rgb), 0.09),
-    rgba(var(--employee-row-rgb), 0.09)
+    rgba(var(--employee-row-rgb), 0.07),
+    rgba(var(--employee-row-rgb), 0.07)
   );
+}
+
+.duty-matrix tbody tr:last-child td {
+  border-bottom: 2px solid rgb(var(--employee-row-rgb));
+}
+
+.duty-matrix .duty-scroll-tail {
+  width: var(--duty-scroll-tail-width, 0);
+  min-width: var(--duty-scroll-tail-width, 0);
+  max-width: var(--duty-scroll-tail-width, 0);
+  padding: 0;
+  pointer-events: none;
 }
 
 .duty-matrix tbody tr td.duty-column-incomplete {
@@ -961,7 +973,7 @@ body.mode-widget #app {
 }
 
 .duty-matrix tbody tr .sticky-name {
-  box-shadow: inset 5px 0 0 rgba(var(--employee-row-rgb), 0.92);
+  box-shadow: inset 6px 0 0 rgb(var(--employee-row-rgb));
 }
 
 .employee-name-content {
@@ -971,12 +983,13 @@ body.mode-widget #app {
 }
 
 .employee-row-marker {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
+  display: block;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
   border-radius: 50%;
   background: rgb(var(--employee-row-rgb));
-  box-shadow: 0 0 0 2px rgba(var(--employee-row-rgb), 0.18);
+  box-shadow: 0 0 0 2px rgba(var(--employee-row-rgb), 0.32);
 }
 
 .weekend {
