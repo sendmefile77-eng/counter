@@ -29,6 +29,7 @@ const STATUS_LABELS = Object.freeze({
 });
 
 const MANUAL_STATUSES = new Set([
+  STATUS.SUBMITTED,
   STATUS.MISSED,
   STATUS.OTHER_TASKS,
   STATUS.PERSONAL_PERMISSION,
@@ -376,6 +377,9 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   assertDateKey(date);
   if (!MANUAL_STATUSES.has(status)) {
     throw new Error('Цей статус не можна встановити вручну.');
+  }
+  if (status === STATUS.SUBMITTED && date > dateKeyFromDate(now)) {
+    throw new Error('Не можна вручну позначити майбутній день як поданий.');
   }
   if (DUTY_BLOCKING_RECORD_STATUSES.has(status)
     && state.duties.assignments[date]?.employeeIds?.includes(employeeId)) {

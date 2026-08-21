@@ -387,10 +387,7 @@ function renderTodayPage() {
 function renderJournalPage() {
   const count = daysInMonth(ui.month);
   const dates = Array.from({ length: count }, (_, index) => `${ui.month}-${String(index + 1).padStart(2, '0')}`);
-  const employees = snapshot.employees.filter((employee) => (
-    employee.active
-    || dates.some((date) => employeeActiveOnDate(employee, date) || recordFor(employee.id, date))
-  ));
+  const employees = activeEmployees();
   return `
     <div class="page-header">
       <div>
@@ -899,6 +896,7 @@ function openStatusModal(employeeId, date) {
       ${canEditWorkday && record?.receiptId ? `
         <div class="confirm-box">Цей день пов’язаний із зарахованим документом. Щоб не пошкодити розподіл запиту між датами, окреме ручне редагування заблоковано. За потреби скасуйте останнє зарахування.</div>
       ` : canEditWorkday ? `<div class="status-grid">
+        ${date < localDateKey() ? `<button class="status-choice submitted-choice" data-set-status="submitted" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Подав</strong><span>Ручна відмітка за минулий день</span></button>` : ''}
         <button class="status-choice" data-set-status="missed" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Не подав</strong><span>Утворює незакритий пропуск</span></button>
         <button class="status-choice" data-set-status="other_tasks" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Інші завдання</strong><span>Рахується відпрацьованим днем</span></button>
         <button class="status-choice" data-set-status="personal_permission" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Особисті справи</strong><span>Окремий дозвіл керівника</span></button>

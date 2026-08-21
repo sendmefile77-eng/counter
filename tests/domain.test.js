@@ -199,6 +199,40 @@ test('історичні дні до додавання працівника м�
   assert.equal(stats.rows[0].workedDays, 1);
 });
 
+test('у табелі можна вручну позначити минулий день як поданий без створення документа', () => {
+  const now = localDate(2026, 7, 20, 12, 0);
+  const state = defaultState(localDate(2026, 7, 17, 9, 0));
+  const employee = createEmployee(state, 'Коваль І. П.', localDate(2026, 7, 17, 9, 0));
+  ensureAutomaticMisses(state, now);
+
+  setManualStatus(state, {
+    employeeId: employee.id,
+    date: '2026-08-18',
+    status: STATUS.SUBMITTED,
+    note: 'Внесено за журналом',
+  }, now);
+
+  const record = state.records[recordKey(employee.id, '2026-08-18')];
+  assert.equal(record.status, STATUS.SUBMITTED);
+  assert.equal(record.source, 'manual');
+  assert.equal(record.receiptId, null);
+  assert.equal(state.receipts.length, 0);
+  const stats = calculateStatistics(state, {
+    employeeId: employee.id,
+    startDate: '2026-08-18',
+    endDate: '2026-08-18',
+  }).rows[0];
+  assert.equal(stats.requestDays, 1);
+  assert.equal(stats.workedDays, 1);
+  assert.equal(stats.documentsReceived, 0);
+
+  assert.throws(() => setManualStatus(state, {
+    employeeId: employee.id,
+    date: '2026-08-21',
+    status: STATUS.SUBMITTED,
+  }, now), /майбутній день/);
+});
+
 test('нерозподілений залишок можна вручну зарахувати назад до початку обліку працівника', () => {
   const now = localDate(2026, 7, 20, 10, 0);
   const state = defaultState(now);

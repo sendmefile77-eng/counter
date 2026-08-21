@@ -807,6 +807,11 @@ body.mode-widget #app {
   background: rgba(242, 199, 68, 0.12);
 }
 
+.submitted-choice {
+  border-color: rgba(54, 191, 118, 0.62);
+  background: rgba(54, 191, 118, 0.1);
+}
+
 .duty-picker {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
