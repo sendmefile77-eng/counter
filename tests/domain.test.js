@@ -392,6 +392,45 @@ test('початкові Σ і Р не дублюють ручну історі�
   assert.deepEqual(nextYear.map((row) => [row.total, row.realized]), [[0, 0], [0, 0]]);
 });
 
+test('зміна учасників у новому році не стирає вже накопичені січневі чергування', () => {
+  const initialNow = localDate(2026, 11, 20, 9, 0);
+  const state = defaultState(initialNow);
+  const first = createEmployee(state, 'Перший', initialNow);
+  const second = createEmployee(state, 'Другий', initialNow);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, initialNow);
+  setDutyAssignment(state, {
+    date: '2027-01-01',
+    employeeIds: [first.id, second.id],
+  }, initialNow);
+  setDutyAssignment(state, {
+    date: '2027-01-02',
+    employeeIds: [first.id, second.id],
+  }, initialNow);
+  setDutyRealized(state, '2027-01-02', first.id, true, initialNow);
+
+  const januaryNow = localDate(2027, 0, 5, 9, 0);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, januaryNow);
+
+  assert.equal(state.duties.baselineYear, '2027');
+  assert.equal(state.duties.baselineThroughDate, '2026-12-31');
+  assert.deepEqual(calculateDutyStatistics(state, '2027').map((row) => [row.total, row.realized]), [
+    [2, 1],
+    [2, 0],
+  ]);
+  assert.equal(
+    normalizeState(clone(state), januaryNow).duties.baselineThroughDate,
+    '2026-12-31',
+  );
+});
+
 test('учасників чергувань можна обрати окремо від загального списку працівників', () => {
   const state = defaultState(localDate(2026, 7, 20, 9, 0));
   const employees = ['Ірина', 'Катерина', 'Леся']
@@ -479,6 +518,33 @@ test('за достатнього складу генератор залишає
   const counts = [...dutyDates.values()].map((dates) => dates.length);
   assert.ok(Math.max(...counts) - Math.min(...counts) <= 1);
   assert.equal(counts.every((count) => count > 0), true);
+});
+
+test('коли дводенний проміжок неможливий, рівномірність важливіша за нього', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 4 }, (_, index) => (
+    createEmployee(state, `Черговий ${index + 1}`, now)
+  ));
+  initializeDutyHistory(state, employees.map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, now);
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' }, now);
+  const counts = employees.map((employee) => (
+    Object.values(state.duties.assignments)
+      .filter((assignment) => assignment.employeeIds.includes(employee.id)).length
+  ));
+  for (let date = '2026-08-25'; date <= '2026-08-30'; date = addDays(date, 1)) {
+    const previousIds = new Set(state.duties.assignments[addDays(date, -1)].employeeIds);
+    assert.equal(
+      state.duties.assignments[date].employeeIds.some((employeeId) => previousIds.has(employeeId)),
+      false,
+    );
+  }
+  assert.deepEqual([...counts].sort((left, right) => left - right), [3, 3, 4, 4]);
 });
 
 test('тижнева модель не дає трьох чергувань одним, поки інші мають лише одне', () => {
@@ -795,5 +861,34 @@ test('вилучений зі складу учасник зберігаєтьс
     now,
   );
   assert.equal(state.duties.assignments['2026-08-19'].employeeIds.includes(first.id), true);
-  assert.equal(state.duties.assignments['2026-08-24'], undefined);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, []);
+  assert.equal(state.duties.assignments['2026-08-24'].source, 'participant_removed');
+});
+
+test('архівований працівник не залишається невидимим у майбутньому графіку', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Світлана', now);
+  const second = createEmployee(state, 'Тарас', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, now);
+  setDutyAssignment(state, {
+    date: '2026-08-19',
+    employeeIds: [first.id, second.id],
+  }, now);
+  setDutyAssignment(state, {
+    date: '2026-08-24',
+    employeeIds: [first.id, second.id],
+  }, now);
+
+  archiveEmployee(state, first.id, now);
+
+  assert.equal(state.duties.participantIds.includes(first.id), false);
+  assert.equal(state.duties.assignments['2026-08-19'].employeeIds.includes(first.id), true);
+  assert.deepEqual(state.duties.assignments['2026-08-24'].employeeIds, [second.id]);
+  assert.equal(state.duties.assignments['2026-08-24'].singleApproved, false);
+  assert.equal(state.duties.assignments['2026-08-24'].source, 'participant_archived');
 });

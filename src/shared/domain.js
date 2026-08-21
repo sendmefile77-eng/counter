@@ -104,6 +104,10 @@ function endOfCalendarWeek(dateKey) {
   return addDays(dateKey, day === 0 ? 0 : 7 - day);
 }
 
+function previousYearEnd(year) {
+  return `${Number(year) - 1}-12-31`;
+}
+
 function recordKey(employeeId, dateKey) {
   return `${employeeId}|${dateKey}`;
 }
@@ -165,7 +169,8 @@ function normalizeState(input, now = new Date()) {
     ? input.duties.baselineYear
     : currentYear;
   const inputBaselineThroughDate = /^\d{4}-\d{2}-\d{2}$/.test(input.duties?.baselineThroughDate || '')
-    && input.duties.baselineThroughDate.startsWith(`${inputBaselineYear}-`)
+    && (input.duties.baselineThroughDate.startsWith(`${inputBaselineYear}-`)
+      || input.duties.baselineThroughDate === previousYearEnd(inputBaselineYear))
     ? input.duties.baselineThroughDate
     : (inputBaselineYear === currentYear
       ? endOfCalendarWeek(dateKeyFromDate(now))
@@ -217,8 +222,20 @@ function normalizeState(input, now = new Date()) {
   if (state.employees.filter((employee) => employee.active).length > 15) {
     throw new Error('Одночасно може бути не більше 15 активних працівників.');
   }
+  const inactiveParticipantIds = new Set(
+    [...new Set(state.duties.participantIds)]
+      .filter((employeeId) => ids.has(employeeId))
+      .filter((employeeId) => !state.employees.find((employee) => employee.id === employeeId)?.active),
+  );
   state.duties.participantIds = [...new Set(state.duties.participantIds)]
-    .filter((employeeId) => ids.has(employeeId));
+    .filter((employeeId) => ids.has(employeeId) && !inactiveParticipantIds.has(employeeId));
+  removeEmployeesFromFutureDutyAssignments(
+    state,
+    inactiveParticipantIds,
+    dateKeyFromDate(now),
+    now,
+    'participant_archived',
+  );
 
   return state;
 }
@@ -262,6 +279,34 @@ function createEmployee(state, name, now = new Date()) {
   return employee;
 }
 
+function removeEmployeesFromFutureDutyAssignments(
+  state,
+  removedIds,
+  fromDate,
+  now,
+  source,
+) {
+  if (!removedIds?.size) return [];
+  const affectedDates = [];
+  for (const [date, assignment] of Object.entries(state.duties.assignments)) {
+    if (date < fromDate || !(assignment.employeeIds || []).some((id) => removedIds.has(id))) continue;
+    const employeeIds = (assignment.employeeIds || []).filter((id) => !removedIds.has(id));
+    state.duties.assignments[date] = {
+      ...assignment,
+      employeeIds,
+      realizedEmployeeIds: (assignment.realizedEmployeeIds || [])
+        .filter((id) => employeeIds.includes(id)),
+      singleApproved: false,
+      source,
+      manualEmployeeIds: (assignment.manualEmployeeIds || [])
+        .filter((id) => employeeIds.includes(id)),
+      updatedAt: now.toISOString(),
+    };
+    affectedDates.push(date);
+  }
+  return affectedDates;
+}
+
 function archiveEmployee(state, employeeId, now = new Date()) {
   const employee = getEmployee(state, employeeId);
   employee.active = false;
@@ -269,7 +314,16 @@ function archiveEmployee(state, employeeId, now = new Date()) {
   employee.archivedAt = now.toISOString();
   const openPeriod = employee.activePeriods.findLast((period) => !period.end);
   if (openPeriod) openPeriod.end = employee.archivedDate;
-  appendAudit(state, 'employee_archived', { employeeId }, now);
+  state.duties.participantIds = (state.duties.participantIds || [])
+    .filter((id) => id !== employeeId);
+  const affectedDutyDates = removeEmployeesFromFutureDutyAssignments(
+    state,
+    new Set([employeeId]),
+    employee.archivedDate,
+    now,
+    'participant_archived',
+  );
+  appendAudit(state, 'employee_archived', { employeeId, affectedDutyDates }, now);
   return employee;
 }
 
@@ -643,20 +697,15 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
     (state.duties.participantIds || []).filter((employeeId) => !selectedIds.includes(employeeId)),
   );
   const today = dateKeyFromDate(now);
-  for (const [date, assignment] of Object.entries(state.duties.assignments)) {
-    if (date < today || removedIds.size === 0) continue;
-    assignment.employeeIds = (assignment.employeeIds || []).filter((employeeId) => !removedIds.has(employeeId));
-    assignment.realizedEmployeeIds = (assignment.realizedEmployeeIds || [])
-      .filter((employeeId) => assignment.employeeIds.includes(employeeId));
-    if (assignment.employeeIds.length === 0) {
-      delete state.duties.assignments[date];
-    } else if (assignment.employeeIds.length === 1) {
-      assignment.singleApproved = false;
-      assignment.source = 'participant_removed';
-      assignment.updatedAt = now.toISOString();
-    }
-  }
+  const affectedDutyDates = removeEmployeesFromFutureDutyAssignments(
+    state,
+    removedIds,
+    today,
+    now,
+    'participant_removed',
+  );
   const baselineYear = dateKeyFromDate(now).slice(0, 4);
+  const changedYear = state.duties.initialized && state.duties.baselineYear !== baselineYear;
   const keepBaselineCutoff = state.duties.initialized
     && state.duties.baselineYear === baselineYear
     && /^\d{4}-\d{2}-\d{2}$/.test(state.duties.baselineThroughDate || '');
@@ -665,11 +714,17 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
     : baselines;
   state.duties.baselineYear = baselineYear;
   if (!keepBaselineCutoff) {
-    state.duties.baselineThroughDate = endOfCalendarWeek(dateKeyFromDate(now));
+    state.duties.baselineThroughDate = changedYear
+      ? previousYearEnd(baselineYear)
+      : endOfCalendarWeek(dateKeyFromDate(now));
   }
   state.duties.participantIds = selectedIds;
   state.duties.initialized = true;
-  appendAudit(state, 'duty_history_initialized', { employees: entries.length, participantIds: selectedIds }, now);
+  appendAudit(state, 'duty_history_initialized', {
+    employees: entries.length,
+    participantIds: selectedIds,
+    affectedDutyDates,
+  }, now);
   return state.duties;
 }
 
@@ -882,7 +937,7 @@ function dutyTotals(state, year = dateKeyFromDate().slice(0, 4), beforeDate = nu
     };
   }
   const baselineThroughDate = state.duties.baselineYear === year
-    ? state.duties.baselineThroughDate || `${year}-01-01`
+    ? state.duties.baselineThroughDate || previousYearEnd(year)
     : null;
   const assignments = Object.values(state.duties.assignments)
     .filter((assignment) => (
@@ -1100,9 +1155,9 @@ function exactDutyBlockPlan(
         const balance = dutyBalanceMetrics(nextCounts, balanceEmployeeIds);
         const score = [
           missingSlots,
-          cooldownViolations,
           balance.spread,
           balance.squares,
+          cooldownViolations,
           weekendReservePenalty,
           repeatedPairPenalty,
           queueCost,
