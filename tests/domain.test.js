@@ -609,6 +609,51 @@ test('тижнева модель не дає трьох чергувань од
   assert.deepEqual(result.weekendConflicts, []);
 });
 
+test('наступний тиждень компенсує одне чергування двома та не повторює пари', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 9 }, (_, index) => (
+    createEmployee(state, `Учасник ${index + 1}`, now)
+  ));
+  initializeDutyHistory(
+    state,
+    employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })),
+    null,
+    now,
+  );
+
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' }, now);
+  const firstWeekCounts = new Map(employees.map((employee) => [employee.id, 0]));
+  const firstWeekPairs = new Set();
+  for (let date = '2026-08-24'; date <= '2026-08-30'; date = addDays(date, 1)) {
+    const employeeIds = state.duties.assignments[date].employeeIds;
+    employeeIds.forEach((employeeId) => (
+      firstWeekCounts.set(employeeId, firstWeekCounts.get(employeeId) + 1)
+    ));
+    firstWeekPairs.add([...employeeIds].sort().join('|'));
+  }
+
+  generateDutySchedule(state, { startDate: '2026-08-31', endDate: '2026-09-06' }, now);
+  const secondWeekCounts = new Map(employees.map((employee) => [employee.id, 0]));
+  const secondWeekPairs = new Set();
+  for (let date = '2026-08-31'; date <= '2026-09-06'; date = addDays(date, 1)) {
+    const employeeIds = state.duties.assignments[date].employeeIds;
+    employeeIds.forEach((employeeId) => (
+      secondWeekCounts.set(employeeId, secondWeekCounts.get(employeeId) + 1)
+    ));
+    const pairKey = [...employeeIds].sort().join('|');
+    assert.equal(firstWeekPairs.has(pairKey), false);
+    assert.equal(secondWeekPairs.has(pairKey), false);
+    secondWeekPairs.add(pairKey);
+  }
+
+  for (const [employeeId, count] of firstWeekCounts) {
+    if (count === 1) assert.equal(secondWeekCounts.get(employeeId), 2);
+  }
+  const secondWeekValues = [...secondWeekCounts.values()];
+  assert.ok(Math.max(...secondWeekValues) - Math.min(...secondWeekValues) <= 1);
+});
+
 test('якщо всі доступні люди вже чергували минулого вікенду, новий вікенд показує нестачу', () => {
   const now = localDate(2026, 7, 20, 9, 0);
   const state = defaultState(now);
