@@ -61,6 +61,7 @@ const DUTY_MARK_LABELS = {
   day_off: 'ВГ',
   personal: 'ОС',
   other: 'НД',
+  planning_block: 'Не планувати',
 };
 
 const WEEKDAY_SHORT = ['нд', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
@@ -452,6 +453,13 @@ function dutyCell(employee, date) {
     };
   }
   if (snapshot.duties.aDays[key]) return { symbol: 'А', className: 'duty-a', title: 'Залучення «А»' };
+  if (snapshot.duties.planningBlocks?.[key]) {
+    return {
+      symbol: '—',
+      className: 'duty-planning-block',
+      title: 'Не ставити в чергування цього дня; у статистиці не враховується',
+    };
+  }
   const unavailable = snapshot.duties.unavailable[key];
   if (unavailable) {
     return {
@@ -538,9 +546,9 @@ function renderDutyPage() {
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
       <button class="button primary small" data-generate-duties>Сформувати наступний тиждень</button>
     </div>
-    <p class="duty-help">Лівий клік — поставити або зняти чергування. Правий клік — «А», відсутність або реалізоване чергування.</p>
+    <p class="duty-help">Лівий клік — поставити або зняти чергування. Правий клік — «А», відсутність, жовта заборона планування або реалізоване чергування.</p>
     <div class="duty-legend">
-      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
+      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
     <div class="table-scroll" data-scroll-key="duty-matrix">
       <table class="matrix duty-matrix">
@@ -756,6 +764,7 @@ function dutyRestrictionText(employeeId, date) {
   const key = `${employeeId}|${date}`;
   if (snapshot.duties.aDays[key]) return '«А» цього дня';
   if (snapshot.duties.aDays[`${employeeId}|${shiftDate(date, 1)}`]) return 'наступного дня позначено «А»';
+  if (snapshot.duties.planningBlocks?.[key]) return 'не ставити в чергування цього дня';
   const unavailable = snapshot.duties.unavailable[key];
   if (unavailable) return `позначка ${DUTY_MARK_LABELS[unavailable.type] || 'недоступний'}`;
   const record = recordFor(employeeId, date);
@@ -792,6 +801,7 @@ function openDutyEmployeeModal(employeeId, date) {
   const realized = assignment?.realizedEmployeeIds?.includes(employeeId);
   const aDay = snapshot.duties.aDays[key];
   const unavailable = snapshot.duties.unavailable[key];
+  const planningBlock = snapshot.duties.planningBlocks?.[key];
   const previousDuty = snapshot.duties.assignments[shiftDate(date, -1)]?.employeeIds?.includes(employeeId);
   const linkedRestriction = dutyRestrictionText(employeeId, date);
   openModal(`
@@ -803,8 +813,9 @@ function openDutyEmployeeModal(employeeId, date) {
         <button class="button danger" data-toggle-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
         <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
       ` : `
-        <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || '')}</textarea></label>
+        <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || planningBlock?.note || '')}</textarea></label>
         <div class="status-grid duty-status-grid">
+          <button class="status-choice planning-block-choice" data-set-duty-restriction="planning_block" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Не ставити</strong><span>Лише жовта заборона для планувальника; без статистики</span></button>
           <button class="status-choice" data-set-duty-restriction="a" data-employee-id="${h(employeeId)}" data-date="${date}" ${previousDuty ? 'disabled' : ''}><strong>А</strong><span>${previousDuty ? 'Заборонено після чергування попереднього дня' : 'Не чергує лише цього дня'}</span></button>
           <button class="status-choice" data-set-duty-restriction="off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Вихідний</strong><span>Не бере участі в чергуванні</span></button>
           <button class="status-choice" data-set-duty-restriction="vacation" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпустка</strong><span>Недоступний</span></button>
@@ -815,7 +826,7 @@ function openDutyEmployeeModal(employeeId, date) {
       `}
     </div>
     <footer class="modal-foot">
-      ${!assigned && (aDay || unavailable) ? `<button class="button danger" data-clear-duty-restriction data-employee-id="${h(employeeId)}" data-date="${date}">Очистити позначку</button>` : ''}
+      ${!assigned && (aDay || unavailable || planningBlock) ? `<button class="button danger" data-clear-duty-restriction data-employee-id="${h(employeeId)}" data-date="${date}">Очистити позначку</button>` : ''}
       <button class="button" data-open-duty-day="${date}">Налаштувати склад дня</button>
       <button class="button" data-close-modal>Закрити</button>
     </footer>
@@ -1068,10 +1079,17 @@ appRoot.addEventListener('click', async (event) => {
       null,
     );
     if (result) {
-      const message = result.shortages.length
-        ? `Наступний тиждень: заповнено днів ${result.generated}, для ${result.shortages.length} днів бракує доступних людей.`
-        : `Графік на ${formatDate(startDate)} — ${formatDate(endDate)} сформовано.`;
-      showToast(message, { error: result.shortages.length > 0, undo: true });
+      const weekendConflictCount = result.weekendConflicts?.length || 0;
+      let message = `Графік на ${formatDate(startDate)} — ${formatDate(endDate)} сформовано.`;
+      if (result.shortages.length) {
+        message = `Наступний тиждень: заповнено днів ${result.generated}, для ${result.shortages.length} днів бракує доступних людей.`;
+      } else if (weekendConflictCount) {
+        message = `Графік сформовано, але ${weekendConflictCount} порушень правил вихідних неможливо уникнути через ручні позначки або недоступність.`;
+      }
+      showToast(message, {
+        error: result.shortages.length > 0 || weekendConflictCount > 0,
+        undo: true,
+      });
     }
     return;
   }

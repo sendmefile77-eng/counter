@@ -238,6 +238,8 @@ function buildCsv(state) {
   const dutyRestrictionRows = [
     ...Object.values(state.duties.aDays).map((item) => ({ ...item, label: 'А' })),
     ...Object.values(state.duties.unavailable).map((item) => ({ ...item, label: item.type })),
+    ...Object.values(state.duties.planningBlocks || {})
+      .map((item) => ({ ...item, label: 'Не планувати (без статистики)' })),
   ].map((item) => {
     const employee = state.employees.find((candidate) => candidate.id === item.employeeId);
     return [

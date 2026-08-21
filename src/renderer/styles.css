@@ -742,6 +742,7 @@ body.mode-widget #app {
 .duty-legend .legend-duty { background: rgba(72, 119, 171, 0.5); color: #e9f4ff; }
 .duty-legend .legend-realized { background: rgba(54, 191, 118, 0.34); color: #b8f3cf; }
 .duty-legend .legend-a { background: rgba(240, 164, 75, 0.28); color: #ffd39f; }
+.duty-legend .legend-planning-block { background: rgba(242, 199, 68, 0.72); color: #382d07; }
 
 .duty-matrix th button {
   width: 100%;
@@ -798,7 +799,13 @@ body.mode-widget #app {
 .duty-realized { background: rgba(54, 191, 118, 0.34); color: #c5f7d8; font-weight: 850; box-shadow: inset 0 0 0 1px rgba(86, 224, 149, 0.35); }
 .duty-a { background: rgba(240, 164, 75, 0.23); color: #ffd39f; font-weight: 850; }
 .duty-after-a { background: rgba(240, 164, 75, 0.09); color: #c8a171; font-size: 9px; }
+.duty-planning-block { background: rgba(242, 199, 68, 0.72); color: #382d07; font-weight: 900; }
 .duty-unavailable { background: rgba(110, 128, 154, 0.2); color: #aebbd0; font-size: 9px; font-weight: 750; }
+
+.planning-block-choice {
+  border-color: rgba(242, 199, 68, 0.65);
+  background: rgba(242, 199, 68, 0.12);
+}
 
 .duty-picker {
   display: grid;
