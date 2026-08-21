@@ -270,6 +270,38 @@ test('генератор чергувань розподіляє по двоє �
   assert.equal(state.duties.assignments['2026-08-26'].employeeIds.length, 2);
 });
 
+test('якщо другого чергового без повтору наступного дня немає, місце лишається порожнім', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = ['Оксана', 'Віктор', 'Ганна']
+    .map((name) => createEmployee(state, name, now));
+  initializeDutyHistory(
+    state,
+    employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })),
+    null,
+    now,
+  );
+  setDutyAssignment(state, {
+    date: '2026-08-28',
+    employeeIds: [employees[0].id, employees[1].id],
+  }, now);
+
+  const result = generateDutySchedule(state, {
+    startDate: '2026-08-29',
+    endDate: '2026-08-30',
+  }, now);
+  const friday = new Set(state.duties.assignments['2026-08-28'].employeeIds);
+  const saturday = state.duties.assignments['2026-08-29'].employeeIds;
+  const sunday = state.duties.assignments['2026-08-30'].employeeIds;
+
+  assert.deepEqual(saturday, [employees[2].id]);
+  assert.equal(saturday.some((employeeId) => friday.has(employeeId)), false);
+  assert.equal(sunday.some((employeeId) => saturday.includes(employeeId)), false);
+  assert.deepEqual(result.shortages, [{ date: '2026-08-29', missing: 1 }]);
+  assert.equal(state.duties.assignments['2026-08-29'].singleApproved, false);
+  assert.equal(state.duties.assignments['2026-08-29'].source, 'generated_shortage');
+});
+
 test('після «А» чергування дозволене, але «А» після чергування заборонена', () => {
   const state = defaultState(localDate(2026, 7, 20, 9, 0));
   const first = createEmployee(state, 'Данило', localDate(2026, 7, 20, 9, 0));

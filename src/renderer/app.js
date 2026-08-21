@@ -524,6 +524,10 @@ function renderDutyPage() {
   const totals = participants.map((employee) => stats.get(employee.id)?.total || 0);
   const minTotal = Math.min(...totals);
   const maxTotal = Math.max(...totals);
+  const incompleteDates = dates.filter((date) => {
+    const assignment = snapshot.duties.assignments[date];
+    return assignment && (assignment.employeeIds?.length || 0) < 2 && !assignment.singleApproved;
+  });
   return `
     <div class="page-header">
       <div>
@@ -543,6 +547,16 @@ function renderDutyPage() {
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
       <button class="button primary small" data-generate-duties>Сформувати наступний тиждень</button>
     </div>
+    ${incompleteDates.length ? `
+      <div class="duty-shortage-warning" role="alert">
+        <strong>Не вистачає чергових:</strong>
+        ${incompleteDates.map((date) => {
+          const assigned = snapshot.duties.assignments[date]?.employeeIds?.length || 0;
+          const missing = 2 - assigned;
+          return `${h(formatDate(date))} — ${missing} ${missing === 1 ? 'чергового' : 'чергових'}`;
+        }).join('; ')}.
+      </div>
+    ` : ''}
     <p class="duty-help">Лівий клік по колу: порожньо → чергування → реалізоване чергування → порожньо. Правий клік — «А», відсутність або жовта заборона планування.</p>
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
@@ -554,7 +568,9 @@ function renderDutyPage() {
           ${dates.map((date) => {
             const day = dateFromKey(date).getDay();
             const assignment = snapshot.duties.assignments[date];
-            const incomplete = assignment?.employeeIds?.length === 1 && !assignment.singleApproved;
+            const incomplete = assignment
+              && (assignment.employeeIds?.length || 0) < 2
+              && !assignment.singleApproved;
             return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[day]}</small></button></th>`;
           }).join('')}
         </tr></thead>
@@ -1111,7 +1127,11 @@ appRoot.addEventListener('click', async (event) => {
       if (result.generated === 0 && !result.shortages.length) {
         message = 'Наступний тиждень уже заповнений. Існуючий графік не змінено.';
       } else if (result.shortages.length) {
-        message = `Наступний тиждень: заповнено днів ${result.generated}, для ${result.shortages.length} днів бракує доступних людей.`;
+        const details = result.shortages.map((item) => {
+          const missing = item.missing || 1;
+          return `${formatDate(item.date)} — бракує ${missing} ${missing === 1 ? 'чергового' : 'чергових'}`;
+        }).join('; ');
+        message = `Графік сформовано частково: ${details}. Повторів наступного дня не створено.`;
       } else if (weekendConflictCount) {
         message = `Графік сформовано, але ${weekendConflictCount} порушень правил вихідних неможливо уникнути через ручні позначки або недоступність.`;
       }

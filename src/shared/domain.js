@@ -944,7 +944,7 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
   const existing = state.duties.assignments[date];
   const fixedIds = [...new Set(existing?.employeeIds || [])];
   if (fixedIds.length >= 2 || (fixedIds.length === 1 && existing?.singleApproved)) {
-    return [{ employeeIds: fixedIds, fixed: true }];
+    return [{ employeeIds: fixedIds, addedIds: [], fixed: true, missing: 0 }];
   }
 
   const candidates = dutyQueue.filter((employeeId) => {
@@ -954,21 +954,30 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
       && !dutyRestriction(state, employeeId, date);
   });
   const needed = 2 - fixedIds.length;
-  if (candidates.length < needed) return [];
-  if (needed === 1) {
-    return candidates.map((employeeId) => ({
+  const options = [{
+    employeeIds: fixedIds,
+    addedIds: [],
+    fixed: false,
+    missing: needed,
+  }];
+  for (const employeeId of candidates) {
+    options.push({
       employeeIds: [...fixedIds, employeeId],
+      addedIds: [employeeId],
       fixed: false,
-    }));
+      missing: needed - 1,
+    });
   }
-
-  const options = [];
-  for (let left = 0; left < candidates.length - 1; left += 1) {
-    for (let right = left + 1; right < candidates.length; right += 1) {
-      options.push({
-        employeeIds: [candidates[left], candidates[right]],
-        fixed: false,
-      });
+  if (needed >= 2) {
+    for (let left = 0; left < candidates.length - 1; left += 1) {
+      for (let right = left + 1; right < candidates.length; right += 1) {
+        options.push({
+          employeeIds: [...fixedIds, candidates[left], candidates[right]],
+          addedIds: [candidates[left], candidates[right]],
+          fixed: false,
+          missing: needed - 2,
+        });
+      }
     }
   }
   return options;
@@ -988,8 +997,6 @@ function exactWeekendPlan(state, dates, dutyQueue, employeesById) {
     dutyQueue,
     employeesById,
   ));
-  if (optionsByDate.some((options) => options.length === 0)) return null;
-
   const saturday = dayOfWeek(dates[0]) === 6 ? dates[0] : addDays(dates[0], -1);
   const sunday = addDays(saturday, 1);
   const previousWeekendIds = new Set([
@@ -1004,20 +1011,30 @@ function exactWeekendPlan(state, dates, dutyQueue, employeesById) {
   }
 
   let best = null;
-  const visit = (index, selectedByDate) => {
+  const visit = (index, selectedOptions) => {
     if (index < dates.length) {
       for (const option of optionsByDate[index]) {
-        selectedByDate.set(dates[index], option.employeeIds);
-        visit(index + 1, selectedByDate);
+        selectedOptions.set(dates[index], option);
+        visit(index + 1, selectedOptions);
       }
-      selectedByDate.delete(dates[index]);
+      selectedOptions.delete(dates[index]);
       return;
     }
 
-    const idsFor = (date) => selectedByDate.get(date)
+    const idsFor = (date) => selectedOptions.get(date)?.employeeIds
       || fixedOutsideRange.get(date)
       || state.duties.assignments[date]?.employeeIds
       || [];
+    for (const date of dates) {
+      const previousDayIds = new Set(idsFor(addDays(date, -1)));
+      const automaticallyAdded = selectedOptions.get(date)?.addedIds || [];
+      if (automaticallyAdded.some((employeeId) => previousDayIds.has(employeeId))) return;
+    }
+
+    const missingSlots = dates.reduce(
+      (sum, date) => sum + (selectedOptions.get(date)?.missing || 0),
+      0,
+    );
     const consecutiveWeekendRepeatSlots = [...idsFor(saturday), ...idsFor(sunday)]
       .filter((employeeId) => previousWeekendIds.has(employeeId));
     const consecutiveWeekendRepeats = [...new Set(consecutiveWeekendRepeatSlots)];
@@ -1030,19 +1047,19 @@ function exactWeekendPlan(state, dates, dutyQueue, employeesById) {
     const simulatedQueue = [...dutyQueue];
     for (const date of dates) {
       const selected = idsFor(date);
-      const previousOne = new Set(idsFor(addDays(date, -1)));
       const previousTwo = new Set(idsFor(addDays(date, -2)));
       for (const employeeId of selected) {
-        if (previousOne.has(employeeId) || previousTwo.has(employeeId)) cooldownViolations += 1;
+        if (previousTwo.has(employeeId)) cooldownViolations += 1;
         const queueIndex = simulatedQueue.indexOf(employeeId);
         queueCost += queueIndex < 0 ? simulatedQueue.length : queueIndex;
       }
       moveDutyQueueToEnd(simulatedQueue, selected);
     }
 
-    // Lexicographic objective: a lower-priority preference can never buy a
-    // violation of a higher-priority weekend rule.
+    // Lexicographic objective: first fill as many slots as the hard daily
+    // rotation permits, then optimize weekend rotation, cooldown and fairness.
     const score = [
+      missingSlots,
       consecutiveWeekendRepeatSlots.length === 0 ? 0 : 1,
       sameWeekendRepeats.length,
       consecutiveWeekendRepeatSlots.length,
@@ -1056,7 +1073,10 @@ function exactWeekendPlan(state, dates, dutyQueue, employeesById) {
       best = {
         score,
         signature,
-        selectedByDate: new Map([...selectedByDate].map(([date, ids]) => [date, [...ids]])),
+        selectedByDate: new Map([...selectedOptions].map(([date, option]) => [date, [...option.employeeIds]])),
+        shortages: dates
+          .map((date) => ({ date, missing: selectedOptions.get(date)?.missing || 0 }))
+          .filter((item) => item.missing > 0),
         consecutiveWeekendRepeats,
         sameWeekendRepeats,
       };
@@ -1066,19 +1086,25 @@ function exactWeekendPlan(state, dates, dutyQueue, employeesById) {
   return best;
 }
 
-function writeGeneratedDutyAssignment(state, date, employeeIds, now) {
+function writeGeneratedDutyAssignment(state, date, employeeIds, now, shortage = false) {
   const existing = state.duties.assignments[date];
   const existingIds = [...new Set(existing?.employeeIds || [])];
   const existingComplete = existingIds.length >= 2
     || (existingIds.length === 1 && existing?.singleApproved);
   if (existingComplete) return false;
+  if (existing && existingIds.length === employeeIds.length
+    && existingIds.every((employeeId, index) => employeeId === employeeIds[index])) {
+    return false;
+  }
   state.duties.assignments[date] = {
     date,
     employeeIds: [...employeeIds],
     realizedEmployeeIds: [...(existing?.realizedEmployeeIds || [])]
       .filter((employeeId) => employeeIds.includes(employeeId)),
     singleApproved: false,
-    source: existingIds.length ? 'generated_completion' : 'generated',
+    source: shortage
+      ? 'generated_shortage'
+      : existingIds.length ? 'generated_completion' : 'generated',
     manualEmployeeIds: existingIds,
     updatedAt: now.toISOString(),
   };
@@ -1116,16 +1142,11 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         ? [cursor, addDays(cursor, 1)]
         : [cursor];
       const plan = exactWeekendPlan(state, weekendDates, dutyQueue, employeesById);
-      if (!plan) {
-        shortages.push(...weekendDates.filter((date) => (
-          dutyAssignmentOptions(state, date, dutyQueue, employeesById).length === 0
-        )));
-        cursor = addDays(cursor, weekendDates.length);
-        continue;
-      }
+      shortages.push(...plan.shortages);
       for (const date of weekendDates) {
         const selected = plan.selectedByDate.get(date);
-        if (writeGeneratedDutyAssignment(state, date, selected, now)) generated += 1;
+        const shortage = selected.length < 2;
+        if (writeGeneratedDutyAssignment(state, date, selected, now, shortage)) generated += 1;
         moveDutyQueueToEnd(dutyQueue, selected);
       }
       for (const employeeId of plan.consecutiveWeekendRepeats) {
@@ -1158,33 +1179,32 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
 
     moveDutyQueueToEnd(dutyQueue, existingIds);
 
-    const recentIds = new Set([
-      ...(state.duties.assignments[addDays(cursor, -1)]?.employeeIds || []),
-      ...(state.duties.assignments[addDays(cursor, -2)]?.employeeIds || []),
-    ]);
+    const previousDayIds = new Set(
+      state.duties.assignments[addDays(cursor, -1)]?.employeeIds || [],
+    );
+    const previousTwoDayIds = new Set(
+      state.duties.assignments[addDays(cursor, -2)]?.employeeIds || [],
+    );
     const candidates = dutyQueue.filter((employeeId) => {
       const employee = employeesById.get(employeeId);
       return employee?.active
         && !existingIds.includes(employeeId)
+        && !previousDayIds.has(employeeId)
         && !dutyRestriction(state, employeeId, cursor);
     });
 
     const needed = 2 - existingIds.length;
-    if (candidates.length < needed) {
-      shortages.push(cursor);
-      cursor = addDays(cursor, 1);
-      continue;
-    }
-
-    const preferred = candidates.filter((employeeId) => !recentIds.has(employeeId));
+    const preferred = candidates.filter((employeeId) => !previousTwoDayIds.has(employeeId));
     const addedIds = (preferred.length >= needed
       ? preferred
-      : [...preferred, ...candidates.filter((employeeId) => recentIds.has(employeeId))]
+      : [...preferred, ...candidates.filter((employeeId) => previousTwoDayIds.has(employeeId))]
     ).slice(0, needed);
     const selected = [...existingIds, ...addedIds];
-    writeGeneratedDutyAssignment(state, cursor, selected, now);
+    const missing = Math.max(0, 2 - selected.length);
+    if (missing > 0) shortages.push({ date: cursor, missing });
+    const changed = writeGeneratedDutyAssignment(state, cursor, selected, now, missing > 0);
     moveDutyQueueToEnd(dutyQueue, addedIds);
-    generated += 1;
+    if (changed) generated += 1;
     cursor = addDays(cursor, 1);
   }
 
