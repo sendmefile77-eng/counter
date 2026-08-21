@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const STATUS = Object.freeze({
   SUBMITTED: 'submitted',
@@ -116,24 +116,96 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function createDutyData(now = new Date()) {
+  return {
+    initialized: false,
+    participantIds: [],
+    baselineYear: String(now.getFullYear()),
+    baselineThroughDate: endOfCalendarWeek(dateKeyFromDate(now)),
+    baselines: {},
+    assignments: {},
+    aDays: {},
+    unavailable: {},
+    planningBlocks: {},
+  };
+}
+
+function normalizeDutyData(input, now = new Date(), defaultParticipantIds = []) {
+  const source = input && typeof input === 'object' ? input : {};
+  const currentYear = String(now.getFullYear());
+  const baselineYear = /^\d{4}$/.test(source.baselineYear || '')
+    ? source.baselineYear
+    : currentYear;
+  const baselineThroughDate = /^\d{4}-\d{2}-\d{2}$/.test(source.baselineThroughDate || '')
+    && (source.baselineThroughDate.startsWith(`${baselineYear}-`)
+      || source.baselineThroughDate === previousYearEnd(baselineYear))
+    ? source.baselineThroughDate
+    : (baselineYear === currentYear
+      ? endOfCalendarWeek(dateKeyFromDate(now))
+      : `${baselineYear}-12-31`);
+  return {
+    ...createDutyData(now),
+    ...source,
+    initialized: Boolean(source.initialized),
+    participantIds: Array.isArray(source.participantIds)
+      ? source.participantIds
+      : defaultParticipantIds,
+    baselineYear,
+    baselineThroughDate,
+    baselines: source.baselines && typeof source.baselines === 'object' ? source.baselines : {},
+    assignments: source.assignments && typeof source.assignments === 'object' ? source.assignments : {},
+    aDays: source.aDays && typeof source.aDays === 'object' ? source.aDays : {},
+    unavailable: source.unavailable && typeof source.unavailable === 'object' ? source.unavailable : {},
+    planningBlocks: source.planningBlocks && typeof source.planningBlocks === 'object'
+      ? source.planningBlocks
+      : {},
+  };
+}
+
+function dutySchedules(state) {
+  if (Array.isArray(state.dutySchedules) && state.dutySchedules.length) {
+    return state.dutySchedules;
+  }
+  return [{ id: 'primary', name: 'Основний', data: state.duties }];
+}
+
+function cleanScheduleName(name) {
+  const cleanName = String(name || '').trim().replace(/\s+/g, ' ');
+  if (cleanName.length < 2) throw new Error('Вкажіть назву графіка.');
+  if (cleanName.length > 80) throw new Error('Назва графіка має містити не більше 80 символів.');
+  return cleanName;
+}
+
+function cleanTime(value) {
+  const result = String(value || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(result)) {
+    throw new Error('Час має бути у форматі ГГ:ХХ.');
+  }
+  return result;
+}
+
+function minutesFromTime(value) {
+  const [hours, minutes] = cleanTime(value).split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
 function defaultState(now = new Date()) {
+  const duties = createDutyData(now);
   return {
     schemaVersion: SCHEMA_VERSION,
     employees: [],
     records: {},
     receipts: [],
     workdayOverrides: {},
-    duties: {
-      initialized: false,
-      participantIds: [],
-      baselineYear: String(now.getFullYear()),
-      baselineThroughDate: endOfCalendarWeek(dateKeyFromDate(now)),
-      baselines: {},
-      assignments: {},
-      aDays: {},
-      unavailable: {},
-      planningBlocks: {},
-    },
+    dutySchedules: [{
+      id: 'primary',
+      name: 'Основний',
+      createdAt: now.toISOString(),
+      data: duties,
+    }],
+    activeDutyScheduleId: 'primary',
+    duties,
+    timeOffEntries: [],
     settings: {
       closeHour: 18,
       closeMinute: 0,
@@ -164,41 +236,49 @@ function normalizeState(input, now = new Date()) {
   state.workdayOverrides = input.workdayOverrides && typeof input.workdayOverrides === 'object'
     ? input.workdayOverrides
     : {};
-  const currentYear = String(now.getFullYear());
-  const inputBaselineYear = /^\d{4}$/.test(input.duties?.baselineYear || '')
-    ? input.duties.baselineYear
-    : currentYear;
-  const inputBaselineThroughDate = /^\d{4}-\d{2}-\d{2}$/.test(input.duties?.baselineThroughDate || '')
-    && (input.duties.baselineThroughDate.startsWith(`${inputBaselineYear}-`)
-      || input.duties.baselineThroughDate === previousYearEnd(inputBaselineYear))
-    ? input.duties.baselineThroughDate
-    : (inputBaselineYear === currentYear
-      ? endOfCalendarWeek(dateKeyFromDate(now))
-      : `${inputBaselineYear}-12-31`);
-  state.duties = {
-    ...state.duties,
-    ...(input.duties && typeof input.duties === 'object' ? input.duties : {}),
-    baselines: input.duties?.baselines && typeof input.duties.baselines === 'object'
-      ? input.duties.baselines
-      : {},
-    assignments: input.duties?.assignments && typeof input.duties.assignments === 'object'
-      ? input.duties.assignments
-      : {},
-    aDays: input.duties?.aDays && typeof input.duties.aDays === 'object'
-      ? input.duties.aDays
-      : {},
-    unavailable: input.duties?.unavailable && typeof input.duties.unavailable === 'object'
-      ? input.duties.unavailable
-      : {},
-    planningBlocks: input.duties?.planningBlocks && typeof input.duties.planningBlocks === 'object'
-      ? input.duties.planningBlocks
-      : {},
-    participantIds: Array.isArray(input.duties?.participantIds)
-      ? input.duties.participantIds
-      : state.employees.map((employee) => employee.id),
-    baselineYear: inputBaselineYear,
-    baselineThroughDate: inputBaselineThroughDate,
-  };
+  const importedSchedules = Array.isArray(input.dutySchedules)
+    ? input.dutySchedules
+    : [];
+  const scheduleIds = new Set();
+  state.dutySchedules = importedSchedules.flatMap((schedule, index) => {
+    if (!schedule || typeof schedule !== 'object') return [];
+    const id = String(schedule.id || '').trim() || `schedule-${index + 1}`;
+    if (scheduleIds.has(id)) return [];
+    scheduleIds.add(id);
+    const useRootDutyData = id === input.activeDutyScheduleId
+      && input.duties && typeof input.duties === 'object';
+    return [{
+      id,
+      name: String(schedule.name || '').trim().slice(0, 80) || `Графік ${index + 1}`,
+      createdAt: schedule.createdAt || now.toISOString(),
+      data: normalizeDutyData(
+        useRootDutyData ? input.duties : schedule.data,
+        now,
+        state.employees.map((employee) => employee.id),
+      ),
+    }];
+  });
+  if (!state.dutySchedules.length) {
+    const legacyDuties = normalizeDutyData(
+      input.duties,
+      now,
+      state.employees.map((employee) => employee.id),
+    );
+    state.dutySchedules = [{
+      id: 'primary',
+      name: 'Основний',
+      createdAt: now.toISOString(),
+      data: legacyDuties,
+    }];
+  }
+  const activeSchedule = state.dutySchedules.find((schedule) => (
+    schedule.id === input.activeDutyScheduleId
+  )) || state.dutySchedules[0];
+  state.activeDutyScheduleId = activeSchedule.id;
+  state.duties = activeSchedule.data;
+  state.timeOffEntries = Array.isArray(input.timeOffEntries)
+    ? input.timeOffEntries
+    : [];
   state.audit = Array.isArray(input.audit) ? input.audit.slice(-5000) : [];
   state.settings = {
     ...state.settings,
@@ -222,20 +302,48 @@ function normalizeState(input, now = new Date()) {
   if (state.employees.filter((employee) => employee.active).length > 15) {
     throw new Error('Одночасно може бути не більше 15 активних працівників.');
   }
-  const inactiveParticipantIds = new Set(
-    [...new Set(state.duties.participantIds)]
-      .filter((employeeId) => ids.has(employeeId))
-      .filter((employeeId) => !state.employees.find((employee) => employee.id === employeeId)?.active),
-  );
-  state.duties.participantIds = [...new Set(state.duties.participantIds)]
-    .filter((employeeId) => ids.has(employeeId) && !inactiveParticipantIds.has(employeeId));
-  removeEmployeesFromFutureDutyAssignments(
-    state,
-    inactiveParticipantIds,
-    dateKeyFromDate(now),
-    now,
-    'participant_archived',
-  );
+  for (const schedule of state.dutySchedules) {
+    const inactiveParticipantIds = new Set(
+      [...new Set(schedule.data.participantIds)]
+        .filter((employeeId) => ids.has(employeeId))
+        .filter((employeeId) => !state.employees.find((employee) => employee.id === employeeId)?.active),
+    );
+    schedule.data.participantIds = [...new Set(schedule.data.participantIds)]
+      .filter((employeeId) => ids.has(employeeId) && !inactiveParticipantIds.has(employeeId));
+    removeEmployeesFromDutyData(
+      schedule.data,
+      inactiveParticipantIds,
+      dateKeyFromDate(now),
+      now,
+      'participant_archived',
+    );
+  }
+
+  const timeOffIds = new Set();
+  state.timeOffEntries = state.timeOffEntries.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || !ids.has(entry.employeeId)) return [];
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.date || '')) return [];
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(entry.startTime || '')
+      || !/^([01]\d|2[0-3]):[0-5]\d$/.test(entry.endTime || '')) return [];
+    const startMinutes = minutesFromTime(entry.startTime);
+    const endMinutes = minutesFromTime(entry.endTime);
+    if (endMinutes <= startMinutes) return [];
+    const id = String(entry.id || '').trim() || crypto.randomUUID();
+    if (timeOffIds.has(id)) return [];
+    timeOffIds.add(id);
+    return [{
+      id,
+      employeeId: entry.employeeId,
+      date: entry.date,
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+      durationMinutes: endMinutes - startMinutes,
+      destination: String(entry.destination || '').trim().slice(0, 200),
+      note: String(entry.note || '').trim().slice(0, 500),
+      createdAt: entry.createdAt || now.toISOString(),
+      updatedAt: entry.updatedAt || entry.createdAt || now.toISOString(),
+    }];
+  });
 
   return state;
 }
@@ -279,8 +387,8 @@ function createEmployee(state, name, now = new Date()) {
   return employee;
 }
 
-function removeEmployeesFromFutureDutyAssignments(
-  state,
+function removeEmployeesFromDutyData(
+  duties,
   removedIds,
   fromDate,
   now,
@@ -288,10 +396,10 @@ function removeEmployeesFromFutureDutyAssignments(
 ) {
   if (!removedIds?.size) return [];
   const affectedDates = [];
-  for (const [date, assignment] of Object.entries(state.duties.assignments)) {
+  for (const [date, assignment] of Object.entries(duties.assignments)) {
     if (date < fromDate || !(assignment.employeeIds || []).some((id) => removedIds.has(id))) continue;
     const employeeIds = (assignment.employeeIds || []).filter((id) => !removedIds.has(id));
-    state.duties.assignments[date] = {
+    duties.assignments[date] = {
       ...assignment,
       employeeIds,
       realizedEmployeeIds: (assignment.realizedEmployeeIds || [])
@@ -307,6 +415,16 @@ function removeEmployeesFromFutureDutyAssignments(
   return affectedDates;
 }
 
+function removeEmployeesFromFutureDutyAssignments(
+  state,
+  removedIds,
+  fromDate,
+  now,
+  source,
+) {
+  return removeEmployeesFromDutyData(state.duties, removedIds, fromDate, now, source);
+}
+
 function archiveEmployee(state, employeeId, now = new Date()) {
   const employee = getEmployee(state, employeeId);
   employee.active = false;
@@ -314,17 +432,128 @@ function archiveEmployee(state, employeeId, now = new Date()) {
   employee.archivedAt = now.toISOString();
   const openPeriod = employee.activePeriods.findLast((period) => !period.end);
   if (openPeriod) openPeriod.end = employee.archivedDate;
-  state.duties.participantIds = (state.duties.participantIds || [])
-    .filter((id) => id !== employeeId);
-  const affectedDutyDates = removeEmployeesFromFutureDutyAssignments(
-    state,
-    new Set([employeeId]),
-    employee.archivedDate,
-    now,
-    'participant_archived',
-  );
+  const affectedDutyDates = {};
+  for (const schedule of dutySchedules(state)) {
+    schedule.data.participantIds = (schedule.data.participantIds || [])
+      .filter((id) => id !== employeeId);
+    affectedDutyDates[schedule.id] = removeEmployeesFromDutyData(
+      schedule.data,
+      new Set([employeeId]),
+      employee.archivedDate,
+      now,
+      'participant_archived',
+    );
+  }
   appendAudit(state, 'employee_archived', { employeeId, affectedDutyDates }, now);
   return employee;
+}
+
+function createDutySchedule(state, name, now = new Date()) {
+  const cleanName = cleanScheduleName(name);
+  if (dutySchedules(state).some((schedule) => (
+    schedule.name.toLocaleLowerCase('uk-UA') === cleanName.toLocaleLowerCase('uk-UA')
+  ))) {
+    throw new Error('Графік із такою назвою вже існує.');
+  }
+  const data = createDutyData(now);
+  const schedule = {
+    id: crypto.randomUUID(),
+    name: cleanName,
+    createdAt: now.toISOString(),
+    data,
+  };
+  state.dutySchedules.push(schedule);
+  state.activeDutyScheduleId = schedule.id;
+  state.duties = data;
+  appendAudit(state, 'duty_schedule_created', { scheduleId: schedule.id, name: schedule.name }, now);
+  return schedule;
+}
+
+function renameDutySchedule(state, scheduleId, name, now = new Date()) {
+  const schedule = dutySchedules(state).find((item) => item.id === scheduleId);
+  if (!schedule) throw new Error('Графік не знайдено.');
+  const cleanName = cleanScheduleName(name);
+  if (state.dutySchedules.some((item) => (
+    item.id !== schedule.id
+    && item.name.toLocaleLowerCase('uk-UA') === cleanName.toLocaleLowerCase('uk-UA')
+  ))) {
+    throw new Error('Графік із такою назвою вже існує.');
+  }
+  const previousName = schedule.name;
+  schedule.name = cleanName;
+  appendAudit(state, 'duty_schedule_renamed', {
+    scheduleId: schedule.id,
+    previousName,
+    name: schedule.name,
+  }, now);
+  return schedule;
+}
+
+function switchDutySchedule(state, scheduleId, now = new Date()) {
+  const schedule = dutySchedules(state).find((item) => item.id === scheduleId);
+  if (!schedule) throw new Error('Графік не знайдено.');
+  state.activeDutyScheduleId = schedule.id;
+  state.duties = schedule.data;
+  appendAudit(state, 'duty_schedule_switched', { scheduleId: schedule.id }, now);
+  return schedule;
+}
+
+function deleteDutySchedule(state, scheduleId, now = new Date()) {
+  if (!Array.isArray(state.dutySchedules) || state.dutySchedules.length <= 1) {
+    throw new Error('Не можна видалити єдиний графік.');
+  }
+  const index = state.dutySchedules.findIndex((item) => item.id === scheduleId);
+  if (index < 0) throw new Error('Графік не знайдено.');
+  const [removed] = state.dutySchedules.splice(index, 1);
+  if (state.activeDutyScheduleId === scheduleId) {
+    const next = state.dutySchedules[Math.min(index, state.dutySchedules.length - 1)];
+    state.activeDutyScheduleId = next.id;
+    state.duties = next.data;
+  }
+  appendAudit(state, 'duty_schedule_deleted', {
+    scheduleId: removed.id,
+    name: removed.name,
+  }, now);
+  return removed;
+}
+
+function createTimeOffEntry(state, input, now = new Date()) {
+  const employee = getEmployee(state, input.employeeId);
+  assertDateKey(input.date);
+  const startTime = cleanTime(input.startTime);
+  const endTime = cleanTime(input.endTime);
+  const durationMinutes = minutesFromTime(endTime) - minutesFromTime(startTime);
+  if (durationMinutes <= 0) {
+    throw new Error('Час повернення має бути пізнішим за час, коли працівник відпросився.');
+  }
+  const destination = String(input.destination || '').trim().replace(/\s+/g, ' ');
+  if (!destination) throw new Error('Вкажіть, куди або з якої причини відпросився працівник.');
+  if (destination.length > 200) throw new Error('Поле «Куди / причина» має містити не більше 200 символів.');
+  const note = String(input.note || '').trim();
+  if (note.length > 500) throw new Error('Примітка має містити не більше 500 символів.');
+  const entry = {
+    id: crypto.randomUUID(),
+    employeeId: employee.id,
+    date: input.date,
+    startTime,
+    endTime,
+    durationMinutes,
+    destination,
+    note,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  };
+  state.timeOffEntries.push(entry);
+  appendAudit(state, 'time_off_created', { ...entry }, now);
+  return entry;
+}
+
+function deleteTimeOffEntry(state, entryId, now = new Date()) {
+  const index = state.timeOffEntries.findIndex((entry) => entry.id === entryId);
+  if (index < 0) throw new Error('Запис «Відпросився» не знайдено.');
+  const [entry] = state.timeOffEntries.splice(index, 1);
+  appendAudit(state, 'time_off_deleted', { entryId, employeeId: entry.employeeId }, now);
+  return entry;
 }
 
 function restoreEmployee(state, employeeId, now = new Date()) {
@@ -450,9 +679,13 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   if (status === STATUS.SUBMITTED && date > dateKeyFromDate(now)) {
     throw new Error('Не можна вручну позначити майбутній день як поданий.');
   }
-  if (DUTY_BLOCKING_RECORD_STATUSES.has(status)
-    && state.duties.assignments[date]?.employeeIds?.includes(employeeId)) {
-    throw new Error('Працівник призначений черговим на цю дату. Спочатку змініть графік чергувань.');
+  const blockingSchedule = DUTY_BLOCKING_RECORD_STATUSES.has(status)
+    ? dutySchedules(state).find((schedule) => (
+      schedule.data.assignments[date]?.employeeIds?.includes(employeeId)
+    ))
+    : null;
+  if (blockingSchedule) {
+    throw new Error(`Працівник призначений черговим на цю дату у графіку «${blockingSchedule.name}». Спочатку змініть графік чергувань.`);
   }
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
@@ -1637,10 +1870,14 @@ module.exports = {
   clearWorkdayOverride,
   clearManualRecord,
   clone,
+  createDutySchedule,
   createEmployee,
+  createTimeOffEntry,
   dateKeyFromDate,
   dayOfWeek,
   defaultState,
+  deleteDutySchedule,
+  deleteTimeOffEntry,
   ensureAutomaticMisses,
   generateDutySchedule,
   getEmployee,
@@ -1652,6 +1889,7 @@ module.exports = {
   removeDutyAssignment,
   recordKey,
   recordSubmission,
+  renameDutySchedule,
   restoreEmployee,
   setDutyAssignment,
   setDutyRealized,
@@ -1659,4 +1897,5 @@ module.exports = {
   toggleDutyAssignment,
   setManualStatus,
   setWorkdayOverride,
+  switchDutySchedule,
 };

@@ -102,6 +102,7 @@ let ui = {
   analytics: null,
   dutyMonth: localDateKey().slice(0, 7),
   dutyStats: null,
+  timeOffMonth: localDateKey().slice(0, 7),
   scrollPositions: {},
 };
 
@@ -142,6 +143,12 @@ function activeEmployees() {
 function dutyParticipants() {
   const ids = new Set(snapshot.duties?.participantIds || []);
   return activeEmployees().filter((employee) => ids.has(employee.id));
+}
+
+function activeDutySchedule() {
+  return (snapshot.dutySchedules || []).find((schedule) => (
+    schedule.id === snapshot.activeDutyScheduleId
+  )) || snapshot.dutySchedules?.[0] || { id: 'primary', name: 'Основний' };
 }
 
 function employeeById(employeeId) {
@@ -349,6 +356,7 @@ function renderDashboard() {
     ['today', '●', 'Сьогодні'],
     ['journal', '▦', 'Табель'],
     ['duties', '◫', 'Чергування'],
+    ['timeoff', '↗', 'Відпросився'],
     ['analytics', '⌁', 'Аналітика'],
     ['employees', '♙', 'Працівники'],
     ['data', '⚙', 'Налаштування'],
@@ -372,6 +380,7 @@ function renderDashboard() {
 function renderActivePage() {
   if (ui.tab === 'journal') return renderJournalPage();
   if (ui.tab === 'duties') return renderDutyPage();
+  if (ui.tab === 'timeoff') return renderTimeOffPage();
   if (ui.tab === 'analytics') return renderAnalyticsPage();
   if (ui.tab === 'employees') return renderEmployeesPage();
   if (ui.tab === 'data') return renderDataPage();
@@ -515,16 +524,39 @@ function dutyCell(employee, date) {
   return { symbol: '·', className: 'duty-empty', title: 'Доступний для чергування' };
 }
 
+function renderDutyScheduleToolbar() {
+  const schedules = snapshot.dutySchedules || [{ id: 'primary', name: 'Основний' }];
+  const active = activeDutySchedule();
+  return `
+    <section class="duty-schedule-toolbar panel compact-panel">
+      <label class="field duty-schedule-field">
+        <span>Окремий графік</span>
+        <select data-duty-schedule-select>
+          ${schedules.map((schedule) => `<option value="${h(schedule.id)}" ${schedule.id === active.id ? 'selected' : ''}>${h(schedule.name)}</option>`).join('')}
+        </select>
+      </label>
+      <div class="duty-schedule-actions">
+        <button class="button small" data-create-duty-schedule>+ Новий графік</button>
+        <button class="button small" data-rename-duty-schedule>Перейменувати</button>
+        <button class="button small danger" data-delete-duty-schedule ${schedules.length <= 1 ? 'disabled' : ''}>Видалити</button>
+      </div>
+      <p>Учасники, позначки, історія, Σ, Р і автоматичне формування зберігаються окремо для кожного графіка.</p>
+    </section>
+  `;
+}
+
 function renderDutyPage() {
   const employees = activeEmployees();
+  const scheduleToolbar = renderDutyScheduleToolbar();
   if (!employees.length) {
-    return `<div class="page-header"><div><h1>Чергування</h1><p>Спочатку додайте працівників.</p></div></div><div class="panel"><button class="button primary" data-action="open-employees">Додати працівника</button></div>`;
+    return `<div class="page-header"><div><h1>Чергування</h1><p>Спочатку додайте працівників.</p></div></div>${scheduleToolbar}<div class="panel"><button class="button primary" data-action="open-employees">Додати працівника</button></div>`;
   }
   if (!snapshot.duties.initialized) {
     return `
       <div class="page-header">
-        <div><h1>Початкові дані чергувань</h1><p>Один раз введіть річні підсумки станом на кінець поточного тижня.</p></div>
+        <div><h1>Початкові дані · ${h(activeDutySchedule().name)}</h1><p>Один раз введіть річні підсумки станом на кінець поточного тижня.</p></div>
       </div>
+      ${scheduleToolbar}
       <form id="duty-history-form" class="panel duty-history-form">
         <div class="confirm-box">Ці числа стануть початковими значеннями колонок Σ і Р. Ручне заповнення старого календаря не додасть їх повторно; нові дежурства з наступного тижня збільшуватимуть підсумки автоматично.</div>
         <div class="table-scroll">
@@ -547,7 +579,7 @@ function renderDutyPage() {
 
   const participants = dutyParticipants();
   if (!participants.length) {
-    return `<div class="page-header"><div><h1>Графік чергувань</h1><p>У графіку немає активних учасників.</p></div><button class="button primary" data-duty-history>Обрати учасників</button></div>`;
+    return `<div class="page-header"><div><h1>Графік «${h(activeDutySchedule().name)}»</h1><p>У графіку немає активних учасників.</p></div><button class="button primary" data-duty-history>Обрати учасників</button></div>${scheduleToolbar}`;
   }
 
   const count = daysInMonth(ui.dutyMonth);
@@ -565,11 +597,12 @@ function renderDutyPage() {
   return `
     <div class="page-header">
       <div>
-        <h1>Графік чергувань</h1>
+        <h1>Графік «${h(activeDutySchedule().name)}»</h1>
         <p>Щодня — двоє чергових, включно із суботою та неділею. Один — лише за вашим дозволом.</p>
       </div>
       <button class="button" data-duty-history>Учасники й підсумки</button>
     </div>
+    ${scheduleToolbar}
     <div class="metrics-grid duty-metrics">
       <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон за ${dutyYear} рік</span></div>
       <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>чергувань за ${dutyYear} рік</span></div>
@@ -613,6 +646,63 @@ function renderDutyPage() {
         }).join('')}</tbody>
       </table>
     </div>
+  `;
+}
+
+function formatDuration(minutes) {
+  const hours = Math.floor(Number(minutes || 0) / 60);
+  const rest = Number(minutes || 0) % 60;
+  if (!hours) return `${rest} хв`;
+  if (!rest) return `${hours} год`;
+  return `${hours} год ${rest} хв`;
+}
+
+function renderTimeOffPage() {
+  const employees = activeEmployees();
+  const entries = (snapshot.timeOffEntries || [])
+    .filter((entry) => entry.date.startsWith(`${ui.timeOffMonth}-`))
+    .sort((left, right) => (
+      right.date.localeCompare(left.date)
+      || right.startTime.localeCompare(left.startTime)
+      || right.createdAt.localeCompare(left.createdAt)
+    ));
+  const totalMinutes = entries.reduce((sum, entry) => sum + entry.durationMinutes, 0);
+  return `
+    <div class="page-header">
+      <div>
+        <h1>Відпросився</h1>
+        <p>Окремий журнал коротких відлучень: коли, куди та на скільки відпускали працівника.</p>
+      </div>
+    </div>
+    <div class="confirm-box time-off-notice">Цей журнал не змінює табель, колір віджета, норму запитів або кількість відпрацьованих днів. Повноденну відсутність, як і раніше, позначайте в табелі.</div>
+    <form id="time-off-form" class="panel">
+      <div class="form-grid time-off-form-grid">
+        <label class="field"><span>Працівник</span><select name="employeeId" required><option value="">Оберіть працівника</option>${employees.map((employee) => `<option value="${h(employee.id)}">${h(employee.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Дата</span><input name="date" type="date" value="${localDateKey()}" required></label>
+        <label class="field"><span>Від</span><input name="startTime" type="time" value="09:00" required></label>
+        <label class="field"><span>До</span><input name="endTime" type="time" value="10:00" required></label>
+        <label class="field time-off-destination"><span>Куди / причина</span><input name="destination" maxlength="200" placeholder="Наприклад, до лікаря" required></label>
+        <label class="field time-off-note"><span>Примітка</span><input name="note" maxlength="500" placeholder="Необов’язково"></label>
+      </div>
+      <div class="form-actions"><button class="button primary" type="submit" ${employees.length ? '' : 'disabled'}>Додати запис</button></div>
+    </form>
+    <div class="table-toolbar">
+      <button class="button small" data-time-off-month-shift="-1">← Попередній</button>
+      <div class="month-title">${h(formatMonth(ui.timeOffMonth))}</div>
+      <button class="button small" data-time-off-month-shift="1">Наступний →</button>
+      <span class="time-off-summary">${entries.length} записів · ${h(formatDuration(totalMinutes))}</span>
+    </div>
+    <section class="panel time-off-list-panel">
+      <div class="table-scroll" data-scroll-key="time-off-table">
+        <table class="data-table time-off-table">
+          <thead><tr><th>Дата</th><th>Працівник</th><th>Час</th><th>Тривалість</th><th>Куди / причина</th><th>Примітка</th><th></th></tr></thead>
+          <tbody>${entries.map((entry) => {
+            const employee = employeeById(entry.employeeId);
+            return `<tr><td>${h(formatDate(entry.date, { day: 'numeric', month: 'short', year: 'numeric' }))}</td><td>${h(employee?.name || 'Видалений працівник')}</td><td>${h(entry.startTime)}–${h(entry.endTime)}</td><td>${h(formatDuration(entry.durationMinutes))}</td><td>${h(entry.destination)}</td><td>${h(entry.note || '—')}</td><td><button class="button small danger" data-delete-time-off="${h(entry.id)}" title="Видалити запис">Видалити</button></td></tr>`;
+          }).join('') || '<tr><td colspan="7" class="muted">За цей місяць записів немає.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -765,6 +855,14 @@ function renderDataPage() {
           <div class="rule-icon">ВХ</div>
           <div><strong>Субота й неділя</strong><p>Автоматично позначаються вихідними й не вимагають запиту. Конкретний вихідний можна вручну зробити робочим днем.</p></div>
         </article>
+        <article class="rule-card">
+          <div class="rule-icon">◫</div>
+          <div><strong>Окремі графіки</strong><p>Кожен графік чергувань має власних учасників, календар, позначки, підсумки та незалежне формування наступного тижня.</p></div>
+        </article>
+        <article class="rule-card">
+          <div class="rule-icon">↗</div>
+          <div><strong>Журнал «Відпросився»</strong><p>Короткі відлучення з точним часом зберігаються окремо й не змінюють табель або кількість відпрацьованих днів.</p></div>
+        </article>
       </div>
 
       <h3 class="rules-subtitle">Кольори щоденного обліку</h3>
@@ -796,7 +894,7 @@ function renderDataPage() {
       <h2>Резервні копії</h2>
       <p class="panel-copy settings-privacy">Програма не передає дані в інтернет. Усі записи зберігаються поруч із застосунком.</p>
       <div class="data-actions">
-        <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, розподіли та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
+        <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, усі графіки, відлучення та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
         <div class="data-action"><h3>Таблиця CSV</h3><p>Плоска таблиця для відкриття в Excel або іншій програмі.</p><button class="button" data-export="csv">Експортувати таблицю</button></div>
         <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
       </div>
@@ -805,7 +903,7 @@ function renderDataPage() {
     <section class="panel danger-zone">
       <div>
         <h2>Повне очищення</h2>
-        <p class="panel-copy">Видаляє всіх працівників, табель, документи, чергування, обмеження, підсумки та внутрішню резервну копію. Застосунок повернеться до першого запуску.</p>
+        <p class="panel-copy">Видаляє всіх працівників, табель, документи, усі графіки чергувань, журнал «Відпросився», обмеження, підсумки та внутрішню резервну копію. Застосунок повернеться до першого запуску.</p>
       </div>
       <button class="button danger" data-action="reset-all-data">Обнулити всі дані</button>
     </section>
@@ -833,6 +931,21 @@ function closeModal() {
     widgetDialogExpanded = false;
     queueWidgetWindowMode('widget');
   }
+}
+
+function openDutyScheduleModal(mode = 'create') {
+  const schedule = activeDutySchedule();
+  const creating = mode === 'create';
+  openModal(`
+    <form id="duty-schedule-form" data-mode="${creating ? 'create' : 'rename'}" data-schedule-id="${h(schedule.id)}">
+      <header class="modal-head"><div><h2>${creating ? 'Новий окремий графік' : 'Перейменувати графік'}</h2><p>${creating ? 'Матиме власних учасників, позначки, історію та підсумки' : h(schedule.name)}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        <label class="field"><span>Назва графіка</span><input name="name" maxlength="80" value="${creating ? '' : h(schedule.name)}" placeholder="Наприклад, Друга зміна" autocomplete="off" required autofocus></label>
+        ${creating ? '<div class="confirm-box">Поточний графік не зміниться. Новий відкриється порожнім, після чого ви окремо оберете його учасників і початкові підсумки.</div>' : ''}
+      </div>
+      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">${creating ? 'Створити графік' : 'Зберегти назву'}</button></footer>
+    </form>
+  `);
 }
 
 function openDutyHistoryModal() {
@@ -1119,7 +1232,7 @@ appRoot.addEventListener('click', async (event) => {
     }
     if (action === 'reset-all-data') {
       if (!window.confirm('Це назавжди видалить УСІ дані застосунку. Продовжити?')) return;
-      if (!window.confirm('Останнє підтвердження: видалити працівників, табель, документи й графік чергувань без можливості скасування?')) return;
+      if (!window.confirm('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань і журнал «Відпросився» без можливості скасування?')) return;
       const result = await run(
         () => window.counter.resetAllData(),
         null,
@@ -1168,6 +1281,41 @@ appRoot.addEventListener('click', async (event) => {
   if (monthButton) {
     ui.month = monthShift(ui.month, Number(monthButton.dataset.monthShift));
     renderShell();
+    return;
+  }
+
+  const timeOffMonthButton = event.target.closest('[data-time-off-month-shift]');
+  if (timeOffMonthButton) {
+    ui.timeOffMonth = monthShift(ui.timeOffMonth, Number(timeOffMonthButton.dataset.timeOffMonthShift));
+    renderShell();
+    return;
+  }
+
+  const deleteTimeOffButton = event.target.closest('[data-delete-time-off]');
+  if (deleteTimeOffButton) {
+    if (!window.confirm('Видалити цей запис із журналу «Відпросився»?')) return;
+    await run(
+      () => window.counter.deleteTimeOffEntry(deleteTimeOffButton.dataset.deleteTimeOff),
+      'Запис видалено.',
+    );
+    return;
+  }
+
+  if (event.target.closest('[data-create-duty-schedule]')) {
+    openDutyScheduleModal('create');
+    return;
+  }
+  if (event.target.closest('[data-rename-duty-schedule]')) {
+    openDutyScheduleModal('rename');
+    return;
+  }
+  if (event.target.closest('[data-delete-duty-schedule]')) {
+    const schedule = activeDutySchedule();
+    if (!window.confirm(`Видалити графік «${schedule.name}» разом із його історією та позначками? Інші графіки не зміняться.`)) return;
+    const result = await run(
+      () => window.counter.deleteDutySchedule(schedule.id),
+      `Графік «${schedule.name}» видалено.`,
+    );
     return;
   }
 
@@ -1321,6 +1469,26 @@ appRoot.addEventListener('contextmenu', (event) => {
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'time-off-form') {
+    const form = new FormData(event.target);
+    const result = await run(
+      () => window.counter.createTimeOffEntry({
+        employeeId: String(form.get('employeeId') || ''),
+        date: String(form.get('date') || ''),
+        startTime: String(form.get('startTime') || ''),
+        endTime: String(form.get('endTime') || ''),
+        destination: String(form.get('destination') || ''),
+        note: String(form.get('note') || ''),
+      }),
+      'Запис «Відпросився» додано.',
+    );
+    if (result) {
+      ui.timeOffMonth = result.date.slice(0, 7);
+      event.target.reset();
+      renderShell();
+    }
+    return;
+  }
   if (event.target.id === 'duty-history-form') {
     await run(
       () => window.counter.initializeDuties(dutyHistoryEntries(event.target), dutyParticipantIds(event.target)),
@@ -1343,6 +1511,18 @@ appRoot.addEventListener('submit', async (event) => {
 });
 
 appRoot.addEventListener('change', async (event) => {
+  if (event.target.matches('[data-duty-schedule-select]')) {
+    const result = await run(
+      () => window.counter.switchDutySchedule(event.target.value),
+      null,
+      { undo: false },
+    );
+    if (result) {
+      ui.dutyStats = null;
+      await refresh({ duties: true });
+    }
+    return;
+  }
   if (event.target.id === 'always-on-top') {
     try {
       await window.counter.setAlwaysOnTop(event.target.checked);
@@ -1494,6 +1674,22 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'duty-schedule-form') {
+    const form = new FormData(event.target);
+    const name = String(form.get('name') || '');
+    const creating = event.target.dataset.mode === 'create';
+    const result = await run(
+      () => creating
+        ? window.counter.createDutySchedule(name)
+        : window.counter.renameDutySchedule(event.target.dataset.scheduleId, name),
+      creating ? 'Новий графік створено.' : 'Назву графіка оновлено.',
+    );
+    if (result) {
+      ui.dutyStats = null;
+      closeModal();
+    }
+    return;
+  }
   if (event.target.id === 'duty-history-form') {
     const result = await run(
       () => window.counter.initializeDuties(dutyHistoryEntries(event.target), dutyParticipantIds(event.target)),

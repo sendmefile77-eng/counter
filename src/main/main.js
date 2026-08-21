@@ -12,20 +12,26 @@ const {
   clearWorkdayOverride,
   clearManualRecord,
   clone,
+  createDutySchedule,
   createEmployee,
+  createTimeOffEntry,
   dateKeyFromDate,
+  deleteDutySchedule,
+  deleteTimeOffEntry,
   ensureAutomaticMisses,
   generateDutySchedule,
   initializeDutyHistory,
   normalizeState,
   removeDutyAssignment,
   recordSubmission,
+  renameDutySchedule,
   restoreEmployee,
   setManualStatus,
   setDutyAssignment,
   setDutyRealized,
   setDutyRestriction,
   setWorkdayOverride,
+  switchDutySchedule,
   toggleDutyAssignment,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
@@ -189,7 +195,7 @@ function mutate(action, callback) {
     broadcast();
     return clone(result);
   } catch (error) {
-    store.state = before;
+    store.state = normalizeState(before);
     throw error;
   }
 }
@@ -225,30 +231,35 @@ function buildCsv(state) {
         record.note || '',
       ];
     });
-  const dutyRows = Object.values(state.duties.assignments).flatMap((assignment) => (
-    (assignment.employeeIds || []).map((employeeId) => {
-      const employee = state.employees.find((item) => item.id === employeeId);
-      return [
-        'Чергування',
-        assignment.date,
-        employee?.name || 'Невідомий працівник',
-        assignment.realizedEmployeeIds?.includes(employeeId) ? 'Реалізоване' : 'Заплановане',
-        '',
-        '',
-        '',
-        assignment.singleApproved ? 'Один черговий за дозволом' : '',
-      ];
-    })
+  const schedules = Array.isArray(state.dutySchedules) && state.dutySchedules.length
+    ? state.dutySchedules
+    : [{ name: 'Основний', data: state.duties }];
+  const dutyRows = schedules.flatMap((schedule) => (
+    Object.values(schedule.data.assignments).flatMap((assignment) => (
+      (assignment.employeeIds || []).map((employeeId) => {
+        const employee = state.employees.find((item) => item.id === employeeId);
+        return [
+          `Чергування · ${schedule.name}`,
+          assignment.date,
+          employee?.name || 'Невідомий працівник',
+          assignment.realizedEmployeeIds?.includes(employeeId) ? 'Реалізоване' : 'Заплановане',
+          '',
+          '',
+          '',
+          assignment.singleApproved ? 'Один черговий за дозволом' : '',
+        ];
+      })
+    ))
   ));
-  const dutyRestrictionRows = [
-    ...Object.values(state.duties.aDays).map((item) => ({ ...item, label: 'А' })),
-    ...Object.values(state.duties.unavailable).map((item) => ({ ...item, label: item.type })),
-    ...Object.values(state.duties.planningBlocks || {})
+  const dutyRestrictionRows = schedules.flatMap((schedule) => ([
+    ...Object.values(schedule.data.aDays).map((item) => ({ ...item, label: 'А' })),
+    ...Object.values(schedule.data.unavailable).map((item) => ({ ...item, label: item.type })),
+    ...Object.values(schedule.data.planningBlocks || {})
       .map((item) => ({ ...item, label: 'Не планувати (без статистики)' })),
   ].map((item) => {
     const employee = state.employees.find((candidate) => candidate.id === item.employeeId);
     return [
-      'Обмеження чергувань',
+      `Обмеження чергувань · ${schedule.name}`,
       item.date,
       employee?.name || 'Невідомий працівник',
       item.label,
@@ -257,21 +268,42 @@ function buildCsv(state) {
       '',
       item.note || '',
     ];
-  });
-  const dutyBaselineRows = Object.entries(state.duties.baselines).map(([employeeId, baseline]) => {
-    const employee = state.employees.find((item) => item.id === employeeId);
+  })));
+  const dutyBaselineRows = schedules.flatMap((schedule) => (
+    Object.entries(schedule.data.baselines).map(([employeeId, baseline]) => {
+      const employee = state.employees.find((item) => item.id === employeeId);
+      return [
+        `Початковий підсумок чергувань · ${schedule.name}`,
+        schedule.data.baselineYear || '',
+        employee?.name || 'Невідомий працівник',
+        `Усього: ${baseline.total || 0}; реалізованих: ${baseline.realized || 0}`,
+        '',
+        '',
+        '',
+        '',
+      ];
+    })
+  ));
+  const timeOffRows = (state.timeOffEntries || []).map((entry) => {
+    const employee = state.employees.find((item) => item.id === entry.employeeId);
     return [
-      'Початковий підсумок чергувань',
-      state.duties.baselineYear || '',
+      'Відпросився',
+      entry.date,
       employee?.name || 'Невідомий працівник',
-      `Усього: ${baseline.total || 0}; реалізованих: ${baseline.realized || 0}`,
+      `${entry.startTime}–${entry.endTime} (${entry.durationMinutes} хв)`,
       '',
+      entry.destination,
       '',
-      '',
-      '',
+      entry.note || '',
     ];
   });
-  const rows = [...requestRows, ...dutyRows, ...dutyRestrictionRows, ...dutyBaselineRows];
+  const rows = [
+    ...requestRows,
+    ...dutyRows,
+    ...dutyRestrictionRows,
+    ...dutyBaselineRows,
+    ...timeOffRows,
+  ];
   return `\uFEFF${[header, ...rows].map((row) => row.map(csvEscape).join(';')).join('\r\n')}\r\n`;
 }
 
@@ -334,6 +366,24 @@ function registerIpc() {
     mutate('duties:clear-restriction', (state) => clearDutyRestriction(state, employeeId, date))
   ));
   ipcMain.handle('duties:stats', (_event, { year } = {}) => calculateDutyStatistics(store.state, year));
+  ipcMain.handle('duties:schedule-create', (_event, { name }) => (
+    mutate('duties:schedule-create', (state) => createDutySchedule(state, name))
+  ));
+  ipcMain.handle('duties:schedule-rename', (_event, { scheduleId, name }) => (
+    mutate('duties:schedule-rename', (state) => renameDutySchedule(state, scheduleId, name))
+  ));
+  ipcMain.handle('duties:schedule-switch', (_event, { scheduleId }) => (
+    mutate('duties:schedule-switch', (state) => switchDutySchedule(state, scheduleId))
+  ));
+  ipcMain.handle('duties:schedule-delete', (_event, { scheduleId }) => (
+    mutate('duties:schedule-delete', (state) => deleteDutySchedule(state, scheduleId))
+  ));
+  ipcMain.handle('time-off:create', (_event, payload) => (
+    mutate('time-off:create', (state) => createTimeOffEntry(state, payload))
+  ));
+  ipcMain.handle('time-off:delete', (_event, { entryId }) => (
+    mutate('time-off:delete', (state) => deleteTimeOffEntry(state, entryId))
+  ));
 
   ipcMain.handle('history:undo', () => {
     const last = undoStack.pop();

@@ -687,6 +687,87 @@ body.mode-widget #app {
   margin-bottom: 12px;
 }
 
+.compact-panel {
+  padding: 13px 15px;
+  margin-bottom: 14px;
+}
+
+.duty-schedule-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px 14px;
+}
+
+.duty-schedule-field select {
+  min-height: 38px;
+  font-weight: 750;
+}
+
+.duty-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.duty-schedule-toolbar p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.time-off-notice {
+  margin-bottom: 14px;
+}
+
+.time-off-form-grid {
+  grid-template-columns: minmax(190px, 1.2fr) minmax(145px, 0.8fr) 110px 110px;
+}
+
+.time-off-destination,
+.time-off-note {
+  grid-column: span 2;
+}
+
+#time-off-form .form-actions {
+  margin-top: 14px;
+}
+
+.time-off-summary {
+  margin-left: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.time-off-list-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.time-off-list-panel .table-scroll {
+  border: 0;
+  border-radius: 0;
+}
+
+.time-off-table th,
+.time-off-table td {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.time-off-table td:nth-child(5),
+.time-off-table td:nth-child(6) {
+  min-width: 170px;
+  white-space: normal;
+}
+
 .duty-history-form {
   display: grid;
   gap: 16px;
@@ -1519,5 +1600,15 @@ body.mode-widget #app {
 
   .sidebar-note {
     display: none;
+  }
+
+  .duty-schedule-toolbar,
+  .time-off-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .time-off-destination,
+  .time-off-note {
+    grid-column: auto;
   }
 }
