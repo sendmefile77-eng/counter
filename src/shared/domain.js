@@ -1004,7 +1004,7 @@ function dutyBalanceMetrics(counts, employeeIds) {
   };
 }
 
-function exactWeekendPlan(
+function exactDutyBlockPlan(
   state,
   dates,
   dutyQueue,
@@ -1019,82 +1019,126 @@ function exactWeekendPlan(
     dutyQueue,
     employeesById,
   ));
-
-  let best = null;
-  const visit = (index, selectedOptions) => {
-    if (index < dates.length) {
-      for (const option of optionsByDate[index]) {
-        selectedOptions.set(dates[index], option);
-        visit(index + 1, selectedOptions);
+  const weekendDate = dates.find((date) => {
+    const weekday = dayOfWeek(date);
+    return weekday === 6 || weekday === 0;
+  });
+  const previousWeekendIds = new Set();
+  if (weekendDate) {
+    const saturday = dayOfWeek(weekendDate) === 6 ? weekendDate : addDays(weekendDate, -1);
+    for (const date of [addDays(saturday, -7), addDays(saturday, -6)]) {
+      for (const employeeId of state.duties.assignments[date]?.employeeIds || []) {
+        previousWeekendIds.add(employeeId);
       }
-      selectedOptions.delete(dates[index]);
-      return;
     }
+  }
 
-    const idsFor = (date) => selectedOptions.get(date)?.employeeIds
-      || state.duties.assignments[date]?.employeeIds
-      || [];
-    for (const date of dates) {
-      const previousDayIds = new Set(idsFor(addDays(date, -1)));
-      const automaticallyAdded = selectedOptions.get(date)?.addedIds || [];
-      if (automaticallyAdded.some((employeeId) => previousDayIds.has(employeeId))) return;
-    }
+  const beamWidth = 1200;
+  let beam = [{
+    selectedOptions: new Map(),
+    counts: { ...rangeCounts },
+    pairCounts: new Map(pairCounts),
+    queue: [...dutyQueue],
+    missingSlots: 0,
+    cooldownViolations: 0,
+    weekendReservePenalty: 0,
+    repeatedPairPenalty: 0,
+    queueCost: 0,
+    score: [0, 0, 0, 0, 0, 0, 0],
+    signature: '',
+  }];
 
-    let missingSlots = 0;
-    let cooldownViolations = 0;
-    let repeatedPairPenalty = 0;
-    let queueCost = 0;
-    const simulatedQueue = [...dutyQueue];
-    const simulatedCounts = { ...rangeCounts };
-    const simulatedPairCounts = new Map(pairCounts);
-    for (const date of dates) {
-      const option = selectedOptions.get(date);
-      const selected = idsFor(date);
-      const addedIds = option?.addedIds || [];
-      missingSlots += option?.missing || 0;
-      const previousTwo = new Set(idsFor(addDays(date, -2)));
-      for (const employeeId of addedIds) {
-        if (previousTwo.has(employeeId)) cooldownViolations += 1;
-        simulatedCounts[employeeId] = (simulatedCounts[employeeId] || 0) + 1;
-        const queueIndex = simulatedQueue.indexOf(employeeId);
-        queueCost += queueIndex < 0 ? simulatedQueue.length : queueIndex;
+  dates.forEach((date, dateIndex) => {
+    const expanded = [];
+    const weekday = dayOfWeek(date);
+    for (const partial of beam) {
+      const previousDayIds = new Set(
+        partial.selectedOptions.get(addDays(date, -1))?.employeeIds
+          || state.duties.assignments[addDays(date, -1)]?.employeeIds
+          || [],
+      );
+      const previousTwoDayIds = new Set(
+        partial.selectedOptions.get(addDays(date, -2))?.employeeIds
+          || state.duties.assignments[addDays(date, -2)]?.employeeIds
+          || [],
+      );
+      for (const option of optionsByDate[dateIndex]) {
+        if (option.addedIds.some((employeeId) => previousDayIds.has(employeeId))) continue;
+        if ((weekday === 6 || weekday === 0)
+          && option.addedIds.some((employeeId) => previousWeekendIds.has(employeeId))) continue;
+
+        const nextCounts = { ...partial.counts };
+        let addedCooldownViolations = 0;
+        let addedWeekendReservePenalty = 0;
+        let addedQueueCost = 0;
+        for (const employeeId of option.addedIds) {
+          if (previousTwoDayIds.has(employeeId)) addedCooldownViolations += 1;
+          if (weekendDate && weekday !== 6 && weekday !== 0
+            && !previousWeekendIds.has(employeeId)) {
+            addedWeekendReservePenalty += 1;
+          }
+          nextCounts[employeeId] = (nextCounts[employeeId] || 0) + 1;
+          const queueIndex = partial.queue.indexOf(employeeId);
+          addedQueueCost += queueIndex < 0 ? partial.queue.length : queueIndex;
+        }
+        const nextPairCounts = new Map(partial.pairCounts);
+        let addedPairPenalty = 0;
+        if (!option.fixed && option.employeeIds.length === 2) {
+          const pairKey = dutyPairKey(option.employeeIds);
+          addedPairPenalty = nextPairCounts.get(pairKey) || 0;
+          nextPairCounts.set(pairKey, addedPairPenalty + 1);
+        }
+        const nextQueue = [...partial.queue];
+        moveDutyQueueToEnd(nextQueue, option.employeeIds);
+        const nextSelectedOptions = new Map(partial.selectedOptions);
+        nextSelectedOptions.set(date, option);
+        const missingSlots = partial.missingSlots + (option.missing || 0);
+        const cooldownViolations = partial.cooldownViolations + addedCooldownViolations;
+        const weekendReservePenalty = partial.weekendReservePenalty + addedWeekendReservePenalty;
+        const repeatedPairPenalty = partial.repeatedPairPenalty + addedPairPenalty;
+        const queueCost = partial.queueCost + addedQueueCost;
+        const balance = dutyBalanceMetrics(nextCounts, balanceEmployeeIds);
+        const score = [
+          missingSlots,
+          cooldownViolations,
+          balance.spread,
+          balance.squares,
+          weekendReservePenalty,
+          repeatedPairPenalty,
+          queueCost,
+        ];
+        expanded.push({
+          selectedOptions: nextSelectedOptions,
+          counts: nextCounts,
+          pairCounts: nextPairCounts,
+          queue: nextQueue,
+          missingSlots,
+          cooldownViolations,
+          weekendReservePenalty,
+          repeatedPairPenalty,
+          queueCost,
+          score,
+          signature: `${partial.signature}|${option.employeeIds.join(',')}`,
+        });
       }
-      if (!option?.fixed && selected.length === 2) {
-        const pairKey = dutyPairKey(selected);
-        repeatedPairPenalty += simulatedPairCounts.get(pairKey) || 0;
-        simulatedPairCounts.set(pairKey, (simulatedPairCounts.get(pairKey) || 0) + 1);
-      }
-      moveDutyQueueToEnd(simulatedQueue, selected);
     }
-    const balance = dutyBalanceMetrics(simulatedCounts, balanceEmployeeIds);
+    expanded.sort((left, right) => (
+      compareDutyScores(left.score, right.score)
+        || left.signature.localeCompare(right.signature)
+    ));
+    beam = expanded.slice(0, beamWidth);
+  });
 
-    // Lexicographic objective: coverage, two full rest days, equal weekly
-    // load, new pairings, then the established cyclic queue.
-    const score = [
-      missingSlots,
-      cooldownViolations,
-      balance.spread,
-      balance.squares,
-      repeatedPairPenalty,
-      queueCost,
-    ];
-    const signature = dates.map((date) => idsFor(date).join(',')).join('|');
-    if (!best
-      || compareDutyScores(score, best.score) < 0
-      || (compareDutyScores(score, best.score) === 0 && signature < best.signature)) {
-      best = {
-        score,
-        signature,
-        selectedByDate: new Map([...selectedOptions].map(([date, option]) => [date, [...option.employeeIds]])),
-        addedByDate: new Map([...selectedOptions].map(([date, option]) => [date, [...option.addedIds]])),
-        shortages: dates
-          .map((date) => ({ date, missing: selectedOptions.get(date)?.missing || 0 }))
-          .filter((item) => item.missing > 0),
-      };
-    }
+  const best = beam[0];
+  return {
+    score: best.score,
+    signature: best.signature,
+    selectedByDate: new Map([...best.selectedOptions].map(([date, option]) => [date, [...option.employeeIds]])),
+    addedByDate: new Map([...best.selectedOptions].map(([date, option]) => [date, [...option.addedIds]])),
+    shortages: dates
+      .map((date) => ({ date, missing: best.selectedOptions.get(date)?.missing || 0 }))
+      .filter((item) => item.missing > 0),
   };
-  visit(0, new Map());
-  return best;
 }
 
 function writeGeneratedDutyAssignment(state, date, employeeIds, now, shortage = false) {
@@ -1164,19 +1208,69 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
   let generated = 0;
   let cursor = startDate;
 
+  if (span <= 7) {
+    const planningDates = [];
+    for (let date = startDate; date <= endDate; date = addDays(date, 1)) {
+      planningDates.push(date);
+    }
+    const plan = exactDutyBlockPlan(
+      state,
+      planningDates,
+      dutyQueue,
+      employeesById,
+      rangeCounts,
+      balanceEmployeeIds,
+      pairCounts,
+    );
+    shortages.push(...plan.shortages);
+    for (const date of planningDates) {
+      const selected = plan.selectedByDate.get(date) || [];
+      const addedIds = plan.addedByDate.get(date) || [];
+      const changed = writeGeneratedDutyAssignment(
+        state,
+        date,
+        selected,
+        now,
+        selected.length < 2,
+      );
+      if (changed) generated += 1;
+      moveDutyQueueToEnd(dutyQueue, addedIds);
+    }
+    if (generated > 0) {
+      appendAudit(state, 'duty_schedule_generated', {
+        startDate,
+        endDate,
+        generated,
+        shortages,
+        weekendConflicts,
+      }, now);
+    }
+    return {
+      startDate,
+      endDate,
+      generated,
+      shortages,
+      weekendConflicts,
+    };
+  }
+
   while (cursor <= endDate) {
     if (cursor.slice(0, 4) !== cycleYear) {
       cycleYear = cursor.slice(0, 4);
       dutyQueue = buildDutyQueue(state, cursor);
     }
-    const weekendDay = dayOfWeek(cursor);
-    if (weekendDay === 6 || weekendDay === 0) {
-      const weekendDates = weekendDay === 6 && addDays(cursor, 1) <= endDate
-        ? [cursor, addDays(cursor, 1)]
-        : [cursor];
-      const plan = exactWeekendPlan(
+    const weekday = dayOfWeek(cursor);
+    if ((weekday === 5 && addDays(cursor, 2) <= endDate)
+      || weekday === 6
+      || weekday === 0) {
+      const blockDates = weekday === 5
+        ? [cursor, addDays(cursor, 1), addDays(cursor, 2)]
+        : weekday === 6 && addDays(cursor, 1) <= endDate
+          ? [cursor, addDays(cursor, 1)]
+          : [cursor];
+      const plan = exactDutyBlockPlan(
         state,
-        weekendDates,
+        blockDates,
         dutyQueue,
         employeesById,
         rangeCounts,
@@ -1184,7 +1278,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         pairCounts,
       );
       shortages.push(...plan.shortages);
-      for (const date of weekendDates) {
+      for (const date of blockDates) {
         const selected = plan.selectedByDate.get(date);
         const addedIds = plan.addedByDate.get(date);
         const shortage = selected.length < 2;
@@ -1199,7 +1293,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         }
         moveDutyQueueToEnd(dutyQueue, selected);
       }
-      cursor = addDays(cursor, weekendDates.length);
+      cursor = addDays(cursor, blockDates.length);
       continue;
     }
 

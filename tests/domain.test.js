@@ -526,7 +526,13 @@ test('тижнева модель не дає трьох чергувань од
   const counts = [...datesByEmployee.values()].map((dates) => dates.length);
   assert.equal(Math.max(...counts), 2);
   assert.equal(Math.min(...counts), 1);
-  assert.equal(pairKeys.size, 7);
+  assert.ok(pairKeys.size >= 6);
+  const previousWeekend = new Set(employees.slice(0, 4).map((employee) => employee.id));
+  const currentWeekend = [
+    ...state.duties.assignments['2026-08-29'].employeeIds,
+    ...state.duties.assignments['2026-08-30'].employeeIds,
+  ];
+  assert.equal(currentWeekend.some((employeeId) => previousWeekend.has(employeeId)), false);
   for (const dates of datesByEmployee.values()) {
     for (let index = 1; index < dates.length; index += 1) {
       const gap = (new Date(`${dates[index]}T12:00:00Z`) - new Date(`${dates[index - 1]}T12:00:00Z`)) / 86_400_000;
@@ -537,7 +543,7 @@ test('тижнева модель не дає трьох чергувань од
   assert.deepEqual(result.weekendConflicts, []);
 });
 
-test('сусідній календарний вікенд не переважає добовий відпочинок і рівність тижня', () => {
+test('якщо всі доступні люди вже чергували минулого вікенду, новий вікенд показує нестачу', () => {
   const now = localDate(2026, 7, 20, 9, 0);
   const state = defaultState(now);
   const employees = Array.from({ length: 4 }, (_, index) => (
@@ -562,11 +568,12 @@ test('сусідній календарний вікенд не переважа
     startDate: '2026-08-29',
     endDate: '2026-08-30',
   }, now);
-  const saturday = new Set(state.duties.assignments['2026-08-29'].employeeIds);
-  const sunday = new Set(state.duties.assignments['2026-08-30'].employeeIds);
-  assert.equal([...saturday].some((employeeId) => sunday.has(employeeId)), false);
-  assert.deepEqual(new Set([...saturday, ...sunday]), new Set(employees.map((employee) => employee.id)));
-  assert.deepEqual(result.shortages, []);
+  assert.deepEqual(state.duties.assignments['2026-08-29'].employeeIds, []);
+  assert.deepEqual(state.duties.assignments['2026-08-30'].employeeIds, []);
+  assert.deepEqual(result.shortages, [
+    { date: '2026-08-29', missing: 2 },
+    { date: '2026-08-30', missing: 2 },
+  ]);
   assert.deepEqual(result.weekendConflicts, []);
 });
 

@@ -546,6 +546,7 @@ function renderDutyPage() {
     const assignment = snapshot.duties.assignments[date];
     return assignment && (assignment.employeeIds?.length || 0) < 2 && !assignment.singleApproved;
   });
+  const incompleteDateSet = new Set(incompleteDates);
   return `
     <div class="page-header">
       <div>
@@ -565,17 +566,7 @@ function renderDutyPage() {
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
       <button class="button primary small" data-generate-duties>Сформувати наступний тиждень</button>
     </div>
-    ${incompleteDates.length ? `
-      <div class="duty-shortage-warning" role="alert">
-        <strong>Не вистачає чергових:</strong>
-        ${incompleteDates.map((date) => {
-          const assigned = snapshot.duties.assignments[date]?.employeeIds?.length || 0;
-          const missing = 2 - assigned;
-          return `${h(formatDate(date))} — ${missing} ${missing === 1 ? 'чергового' : 'чергових'}`;
-        }).join('; ')}.
-      </div>
-    ` : ''}
-    <p class="duty-help">Лівий клік по колу: порожньо → чергування → реалізоване чергування → порожньо. Правий клік — «А», відсутність або жовта заборона планування.</p>
+    <p class="duty-help">Лівий клік по колу: порожньо → чергування → реалізоване чергування → порожньо. Правий клік — «А», відсутність або жовта заборона планування. Червона колонка означає нестачу чергового: натисніть її, щоб додати другого або дозволити одного.</p>
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
@@ -600,7 +591,8 @@ function renderDutyPage() {
             <td class="duty-total">${rowStats.total}</td><td class="duty-total duty-realized-total">${rowStats.realized}</td>
             ${dates.map((date) => {
               const cell = dutyCell(employee, date);
-              return `<td class="matrix-cell ${cell.className}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}">${cell.symbol}</td>`;
+              const incompleteClass = incompleteDateSet.has(date) ? ' duty-column-incomplete' : '';
+              return `<td class="matrix-cell ${cell.className}${incompleteClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}">${cell.symbol}</td>`;
             }).join('')}
           </tr>`;
         }).join('')}</tbody>
@@ -820,11 +812,15 @@ function dutyRestrictionText(employeeId, date) {
 
 function openDutyDayModal(date) {
   const assignment = snapshot.duties.assignments[date] || { employeeIds: [], singleApproved: false };
+  const missing = Math.max(0, 2 - assignment.employeeIds.length);
+  const incomplete = missing > 0 && !assignment.singleApproved;
   openModal(`
     <form id="duty-day-form" data-date="${date}">
       <header class="modal-head"><div><h2>Склад чергових</h2><p>${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
-        <div class="confirm-box">Оберіть двох працівників. Якщо обрано одного, окремо підтвердьте дозвіл на одиночне чергування.</div>
+        <div class="confirm-box ${incomplete ? 'duty-shortage-modal' : ''}">${incomplete
+          ? `Не вистачає ${missing} ${missing === 1 ? 'чергового' : 'чергових'}. Додайте другого працівника або залиште одного й увімкніть окремий дозвіл нижче.`
+          : 'Оберіть двох працівників. Якщо обрано одного, окремо підтвердьте дозвіл на одиночне чергування.'}</div>
         <div class="duty-picker">${dutyParticipants().map((employee) => {
           const restriction = dutyRestrictionText(employee.id, date);
           const checked = assignment.employeeIds.includes(employee.id);
@@ -1125,8 +1121,17 @@ appRoot.addEventListener('click', async (event) => {
 
   const dutyCellButton = event.target.closest('[data-duty-cell]');
   if (dutyCellButton) {
+    const date = dutyCellButton.dataset.date;
+    const assignment = snapshot.duties.assignments[date];
+    const incomplete = assignment
+      && (assignment.employeeIds?.length || 0) < 2
+      && !assignment.singleApproved;
+    if (incomplete) {
+      openDutyDayModal(date);
+      return;
+    }
     await run(
-      () => window.counter.toggleDutyAssignment(dutyCellButton.dataset.employeeId, dutyCellButton.dataset.date),
+      () => window.counter.toggleDutyAssignment(dutyCellButton.dataset.employeeId, date),
       null,
     );
     return;
