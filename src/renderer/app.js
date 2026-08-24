@@ -421,28 +421,46 @@ function renderWidget() {
   `;
 }
 
+const NAV_ICONS = {
+  today: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><path d="m9.4 12 1.7 1.8 3.8-4"></path></svg>',
+  journal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"></rect><path d="M8 3.5v4M16 3.5v4M4 9.5h16M8 13h3M13 13h3M8 16h3"></path></svg>',
+  duties: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3"></circle><path d="M3.8 19c.5-3.2 2.2-5 5.2-5s4.7 1.8 5.2 5M15.8 7.3a3 3 0 0 1 0 5.4M16.4 14.4c2.1.5 3.3 2 3.8 4.6"></path></svg>',
+  timeoff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h10V4H4zM14 7h3.5A2.5 2.5 0 0 1 20 9.5V20h-6M8 12h9M14 9l3 3-3 3"></path></svg>',
+  analytics: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5h16M6.5 17V11M11 17V6M15.5 17v-4M20 17V8.5"></path></svg>',
+  employees: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="10" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.3-5.5 5.5-5.5s5 2 5.5 5.5M14.8 14.5c3.2-.7 5.2.8 5.7 4.5"></path></svg>',
+  data: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M9 4v6M15 14v6"></path></svg>',
+  help: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M9.8 9.5a2.5 2.5 0 1 1 3.7 2.2c-1 .6-1.5 1.1-1.5 2.3M12 17h.01"></path></svg>',
+};
+
 function renderDashboard() {
   const nav = [
-    ['today', '●', 'Сьогодні'],
-    ['journal', '▦', 'Табель'],
-    ['duties', '◫', 'Чергування'],
-    ['timeoff', '↗', 'Відпросився'],
-    ['analytics', '⌁', 'Аналітика'],
-    ['employees', '♙', 'Працівники'],
-    ['data', '⚙', 'Налаштування'],
-    ['help', '?', 'Довідка'],
+    ['today', 'Сьогодні'],
+    ['journal', 'Табель'],
+    ['duties', 'Чергування'],
+    ['timeoff', 'Відпросився'],
+    ['analytics', 'Аналітика'],
+    ['employees', 'Працівники'],
+    ['data', 'Налаштування'],
+    ['help', 'Довідка'],
   ];
   return `
     <div class="dashboard-layout">
       <aside class="sidebar">
-        ${nav.map(([id, icon, label]) => `
-          <button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}"><span>${icon}</span>${label}</button>
+        <div class="sidebar-caption">Робочий простір</div>
+        ${nav.map(([id, label]) => `
+          <button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label}">
+            <span class="nav-icon">${NAV_ICONS[id]}</span>
+            <span class="nav-label">${label}</span>
+          </button>
         `).join('')}
         <div class="sidebar-spacer"></div>
-        <div class="sidebar-note">Один клік у віджеті зараховує один запит. Додаткові одиниці закривають найближчі пропуски назад.</div>
+        <div class="sidebar-note">
+          <strong><i></i> Локальний режим</strong>
+          <span>Дані зберігаються лише на цьому комп’ютері.</span>
+        </div>
       </aside>
       <section class="dashboard-content">
-        ${renderActivePage()}
+        <div class="page-view">${renderActivePage()}</div>
       </section>
     </div>
   `;
@@ -521,7 +539,7 @@ function renderJournalPage() {
             <th class="sticky-name">Працівник</th>
             ${dates.map((date) => {
               const day = dateFromKey(date).getDay();
-              return `<th class="${!configuredWorkday(date) ? 'weekend' : ''}" title="${h(formatDate(date))}">${Number(date.slice(-2))}</th>`;
+              return `<th class="${date === localDateKey() ? 'is-today ' : ''}${!configuredWorkday(date) ? 'weekend' : ''}" title="${h(formatDate(date))}">${Number(date.slice(-2))}</th>`;
             }).join('')}
           </tr>
         </thead>
@@ -534,15 +552,16 @@ function renderJournalPage() {
                 const outsideEmployment = !employeeActiveOnDate(employee, date);
                 const weekend = !configuredWorkday(date);
                 const workdayOverride = hasWorkdayOverride(employee.id, date);
+                const todayClass = date === localDateKey() ? ' is-today' : '';
                 if (weekend && !workdayOverride) {
-                  return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
+                  return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
                 }
                 const status = statusFor(employee.id, date);
                 const record = recordFor(employee.id, date);
                 const tooltip = `${employee.name}\n${formatDate(date)}${outsideEmployment ? '\nІсторична дата — можна заповнити вручну' : ''}${workdayOverride ? '\nРобочий день замість вихідного' : ''}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
                 const symbol = workdayOverride && status === 'pending' ? 'РД' : STATUS_SYMBOLS[status];
                 const overrideClass = `${workdayOverride && status === 'pending' ? ' cell-workday-override' : ''}${outsideEmployment ? ' cell-history' : ''}`;
-                return `<td class="matrix-cell cell-${status}${overrideClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(tooltip)}">${symbol}</td>`;
+                return `<td class="matrix-cell cell-${status}${overrideClass}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(tooltip)}">${symbol}</td>`;
               }).join('')}
             </tr>
           `).join('')}
@@ -706,7 +725,7 @@ function renderDutyPage() {
               && (assignment.employeeIds?.length || 0) < dutyRequiredCount(date)
               && !assignment.singleApproved;
             const locked = dutyWeekLocked(date);
-            return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete ' : ''}${locked ? 'duty-day-locked' : ''}"><button data-duty-day="${date}" title="${locked ? 'Тиждень заблоковано · ' : ''}Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${locked ? '🔒' : WEEKDAY_SHORT[day]}</small></button></th>`;
+            return `<th class="${date === localDateKey() ? 'is-today ' : ''}${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete ' : ''}${locked ? 'duty-day-locked' : ''}"><button data-duty-day="${date}" title="${locked ? 'Тиждень заблоковано · ' : ''}Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${locked ? '🔒' : WEEKDAY_SHORT[day]}</small></button></th>`;
           }).join('')}<th class="duty-scroll-tail" aria-hidden="true"></th>
         </tr></thead>
         <tbody>${participants.map((employee, employeeIndex) => {
@@ -719,7 +738,8 @@ function renderDutyPage() {
               const cell = dutyCell(employee, date);
               const incompleteClass = incompleteDateSet.has(date) ? ' duty-column-incomplete' : '';
               const lockedClass = dutyWeekLocked(date) ? ' duty-cell-locked' : '';
-              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
+              const todayClass = date === localDateKey() ? ' is-today' : '';
+              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}${todayClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
             }).join('')}<td class="duty-scroll-tail" aria-hidden="true"></td>
           </tr>`;
         }).join('')}</tbody>
