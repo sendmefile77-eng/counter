@@ -8,6 +8,7 @@ class DataStore {
     this.legacyDirectory = legacyDirectory;
     this.filePath = path.join(directory, 'counter-data.json');
     this.backupPath = path.join(directory, 'counter-data.backup.json');
+    this.backupDirectory = path.join(directory, 'backups');
     this.state = null;
   }
 
@@ -61,6 +62,17 @@ class DataStore {
     fs.writeFileSync(temporaryPath, serialized, 'utf8');
     if (fs.existsSync(this.filePath)) {
       fs.copyFileSync(this.filePath, this.backupPath);
+      fs.mkdirSync(this.backupDirectory, { recursive: true });
+      const day = new Date().toISOString().slice(0, 10);
+      fs.copyFileSync(this.filePath, path.join(this.backupDirectory, `counter-data-${day}.json`));
+      const retention = Math.max(1, Math.min(30, Number(this.state.settings?.backupRetention) || 7));
+      const backups = fs.readdirSync(this.backupDirectory)
+        .filter((name) => /^counter-data-\d{4}-\d{2}-\d{2}\.json$/.test(name))
+        .sort()
+        .reverse();
+      for (const name of backups.slice(retention)) {
+        fs.unlinkSync(path.join(this.backupDirectory, name));
+      }
     }
     fs.renameSync(temporaryPath, this.filePath);
   }
@@ -78,6 +90,14 @@ class DataStore {
     fs.writeFileSync(temporaryPath, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8');
     fs.renameSync(temporaryPath, this.filePath);
     if (fs.existsSync(this.backupPath)) fs.unlinkSync(this.backupPath);
+    if (fs.existsSync(this.backupDirectory)) {
+      for (const fileName of fs.readdirSync(this.backupDirectory)) {
+        if (/^counter-data-\d{4}-\d{2}-\d{2}\.json$/.test(fileName)) {
+          fs.unlinkSync(path.join(this.backupDirectory, fileName));
+        }
+      }
+      fs.rmdirSync(this.backupDirectory);
+    }
     for (const fileName of fs.readdirSync(this.directory)) {
       if (fileName.startsWith('counter-data.corrupt-') && fileName.endsWith('.json')) {
         fs.unlinkSync(path.join(this.directory, fileName));

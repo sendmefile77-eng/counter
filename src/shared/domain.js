@@ -1,6 +1,33 @@
 const crypto = require('node:crypto');
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
+
+const DEFAULT_STATUS_COLORS = Object.freeze({
+  pending: '#586b85',
+  submitted: '#36bf76',
+  submitted_late: '#82c967',
+  submitted_advance: '#45b995',
+  missed: '#df555d',
+  other_tasks: '#36a8b7',
+  personal_permission: '#dc76aa',
+  sick: '#dd9340',
+  vacation: '#9873d6',
+  day_off: '#668ac9',
+  holiday: '#60718a',
+});
+
+const DEFAULT_DUTY_RULES = Object.freeze({
+  weekdayDutyCount: 2,
+  weekendDutyCount: 2,
+  preventConsecutiveDays: true,
+  preventConsecutiveWeekends: true,
+  minimumRestDays: 2,
+  maximumDutiesPerWeek: 0,
+  compensateNextWeek: true,
+  avoidRepeatedPairs: true,
+  pairHistoryPeriod: 'year',
+  shortageBehavior: 'leave_empty',
+});
 
 const STATUS = Object.freeze({
   SUBMITTED: 'submitted',
@@ -116,6 +143,67 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function clampInteger(value, minimum, maximum, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, parsed));
+}
+
+function normalizeHexColor(value, fallback) {
+  const color = String(value || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
+}
+
+function normalizeDutyRules(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  return {
+    weekdayDutyCount: clampInteger(source.weekdayDutyCount, 1, 2, 2),
+    weekendDutyCount: clampInteger(source.weekendDutyCount, 1, 2, 2),
+    preventConsecutiveDays: source.preventConsecutiveDays !== false,
+    preventConsecutiveWeekends: source.preventConsecutiveWeekends !== false,
+    minimumRestDays: clampInteger(source.minimumRestDays, 0, 6, 2),
+    maximumDutiesPerWeek: clampInteger(source.maximumDutiesPerWeek, 0, 7, 0),
+    compensateNextWeek: source.compensateNextWeek !== false,
+    avoidRepeatedPairs: source.avoidRepeatedPairs !== false,
+    pairHistoryPeriod: ['month', 'quarter', 'year'].includes(source.pairHistoryPeriod)
+      ? source.pairHistoryPeriod
+      : 'year',
+    shortageBehavior: 'leave_empty',
+  };
+}
+
+function normalizeGlobalSettings(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const workdays = Array.isArray(source.workdays)
+    ? [...new Set(source.workdays.map(Number).filter((day) => day >= 0 && day <= 6))]
+    : [1, 2, 3, 4, 5];
+  const statusColors = Object.fromEntries(
+    Object.entries(DEFAULT_STATUS_COLORS).map(([key, fallback]) => [
+      key,
+      normalizeHexColor(source.statusColors?.[key], fallback),
+    ]),
+  );
+  return {
+    closeHour: clampInteger(source.closeHour, 0, 23, 18),
+    closeMinute: clampInteger(source.closeMinute, 0, 59, 0),
+    automaticClose: source.automaticClose !== false,
+    workdays: workdays.length ? workdays.sort((a, b) => a - b) : [1, 2, 3, 4, 5],
+    alwaysOnTop: source.alwaysOnTop !== false,
+    widgetSize: clampInteger(source.widgetSize, 260, 700, 380),
+    widgetPosition: source.widgetPosition || null,
+    dutyNameWidth: clampInteger(source.dutyNameWidth, 130, 320, 180),
+    dutyRowHeight: clampInteger(source.dutyRowHeight, 34, 72, 46),
+    dutyLineStrength: clampInteger(source.dutyLineStrength, 1, 3, 2),
+    confirmDestructiveActions: source.confirmDestructiveActions !== false,
+    showArchivedEmployees: source.showArchivedEmployees !== false,
+    dateStyle: ['long', 'short', 'numeric'].includes(source.dateStyle)
+      ? source.dateStyle
+      : 'long',
+    backupRetention: clampInteger(source.backupRetention, 1, 30, 7),
+    statusColors,
+  };
+}
+
 function createDutyData(now = new Date()) {
   return {
     initialized: false,
@@ -127,6 +215,9 @@ function createDutyData(now = new Date()) {
     aDays: {},
     unavailable: {},
     planningBlocks: {},
+    rules: normalizeDutyRules(),
+    lockedWeeks: {},
+    dayExceptions: {},
   };
 }
 
@@ -158,6 +249,13 @@ function normalizeDutyData(input, now = new Date(), defaultParticipantIds = []) 
     unavailable: source.unavailable && typeof source.unavailable === 'object' ? source.unavailable : {},
     planningBlocks: source.planningBlocks && typeof source.planningBlocks === 'object'
       ? source.planningBlocks
+      : {},
+    rules: normalizeDutyRules(source.rules),
+    lockedWeeks: source.lockedWeeks && typeof source.lockedWeeks === 'object'
+      ? source.lockedWeeks
+      : {},
+    dayExceptions: source.dayExceptions && typeof source.dayExceptions === 'object'
+      ? source.dayExceptions
       : {},
   };
 }
@@ -206,14 +304,7 @@ function defaultState(now = new Date()) {
     activeDutyScheduleId: 'primary',
     duties,
     timeOffEntries: [],
-    settings: {
-      closeHour: 18,
-      closeMinute: 0,
-      workdays: [1, 2, 3, 4, 5],
-      alwaysOnTop: true,
-      widgetSize: 380,
-      widgetPosition: null,
-    },
+    settings: normalizeGlobalSettings(),
     audit: [{
       id: crypto.randomUUID(),
       at: now.toISOString(),
@@ -280,12 +371,7 @@ function normalizeState(input, now = new Date()) {
     ? input.timeOffEntries
     : [];
   state.audit = Array.isArray(input.audit) ? input.audit.slice(-5000) : [];
-  state.settings = {
-    ...state.settings,
-    ...(input.settings && typeof input.settings === 'object' ? input.settings : {}),
-    closeHour: 18,
-    closeMinute: 0,
-  };
+  state.settings = normalizeGlobalSettings(input.settings);
 
   const ids = new Set();
   for (const employee of state.employees) {
@@ -517,6 +603,95 @@ function deleteDutySchedule(state, scheduleId, now = new Date()) {
   return removed;
 }
 
+function duplicateDutySchedule(state, scheduleId, name, now = new Date()) {
+  const source = dutySchedules(state).find((item) => item.id === scheduleId);
+  if (!source) throw new Error('Графік для копіювання не знайдено.');
+  const copy = createDutySchedule(state, name, now);
+  copy.data.initialized = source.data.initialized;
+  copy.data.participantIds = [...(source.data.participantIds || [])];
+  copy.data.rules = normalizeDutyRules(source.data.rules);
+  copy.data.baselineYear = String(now.getFullYear());
+  copy.data.baselineThroughDate = previousYearEnd(copy.data.baselineYear);
+  copy.data.baselines = Object.fromEntries(
+    copy.data.participantIds.map((employeeId) => [employeeId, { total: 0, realized: 0 }]),
+  );
+  appendAudit(state, 'duty_schedule_duplicated', {
+    sourceScheduleId: source.id,
+    scheduleId: copy.id,
+    name: copy.name,
+  }, now);
+  return copy;
+}
+
+function updateDutyScheduleRules(state, scheduleId, rules, now = new Date()) {
+  const schedule = dutySchedules(state).find((item) => item.id === scheduleId);
+  if (!schedule) throw new Error('Графік не знайдено.');
+  schedule.data.rules = normalizeDutyRules(rules);
+  appendAudit(state, 'duty_schedule_rules_updated', {
+    scheduleId: schedule.id,
+    rules: schedule.data.rules,
+  }, now);
+  return schedule.data.rules;
+}
+
+function updateSettings(state, input, now = new Date()) {
+  const previous = state.settings;
+  state.settings = normalizeGlobalSettings({ ...previous, ...(input || {}) });
+  appendAudit(state, 'settings_updated', { settings: state.settings }, now);
+  return state.settings;
+}
+
+function dutyDateLocked(state, date) {
+  assertDateKey(date);
+  return Boolean(state.duties.lockedWeeks?.[dutyWeekStart(date)]);
+}
+
+function assertDutyDateUnlocked(state, date) {
+  if (dutyDateLocked(state, date)) {
+    throw new Error('Цей тиждень заблоковано. Спочатку розблокуйте його.');
+  }
+}
+
+function setDutyWeekLocked(state, date, locked, now = new Date()) {
+  assertDateKey(date);
+  const weekStart = dutyWeekStart(date);
+  if (!state.duties.lockedWeeks || typeof state.duties.lockedWeeks !== 'object') {
+    state.duties.lockedWeeks = {};
+  }
+  if (locked) {
+    state.duties.lockedWeeks[weekStart] = {
+      weekStart,
+      lockedAt: now.toISOString(),
+    };
+  } else {
+    delete state.duties.lockedWeeks[weekStart];
+  }
+  appendAudit(state, locked ? 'duty_week_locked' : 'duty_week_unlocked', { weekStart }, now);
+  return { weekStart, locked: Boolean(locked) };
+}
+
+function setDutyDayException(state, date, input = {}, now = new Date()) {
+  assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
+  const exception = {
+    date,
+    allowConsecutiveDay: Boolean(input.allowConsecutiveDay),
+    allowConsecutiveWeekend: Boolean(input.allowConsecutiveWeekend),
+    allowRestGap: Boolean(input.allowRestGap),
+    allowWeeklyLimit: Boolean(input.allowWeeklyLimit),
+    note: String(input.note || '').trim().slice(0, 500),
+    createdAt: now.toISOString(),
+  };
+  if (!Object.values(exception).some((value) => value === true) && !exception.note) {
+    delete state.duties.dayExceptions[date];
+    appendAudit(state, 'duty_day_exception_cleared', { date }, now);
+    return null;
+  }
+  state.duties.dayExceptions[date] = exception;
+  appendAudit(state, 'duty_day_exception_set', { ...exception }, now);
+  return exception;
+}
+
 function createTimeOffEntry(state, input, now = new Date()) {
   const employee = getEmployee(state, input.employeeId);
   assertDateKey(input.date);
@@ -634,6 +809,7 @@ function isPastCloseTime(state, now) {
 }
 
 function ensureAutomaticMisses(state, now = new Date()) {
+  if (state.settings.automaticClose === false) return 0;
   const today = dateKeyFromDate(now);
   const closeThrough = isPastCloseTime(state, now) ? today : addDays(today, -1);
   let created = 0;
@@ -930,6 +1106,14 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
     (state.duties.participantIds || []).filter((employeeId) => !selectedIds.includes(employeeId)),
   );
   const today = dateKeyFromDate(now);
+  const lockedAffectedDate = Object.values(state.duties.assignments).find((assignment) => (
+    assignment.date >= today
+    && assignment.employeeIds?.some((employeeId) => removedIds.has(employeeId))
+    && dutyDateLocked(state, assignment.date)
+  ))?.date;
+  if (lockedAffectedDate) {
+    throw new Error(`Не можна вилучити учасника: тиждень із датою ${lockedAffectedDate} заблоковано.`);
+  }
   const affectedDutyDates = removeEmployeesFromFutureDutyAssignments(
     state,
     removedIds,
@@ -964,6 +1148,7 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
 function setDutyRestriction(state, { employeeId, date, type, note = '' }, now = new Date()) {
   const employee = getEmployee(state, employeeId);
   assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
   if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) {
     throw new Error('Дата не входить до періоду обліку цього працівника.');
   }
@@ -1015,6 +1200,7 @@ function setDutyRestriction(state, { employeeId, date, type, note = '' }, now = 
 function clearDutyRestriction(state, employeeId, date, now = new Date()) {
   getEmployee(state, employeeId);
   assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
   const key = recordKey(employeeId, date);
   const changed = Boolean(
     state.duties.aDays[key]
@@ -1030,10 +1216,11 @@ function clearDutyRestriction(state, employeeId, date, now = new Date()) {
 
 function setDutyAssignment(state, { date, employeeIds, singleApproved = false }, now = new Date()) {
   assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
   if (!Array.isArray(employeeIds)) throw new Error('Не передано склад чергових.');
   const ids = [...new Set(employeeIds.filter(Boolean))];
   if (ids.length > 2) throw new Error('На один день можна призначити не більше двох чергових.');
-  if (ids.length === 1 && !singleApproved) {
+  if (ids.length === 1 && dutyRequiredCount(state, date) > 1 && !singleApproved) {
     throw new Error('Для чергування однієї людини потрібне окреме підтвердження.');
   }
   for (const employeeId of ids) {
@@ -1051,7 +1238,8 @@ function setDutyAssignment(state, { date, employeeIds, singleApproved = false },
       date,
       employeeIds: ids,
       realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
-      singleApproved: ids.length === 1 && Boolean(singleApproved),
+      singleApproved: ids.length === 1
+        && (Boolean(singleApproved) || dutyRequiredCount(state, date) === 1),
       source: 'manual',
       updatedAt: now.toISOString(),
     };
@@ -1063,6 +1251,7 @@ function setDutyAssignment(state, { date, employeeIds, singleApproved = false },
 function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
   const employee = getEmployee(state, employeeId);
   assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
   if (!state.duties.participantIds.includes(employeeId)) {
     throw new Error('Працівник не входить до складу учасників чергувань.');
   }
@@ -1097,7 +1286,10 @@ function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
       date,
       employeeIds: ids,
       realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
-      singleApproved: ids.length === 1 && existingIndex < 0 && previous?.singleApproved === true,
+      singleApproved: ids.length === 1 && (
+        dutyRequiredCount(state, date) === 1
+        || (existingIndex < 0 && previous?.singleApproved === true)
+      ),
       source: 'manual_quick',
       updatedAt: now.toISOString(),
     };
@@ -1119,6 +1311,7 @@ function removeDutyAssignment(
 ) {
   getEmployee(state, employeeId);
   assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
   const previous = state.duties.assignments[date];
   if (!previous?.employeeIds?.includes(employeeId)) return false;
   const ids = previous.employeeIds.filter((id) => id !== employeeId);
@@ -1144,6 +1337,7 @@ function removeDutyAssignment(
 
 function setDutyRealized(state, date, employeeId, realized, now = new Date()) {
   assertDateKey(date);
+  assertDutyDateUnlocked(state, date);
   getEmployee(state, employeeId);
   const assignment = state.duties.assignments[date];
   if (!assignment?.employeeIds?.includes(employeeId)) {
@@ -1231,7 +1425,8 @@ function moveDutyQueueToEnd(queue, employeeIds) {
 function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
   const existing = state.duties.assignments[date];
   const fixedIds = [...new Set(existing?.employeeIds || [])];
-  if (fixedIds.length >= 2 || (fixedIds.length === 1 && existing?.singleApproved)) {
+  const requiredCount = dutyRequiredCount(state, date);
+  if (fixedIds.length >= requiredCount || (fixedIds.length === 1 && existing?.singleApproved)) {
     return [{ employeeIds: fixedIds, addedIds: [], fixed: true, missing: 0 }];
   }
 
@@ -1241,7 +1436,7 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
       && !fixedIds.includes(employeeId)
       && !dutyRestriction(state, employeeId, date);
   });
-  const needed = 2 - fixedIds.length;
+  const needed = requiredCount - fixedIds.length;
   const options = [{
     employeeIds: fixedIds,
     addedIds: [],
@@ -1269,6 +1464,14 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
     }
   }
   return options;
+}
+
+function dutyRequiredCount(state, date) {
+  const rules = normalizeDutyRules(state.duties.rules);
+  const weekday = dayOfWeek(date);
+  return weekday === 0 || weekday === 6
+    ? rules.weekendDutyCount
+    : rules.weekdayDutyCount;
 }
 
 function compareDutyScores(left, right) {
@@ -1331,6 +1534,18 @@ function dutyCompensationDeficit(counts, compensationTargets) {
   return deficit;
 }
 
+function dutyPairHistoryStart(rules, date) {
+  const [year, month] = date.split('-').map(Number);
+  if (rules.pairHistoryPeriod === 'month') {
+    return `${year}-${String(month).padStart(2, '0')}-01`;
+  }
+  if (rules.pairHistoryPeriod === 'quarter') {
+    const quarterMonth = Math.floor((month - 1) / 3) * 3 + 1;
+    return `${year}-${String(quarterMonth).padStart(2, '0')}-01`;
+  }
+  return `${year}-01-01`;
+}
+
 function exactDutyBlockPlan(
   state,
   dates,
@@ -1341,6 +1556,7 @@ function exactDutyBlockPlan(
   pairCounts,
   compensationTargets,
 ) {
+  const rules = normalizeDutyRules(state.duties.rules);
   const optionsByDate = dates.map((date) => dutyAssignmentOptions(
     state,
     date,
@@ -1385,22 +1601,33 @@ function exactDutyBlockPlan(
           || state.duties.assignments[addDays(date, -1)]?.employeeIds
           || [],
       );
-      const previousTwoDayIds = new Set(
-        partial.selectedOptions.get(addDays(date, -2))?.employeeIds
-          || state.duties.assignments[addDays(date, -2)]?.employeeIds
-          || [],
-      );
       for (const option of optionsByDate[dateIndex]) {
-        if (option.addedIds.some((employeeId) => previousDayIds.has(employeeId))) continue;
-        if ((weekday === 6 || weekday === 0)
+        const exception = state.duties.dayExceptions?.[date] || {};
+        if (rules.preventConsecutiveDays && !exception.allowConsecutiveDay
+          && option.addedIds.some((employeeId) => previousDayIds.has(employeeId))) continue;
+        if (rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
+          && (weekday === 6 || weekday === 0)
           && option.addedIds.some((employeeId) => previousWeekendIds.has(employeeId))) continue;
+        if (rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit
+          && option.addedIds.some((employeeId) => (
+            (partial.counts[employeeId] || 0) >= rules.maximumDutiesPerWeek
+          ))) continue;
 
         const nextCounts = { ...partial.counts };
         let addedCooldownViolations = 0;
         let addedWeekendReservePenalty = 0;
         let addedQueueCost = 0;
         for (const employeeId of option.addedIds) {
-          if (previousTwoDayIds.has(employeeId)) addedCooldownViolations += 1;
+          if (!exception.allowRestGap && rules.minimumRestDays > 0) {
+            for (let offset = 2; offset <= rules.minimumRestDays; offset += 1) {
+              const priorIds = new Set(
+                partial.selectedOptions.get(addDays(date, -offset))?.employeeIds
+                  || state.duties.assignments[addDays(date, -offset)]?.employeeIds
+                  || [],
+              );
+              if (priorIds.has(employeeId)) addedCooldownViolations += 1;
+            }
+          }
           if (weekendDate && weekday !== 6 && weekday !== 0
             && !previousWeekendIds.has(employeeId)) {
             addedWeekendReservePenalty += 1;
@@ -1413,7 +1640,7 @@ function exactDutyBlockPlan(
         let addedPairPenalty = 0;
         if (!option.fixed && option.employeeIds.length === 2) {
           const pairKey = dutyPairKey(option.employeeIds);
-          addedPairPenalty = nextPairCounts.get(pairKey) || 0;
+          addedPairPenalty = rules.avoidRepeatedPairs ? nextPairCounts.get(pairKey) || 0 : 0;
           nextPairCounts.set(pairKey, addedPairPenalty + 1);
         }
         const nextQueue = [...partial.queue];
@@ -1426,7 +1653,9 @@ function exactDutyBlockPlan(
         const repeatedPairPenalty = partial.repeatedPairPenalty + addedPairPenalty;
         const queueCost = partial.queueCost + addedQueueCost;
         const balance = dutyBalanceMetrics(nextCounts, balanceEmployeeIds);
-        const compensationDeficit = dutyCompensationDeficit(nextCounts, compensationTargets);
+        const compensationDeficit = rules.compensateNextWeek
+          ? dutyCompensationDeficit(nextCounts, compensationTargets)
+          : 0;
         const score = [
           missingSlots,
           balance.spread,
@@ -1474,7 +1703,7 @@ function exactDutyBlockPlan(
 function writeGeneratedDutyAssignment(state, date, employeeIds, now, shortage = false) {
   const existing = state.duties.assignments[date];
   const existingIds = [...new Set(existing?.employeeIds || [])];
-  const existingComplete = existingIds.length >= 2
+  const existingComplete = existingIds.length >= dutyRequiredCount(state, date)
     || (existingIds.length === 1 && existing?.singleApproved);
   if (existingComplete) return false;
   if (existing && existingIds.length === employeeIds.length
@@ -1491,6 +1720,7 @@ function writeGeneratedDutyAssignment(state, date, employeeIds, now, shortage = 
       ? 'generated_shortage'
       : existingIds.length ? 'generated_completion' : 'generated',
     manualEmployeeIds: existingIds,
+    explanation: explainDutyAssignment(state, date, employeeIds),
     updatedAt: now.toISOString(),
   };
   return true;
@@ -1507,8 +1737,13 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
     cursorCheck = addDays(cursorCheck, 1);
   }
   if (span > 366) throw new Error('За один раз можна сформувати графік не більше ніж на 366 днів.');
+  for (let date = startDate; date <= endDate; date = addDays(date, 1)) {
+    assertDutyDateUnlocked(state, date);
+  }
 
   let cycleYear = startDate.slice(0, 4);
+  const rules = normalizeDutyRules(state.duties.rules);
+  const pairHistoryStart = dutyPairHistoryStart(rules, startDate);
   let dutyQueue = buildDutyQueue(state, startDate);
   const employeesById = new Map(state.employees.map((employee) => [employee.id, employee]));
   const rangeCounts = Object.fromEntries(
@@ -1521,7 +1756,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         rangeCounts[employeeId] = (rangeCounts[employeeId] || 0) + 1;
       }
     }
-    if (assignment.date.startsWith(`${cycleYear}-`) && assignment.date <= endDate) {
+    if (assignment.date >= pairHistoryStart && assignment.date <= endDate) {
       const pairKey = dutyPairKey(assignment.employeeIds || []);
       if (pairKey) pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
     }
@@ -1570,7 +1805,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
         date,
         selected,
         now,
-        selected.length < 2,
+        selected.length < dutyRequiredCount(state, date),
       );
       if (changed) generated += 1;
       moveDutyQueueToEnd(dutyQueue, addedIds);
@@ -1621,7 +1856,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
       for (const date of blockDates) {
         const selected = plan.selectedByDate.get(date);
         const addedIds = plan.addedByDate.get(date);
-        const shortage = selected.length < 2;
+        const shortage = selected.length < dutyRequiredCount(state, date);
         const changed = writeGeneratedDutyAssignment(state, date, selected, now, shortage);
         if (changed) {
           generated += 1;
@@ -1639,7 +1874,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
 
     const existing = state.duties.assignments[cursor];
     const existingIds = [...(existing?.employeeIds || [])];
-    const existingComplete = existingIds.length >= 2
+    const existingComplete = existingIds.length >= dutyRequiredCount(state, cursor)
       || (existingIds.length === 1 && existing.singleApproved);
     if (existingComplete) {
       moveDutyQueueToEnd(dutyQueue, existing.employeeIds);
@@ -1652,12 +1887,12 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
     const previousDayIds = new Set(
       state.duties.assignments[addDays(cursor, -1)]?.employeeIds || [],
     );
-    const previousTwoDayIds = new Set(
-      state.duties.assignments[addDays(cursor, -2)]?.employeeIds || [],
-    );
+    const exception = state.duties.dayExceptions?.[cursor] || {};
     const options = dutyAssignmentOptions(state, cursor, dutyQueue, employeesById)
       .filter((option) => (
-        option.addedIds.every((employeeId) => !previousDayIds.has(employeeId))
+        !rules.preventConsecutiveDays
+        || exception.allowConsecutiveDay
+        || option.addedIds.every((employeeId) => !previousDayIds.has(employeeId))
       ));
     let best = null;
     for (const option of options) {
@@ -1666,8 +1901,8 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
       if (nextDate <= endDate) {
         const nextExisting = state.duties.assignments[nextDate];
         const nextFixedIds = [...new Set(nextExisting?.employeeIds || [])];
-        const nextComplete = nextFixedIds.length >= 2
-          || (nextFixedIds.length === 1 && nextExisting?.singleApproved);
+          const nextComplete = nextFixedIds.length >= dutyRequiredCount(state, nextDate)
+            || (nextFixedIds.length === 1 && nextExisting?.singleApproved);
         if (!nextComplete) {
           const selectedToday = new Set(option.employeeIds);
           const nextCandidates = dutyQueue.filter((employeeId) => {
@@ -1677,25 +1912,35 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
               && !selectedToday.has(employeeId)
               && !dutyRestriction(state, employeeId, nextDate);
           });
-          nextDayMissing = Math.max(0, 2 - nextFixedIds.length - nextCandidates.length);
+          nextDayMissing = Math.max(
+            0,
+            dutyRequiredCount(state, nextDate) - nextFixedIds.length - nextCandidates.length,
+          );
         }
       }
       const simulatedCounts = { ...rangeCounts };
       let cooldownViolations = 0;
       let queueCost = 0;
       for (const employeeId of option.addedIds) {
-        if (previousTwoDayIds.has(employeeId)) cooldownViolations += 1;
+        if (!exception.allowRestGap && rules.minimumRestDays > 0) {
+          for (let offset = 2; offset <= rules.minimumRestDays; offset += 1) {
+            if (state.duties.assignments[addDays(cursor, -offset)]?.employeeIds?.includes(employeeId)) {
+              cooldownViolations += 1;
+            }
+          }
+        }
         simulatedCounts[employeeId] = (simulatedCounts[employeeId] || 0) + 1;
         const queueIndex = dutyQueue.indexOf(employeeId);
         queueCost += queueIndex < 0 ? dutyQueue.length : queueIndex;
       }
       const balance = dutyBalanceMetrics(simulatedCounts, balanceEmployeeIds);
-      const compensationDeficit = dutyCompensationDeficit(
-        simulatedCounts,
-        compensationTargets,
-      );
+      const compensationDeficit = rules.compensateNextWeek
+        ? dutyCompensationDeficit(simulatedCounts, compensationTargets)
+        : 0;
       const pairKey = dutyPairKey(option.employeeIds);
-      const repeatedPairPenalty = pairKey ? pairCounts.get(pairKey) || 0 : 0;
+      const repeatedPairPenalty = rules.avoidRepeatedPairs && pairKey
+        ? pairCounts.get(pairKey) || 0
+        : 0;
       const score = [
         option.missing,
         nextDayMissing,
@@ -1716,7 +1961,7 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
 
     const selected = best.option.employeeIds;
     const addedIds = best.option.addedIds;
-    const missing = Math.max(0, 2 - selected.length);
+    const missing = Math.max(0, dutyRequiredCount(state, cursor) - selected.length);
     if (missing > 0) shortages.push({ date: cursor, missing });
     const changed = writeGeneratedDutyAssignment(state, cursor, selected, now, missing > 0);
     if (changed) {
@@ -1746,6 +1991,169 @@ function generateDutySchedule(state, { startDate, endDate }, now = new Date()) {
     generated,
     shortages,
     weekendConflicts,
+  };
+}
+
+function dutyRestrictionLabel(code) {
+  const labels = {
+    not_participant: 'не входить до цього графіка',
+    outside_period: 'поза періодом роботи',
+    a_day: 'цього дня позначено «А»',
+    before_a: 'наступного дня позначено «А»',
+    planning_block: 'встановлено «Не планувати»',
+    off: 'вихідний',
+    vacation: 'відпустка',
+    sick: 'лікарняний',
+    day_off: 'відгул',
+    personal: 'особисті справи',
+    other: 'інша недоступність',
+    personal_permission: 'особисті справи в табелі',
+    holiday: 'вихідний або свято в табелі',
+  };
+  return labels[code] || code;
+}
+
+function explainDutyAssignment(state, date, employeeIds) {
+  const selectedIds = [...new Set(employeeIds || [])];
+  const rules = normalizeDutyRules(state.duties.rules);
+  const weekStart = dutyWeekStart(date);
+  const previousWeekStart = addDays(weekStart, -7);
+  const previousWeekEnd = addDays(weekStart, -1);
+  const currentCounts = dutyCountsBetween(state, weekStart, addDays(date, -1));
+  const previousCounts = dutyCountsBetween(state, previousWeekStart, previousWeekEnd);
+  const assignmentsBefore = Object.values(state.duties.assignments)
+    .filter((assignment) => assignment.date < date)
+    .sort((left, right) => right.date.localeCompare(left.date));
+  const pairCounts = new Map();
+  const pairHistoryStart = dutyPairHistoryStart(rules, date);
+  for (const assignment of assignmentsBefore) {
+    if (assignment.date < pairHistoryStart) continue;
+    const key = dutyPairKey(assignment.employeeIds || []);
+    if (key) pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+  }
+  const selected = selectedIds.map((employeeId) => {
+    const lastDuty = assignmentsBefore.find((assignment) => (
+      assignment.employeeIds?.includes(employeeId)
+    ))?.date || null;
+    const reasons = [];
+    if (rules.compensateNextWeek && previousCounts[employeeId] === 1) {
+      reasons.push('минулого тижня було одне чергування — діє компенсаційний пріоритет');
+    }
+    reasons.push(`до цього дня у поточному тижні: ${currentCounts[employeeId] || 0}`);
+    reasons.push(lastDuty
+      ? `попереднє чергування: ${lastDuty}`
+      : 'раніше в цьому році не чергував');
+    const partnerId = selectedIds.find((id) => id !== employeeId);
+    if (partnerId && rules.avoidRepeatedPairs) {
+      const repeats = pairCounts.get(dutyPairKey([employeeId, partnerId])) || 0;
+      reasons.push(repeats
+        ? `ця пара вже була ${repeats} раз(и) за обраний період історії`
+        : 'ця пара раніше не використовувалася за обраний період історії');
+    }
+    return { employeeId, reasons };
+  });
+  const notSelected = (state.duties.participantIds || [])
+    .filter((employeeId) => !selectedIds.includes(employeeId))
+    .map((employeeId) => {
+      const reasons = [];
+      const restriction = dutyRestriction(state, employeeId, date);
+      if (restriction) reasons.push(dutyRestrictionLabel(restriction));
+      const exception = state.duties.dayExceptions?.[date] || {};
+      if (!restriction && rules.preventConsecutiveDays && !exception.allowConsecutiveDay
+        && state.duties.assignments[addDays(date, -1)]?.employeeIds?.includes(employeeId)) {
+        reasons.push('чергував попереднього календарного дня');
+      }
+      if (!restriction && rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
+        && [0, 6].includes(dayOfWeek(date))) {
+        const saturday = dayOfWeek(date) === 6 ? date : addDays(date, -1);
+        if ([addDays(saturday, -7), addDays(saturday, -6)].some((previousDate) => (
+          state.duties.assignments[previousDate]?.employeeIds?.includes(employeeId)
+        ))) reasons.push('чергував у попередній календарний уікенд');
+      }
+      if (!reasons.length && rules.maximumDutiesPerWeek > 0
+        && (currentCounts[employeeId] || 0) >= rules.maximumDutiesPerWeek) {
+        reasons.push('досяг тижневого ліміту');
+      }
+      if (!reasons.length) reasons.push('інший доступний варіант мав вищий пріоритет рівномірності або ротації пар');
+      return { employeeId, reasons };
+    });
+  return {
+    date,
+    requiredCount: dutyRequiredCount(state, date),
+    selected,
+    notSelected,
+    exception: clone(state.duties.dayExceptions?.[date] || null),
+    rules: clone(rules),
+  };
+}
+
+function calculateDutyFairness(state, { startDate, endDate }) {
+  assertDateKey(startDate);
+  assertDateKey(endDate);
+  if (startDate > endDate) throw new Error('Початкова дата не може бути пізнішою за кінцеву.');
+  const participantIds = [...(state.duties.participantIds || [])];
+  const assignments = Object.values(state.duties.assignments)
+    .filter((assignment) => assignment.date >= startDate && assignment.date <= endDate)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const rows = participantIds.map((employeeId) => {
+    const employeeAssignments = assignments.filter((assignment) => (
+      assignment.employeeIds?.includes(employeeId)
+    ));
+    const gaps = employeeAssignments.slice(1).map((assignment, index) => (
+      Math.round((dateKeyToUtc(assignment.date) - dateKeyToUtc(employeeAssignments[index].date)) / 86400000) - 1
+    ));
+    return {
+      employeeId,
+      total: employeeAssignments.length,
+      realized: employeeAssignments.filter((assignment) => (
+        assignment.realizedEmployeeIds?.includes(employeeId)
+      )).length,
+      weekends: employeeAssignments.filter((assignment) => [0, 6].includes(dayOfWeek(assignment.date))).length,
+      lastDuty: employeeAssignments.at(-1)?.date || null,
+      averageRestDays: gaps.length
+        ? Math.round((gaps.reduce((sum, value) => sum + value, 0) / gaps.length) * 10) / 10
+        : null,
+    };
+  });
+  const pairCounts = new Map();
+  for (const assignment of assignments) {
+    const key = dutyPairKey(assignment.employeeIds || []);
+    if (key) pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+  }
+  const pairs = [...pairCounts.entries()]
+    .map(([key, count]) => ({ employeeIds: key.split('|'), count }))
+    .sort((left, right) => right.count - left.count || left.employeeIds.join('|').localeCompare(right.employeeIds.join('|')));
+  const totals = rows.map((row) => row.total);
+  return {
+    startDate,
+    endDate,
+    rows,
+    pairs,
+    spread: totals.length ? Math.max(...totals) - Math.min(...totals) : 0,
+    repeatedPairCount: pairs.filter((pair) => pair.count > 1).length,
+  };
+}
+
+function previewDutySchedule(state, filter, now = new Date()) {
+  const draft = normalizeState(clone(state), now);
+  const result = generateDutySchedule(draft, filter, now);
+  const assignments = [];
+  for (let date = filter.startDate; date <= filter.endDate; date = addDays(date, 1)) {
+    const assignment = draft.duties.assignments[date];
+    assignments.push({
+      date,
+      requiredCount: dutyRequiredCount(draft, date),
+      employeeIds: [...(assignment?.employeeIds || [])],
+      singleApproved: Boolean(assignment?.singleApproved),
+      source: assignment?.source || 'empty',
+      explanation: assignment?.explanation || explainDutyAssignment(draft, date, assignment?.employeeIds || []),
+    });
+  }
+  return {
+    ...result,
+    assignments,
+    fairness: calculateDutyFairness(draft, filter),
+    rules: clone(draft.duties.rules),
   };
 }
 
@@ -1864,6 +2272,7 @@ module.exports = {
   allocateReceiptBackward,
   allocateReceiptForward,
   archiveEmployee,
+  calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
   clearDutyRestriction,
@@ -1878,6 +2287,7 @@ module.exports = {
   defaultState,
   deleteDutySchedule,
   deleteTimeOffEntry,
+  duplicateDutySchedule,
   ensureAutomaticMisses,
   generateDutySchedule,
   getEmployee,
@@ -1886,16 +2296,21 @@ module.exports = {
   isWorkday,
   initializeDutyHistory,
   normalizeState,
+  previewDutySchedule,
   removeDutyAssignment,
   recordKey,
   recordSubmission,
   renameDutySchedule,
   restoreEmployee,
   setDutyAssignment,
+  setDutyDayException,
   setDutyRealized,
   setDutyRestriction,
+  setDutyWeekLocked,
   toggleDutyAssignment,
   setManualStatus,
   setWorkdayOverride,
   switchDutySchedule,
+  updateDutyScheduleRules,
+  updateSettings,
 };
