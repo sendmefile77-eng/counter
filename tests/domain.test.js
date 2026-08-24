@@ -5,6 +5,7 @@ const {
   addDays,
   allocateReceiptBackward,
   allocateReceiptForward,
+  calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
   clearDutyRestriction,
@@ -15,10 +16,12 @@ const {
   defaultState,
   deleteDutySchedule,
   deleteTimeOffEntry,
+  duplicateDutySchedule,
   ensureAutomaticMisses,
   generateDutySchedule,
   initializeDutyHistory,
   normalizeState,
+  previewDutySchedule,
   archiveEmployee,
   recordKey,
   recordSubmission,
@@ -26,12 +29,16 @@ const {
   renameDutySchedule,
   restoreEmployee,
   setDutyAssignment,
+  setDutyDayException,
   setDutyRealized,
   setDutyRestriction,
+  setDutyWeekLocked,
   setManualStatus,
   setWorkdayOverride,
   switchDutySchedule,
   toggleDutyAssignment,
+  updateDutyScheduleRules,
+  updateSettings,
 } = require('../src/shared/domain');
 
 function localDate(year, monthIndex, day, hour = 9, minute = 0) {
@@ -318,7 +325,7 @@ test('після «А» чергування дозволене, але «А» �
     employeeId: employee.id,
     total: 0,
     realized: 0,
-  })));
+  })), null, localDate(2026, 7, 20, 9, 0));
   setDutyRestriction(state, { employeeId: first.id, date: '2026-08-24', type: 'a' });
 
   assert.throws(() => setDutyAssignment(state, {
@@ -360,7 +367,7 @@ test('база попередньої версії автоматично отр
   oldState.schemaVersion = 1;
 
   const normalized = normalizeState(oldState, localDate(2026, 7, 20, 9, 0));
-  assert.equal(normalized.schemaVersion, 6);
+  assert.equal(normalized.schemaVersion, 7);
   assert.equal(normalized.employees[0].id, employee.id);
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);
@@ -1058,4 +1065,118 @@ test('журнал «Відпросився» рахує час окремо й 
   assert.equal(normalized.timeOffEntries[0].durationMinutes, 150);
   deleteTimeOffEntry(normalized, entry.id, now);
   assert.deepEqual(normalized.timeOffEntries, []);
+});
+
+test('кожен графік має власні правила, а копія переносить учасників і правила без призначень', () => {
+  const now = localDate(2026, 7, 24, 9, 0);
+  const state = defaultState(now);
+  const employees = ['А', 'Б', 'В'].map((name) => createEmployee(state, `Працівник ${name}`, now));
+  initializeDutyHistory(state, employees.map((employee) => ({
+    employeeId: employee.id,
+    total: 0,
+    realized: 0,
+  })), null, now);
+  const primaryId = state.activeDutyScheduleId;
+  updateDutyScheduleRules(state, primaryId, {
+    weekdayDutyCount: 1,
+    weekendDutyCount: 2,
+    minimumRestDays: 3,
+    maximumDutiesPerWeek: 2,
+    pairHistoryPeriod: 'quarter',
+    preventConsecutiveDays: true,
+    preventConsecutiveWeekends: false,
+    compensateNextWeek: true,
+    avoidRepeatedPairs: true,
+  }, now);
+  setDutyAssignment(state, { date: '2026-08-25', employeeIds: [employees[0].id] }, now);
+
+  const copy = duplicateDutySchedule(state, primaryId, 'Копія правил', now);
+  assert.deepEqual(copy.data.participantIds, employees.map((employee) => employee.id));
+  assert.equal(copy.data.rules.weekdayDutyCount, 1);
+  assert.equal(copy.data.rules.minimumRestDays, 3);
+  assert.deepEqual(copy.data.assignments, {});
+
+  updateDutyScheduleRules(state, copy.id, { ...copy.data.rules, minimumRestDays: 0 }, now);
+  assert.equal(copy.data.rules.minimumRestDays, 0);
+  assert.equal(state.dutySchedules.find((item) => item.id === primaryId).data.rules.minimumRestDays, 3);
+});
+
+test('попередній перегляд графіка не змінює базу до підтвердження', () => {
+  const now = localDate(2026, 7, 24, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 8 }, (_, index) => createEmployee(state, `Тест ${index + 1}`, now));
+  initializeDutyHistory(state, employees.map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  const before = clone(state.duties.assignments);
+
+  const preview = previewDutySchedule(state, { startDate: '2026-08-31', endDate: '2026-09-06' }, now);
+  assert.deepEqual(state.duties.assignments, before);
+  assert.equal(preview.assignments.length, 7);
+  assert.equal(preview.assignments.every((assignment) => assignment.explanation), true);
+
+  generateDutySchedule(state, { startDate: '2026-08-31', endDate: '2026-09-06' }, now);
+  assert.equal(Object.keys(state.duties.assignments).length, 7);
+});
+
+test('заблокований тиждень не можна випадково змінити або перегенерувати', () => {
+  const now = localDate(2026, 7, 24, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Перший', now);
+  const second = createEmployee(state, 'Другий', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  setDutyAssignment(state, { date: '2026-08-31', employeeIds: [first.id, second.id] }, now);
+  setDutyWeekLocked(state, '2026-09-02', true, now);
+
+  assert.throws(() => removeDutyAssignment(state, first.id, '2026-08-31', now), /заблоковано/);
+  assert.throws(() => generateDutySchedule(state, { startDate: '2026-08-31', endDate: '2026-09-06' }, now), /заблоковано/);
+
+  setDutyWeekLocked(state, '2026-09-02', false, now);
+  removeDutyAssignment(state, first.id, '2026-08-31', now);
+  assert.deepEqual(state.duties.assignments['2026-08-31'].employeeIds, [second.id]);
+});
+
+test('разовий виняток дозволяє порушити правило лише у вибраний день', () => {
+  const now = localDate(2026, 7, 24, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Один', now);
+  const second = createEmployee(state, 'Два', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: [first.id, second.id] }, now);
+
+  const withoutException = previewDutySchedule(state, { startDate: '2026-08-25', endDate: '2026-08-25' }, now);
+  assert.equal(withoutException.assignments[0].employeeIds.length, 0);
+  setDutyDayException(state, '2026-08-25', { allowConsecutiveDay: true, note: 'Разова потреба' }, now);
+  const withException = previewDutySchedule(state, { startDate: '2026-08-25', endDate: '2026-08-25' }, now);
+  assert.equal(withException.assignments[0].employeeIds.length, 2);
+  assert.equal(state.duties.dayExceptions['2026-08-26'], undefined);
+});
+
+test('налаштування часу справді керують автоматичним закриттям дня', () => {
+  const createdAt = localDate(2026, 7, 24, 9, 0);
+  const state = defaultState(createdAt);
+  const employee = createEmployee(state, 'Контроль часу', createdAt);
+  updateSettings(state, { closeHour: 10, closeMinute: 30, automaticClose: false }, createdAt);
+  assert.equal(ensureAutomaticMisses(state, localDate(2026, 7, 24, 11, 0)), 0);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-24')], undefined);
+
+  updateSettings(state, { automaticClose: true }, localDate(2026, 7, 24, 11, 1));
+  assert.equal(ensureAutomaticMisses(state, localDate(2026, 7, 24, 11, 1)), 1);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-24')].status, STATUS.MISSED);
+});
+
+test('аналітика справедливості показує навантаження, відпочинок і повтори пар', () => {
+  const now = localDate(2026, 7, 24, 9, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Анна', now);
+  const second = createEmployee(state, 'Богдан', now);
+  const third = createEmployee(state, 'Віра', now);
+  initializeDutyHistory(state, [first, second, third].map((employee) => ({ employeeId: employee.id, total: 0, realized: 0 })), null, now);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2026-08-27', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2026-08-30', employeeIds: [first.id, third.id] }, now);
+
+  const fairness = calculateDutyFairness(state, { startDate: '2026-08-24', endDate: '2026-08-30' });
+  assert.equal(fairness.rows.find((row) => row.employeeId === first.id).total, 3);
+  assert.equal(fairness.rows.find((row) => row.employeeId === first.id).averageRestDays, 2);
+  assert.equal(fairness.pairs[0].count, 2);
+  assert.equal(fairness.repeatedPairCount, 1);
 });

@@ -102,7 +102,12 @@ let ui = {
   analytics: null,
   dutyMonth: localDateKey().slice(0, 7),
   dutyStats: null,
+  dutyFairness: null,
   timeOffMonth: localDateKey().slice(0, 7),
+  timeOffEmployee: '',
+  timeOffFrom: `${localDateKey().slice(0, 7)}-01`,
+  timeOffTo: localDateKey(),
+  timeOffQuery: '',
   scrollPositions: {},
 };
 
@@ -127,8 +132,16 @@ function dateFromKey(value) {
   return new Date(year, month - 1, day, 12, 0, 0);
 }
 
-function formatDate(value, options = { day: 'numeric', month: 'long', year: 'numeric' }) {
-  return new Intl.DateTimeFormat('uk-UA', options).format(dateFromKey(value));
+function formatDate(value, options = null) {
+  const configured = snapshot?.settings?.dateStyle;
+  const resolvedOptions = options === undefined || options === null
+    ? configured === 'numeric'
+      ? { day: '2-digit', month: '2-digit', year: 'numeric' }
+      : configured === 'short'
+        ? { day: 'numeric', month: 'short', year: 'numeric' }
+        : { day: 'numeric', month: 'long', year: 'numeric' }
+    : options;
+  return new Intl.DateTimeFormat('uk-UA', resolvedOptions).format(dateFromKey(value));
 }
 
 function formatMonth(value) {
@@ -149,6 +162,50 @@ function activeDutySchedule() {
   return (snapshot.dutySchedules || []).find((schedule) => (
     schedule.id === snapshot.activeDutyScheduleId
   )) || snapshot.dutySchedules?.[0] || { id: 'primary', name: 'Основний' };
+}
+
+function dutyRules() {
+  return snapshot.duties?.rules || {
+    weekdayDutyCount: 2,
+    weekendDutyCount: 2,
+    preventConsecutiveDays: true,
+    preventConsecutiveWeekends: true,
+    minimumRestDays: 2,
+    maximumDutiesPerWeek: 0,
+    compensateNextWeek: true,
+    avoidRepeatedPairs: true,
+    pairHistoryPeriod: 'year',
+  };
+}
+
+function dutyRequiredCount(date) {
+  const day = dateFromKey(date).getDay();
+  return day === 0 || day === 6
+    ? Number(dutyRules().weekendDutyCount || 2)
+    : Number(dutyRules().weekdayDutyCount || 2);
+}
+
+function dutyWeekStart(date) {
+  const value = dateFromKey(date);
+  const day = value.getDay();
+  value.setDate(value.getDate() + (day === 0 ? -6 : 1 - day));
+  return localDateKey(value);
+}
+
+function dutyWeekLocked(date) {
+  return Boolean(snapshot.duties?.lockedWeeks?.[dutyWeekStart(date)]);
+}
+
+function statusColor(status) {
+  return snapshot?.settings?.statusColors?.[status] || STATUS_COLORS[status] || '#586b85';
+}
+
+function closeTimeText() {
+  return `${String(snapshot?.settings?.closeHour ?? 18).padStart(2, '0')}:${String(snapshot?.settings?.closeMinute ?? 0).padStart(2, '0')}`;
+}
+
+function configuredWorkday(date) {
+  return (snapshot?.settings?.workdays || [1, 2, 3, 4, 5]).includes(dateFromKey(date).getDay());
 }
 
 function employeeById(employeeId) {
@@ -210,6 +267,11 @@ function statusBadge(status) {
   return `<span class="status-badge" data-status="${status}">${h(STATUS_LABELS[status] || status)}</span>`;
 }
 
+function confirmAction(message, always = false) {
+  if (!always && snapshot?.settings?.confirmDestructiveActions === false) return true;
+  return window.confirm(message);
+}
+
 function rememberScrollPositions() {
   appRoot.querySelectorAll('[data-scroll-key]').forEach((element) => {
     ui.scrollPositions[element.dataset.scrollKey] = {
@@ -245,13 +307,21 @@ function updateDutyScrollExtent() {
 function renderShell() {
   rememberScrollPositions();
   document.body.className = `mode-${ui.mode}`;
+  const settings = snapshot?.settings || {};
+  const colors = settings.statusColors || STATUS_COLORS;
+  for (const [key, color] of Object.entries(colors)) {
+    document.documentElement.style.setProperty(`--status-${key.replaceAll('_', '-')}`, color);
+  }
+  document.documentElement.style.setProperty('--duty-name-width', `${settings.dutyNameWidth || 180}px`);
+  document.documentElement.style.setProperty('--duty-row-height', `${settings.dutyRowHeight || 46}px`);
+  document.documentElement.style.setProperty('--duty-line-width', `${settings.dutyLineStrength || 2}px`);
   appRoot.innerHTML = `
     <section class="window-shell ${ui.mode}">
       ${ui.mode === 'dashboard' ? `<header class="titlebar">
         <div class="brand-mark">Щ</div>
         <div class="title-copy">
           <strong>Щоденний облік</strong>
-          <span>Локальні дані · закриття о 18:00</span>
+          <span>Локальні дані · ${settings.automaticClose === false ? 'автозакриття вимкнено' : `закриття о ${String(settings.closeHour ?? 18).padStart(2, '0')}:${String(settings.closeMinute ?? 0).padStart(2, '0')}`}</span>
         </div>
         <div class="title-spacer"></div>
         <div class="window-actions">
@@ -302,8 +372,8 @@ function renderRadial(employees) {
     return `
       <g class="sector" data-employee-id="${h(employee.id)}" tabindex="0" role="button" aria-label="${h(employee.name)}: ${h(STATUS_LABELS[status])}">
         <title>${h(employee.name)} · ${h(STATUS_LABELS[status])}\nЛівий клік — зарахувати 1 запит. Правий — інші дії.</title>
-        <path d="${annularSectorPath(index, employees.length)}" fill="${STATUS_COLORS[status]}" opacity="0.91"></path>
-        <circle class="status-dot" cx="${dotPoint.x}" cy="${dotPoint.y}" r="5" fill="${STATUS_COLORS[status]}"></circle>
+        <path d="${annularSectorPath(index, employees.length)}" fill="${statusColor(status)}" opacity="0.91"></path>
+        <circle class="status-dot" cx="${dotPoint.x}" cy="${dotPoint.y}" r="5" fill="${statusColor(status)}"></circle>
         <text x="${labelPoint.x}" y="${labelPoint.y}" text-anchor="middle" dominant-baseline="central">${h(shortName(employee.name))}</text>
       </g>
     `;
@@ -360,6 +430,7 @@ function renderDashboard() {
     ['analytics', '⌁', 'Аналітика'],
     ['employees', '♙', 'Працівники'],
     ['data', '⚙', 'Налаштування'],
+    ['help', '?', 'Довідка'],
   ];
   return `
     <div class="dashboard-layout">
@@ -384,6 +455,7 @@ function renderActivePage() {
   if (ui.tab === 'analytics') return renderAnalyticsPage();
   if (ui.tab === 'employees') return renderEmployeesPage();
   if (ui.tab === 'data') return renderDataPage();
+  if (ui.tab === 'help') return renderHelpPage();
   return renderTodayPage();
 }
 
@@ -393,7 +465,7 @@ function renderTodayPage() {
     <div class="page-header">
       <div>
         <h1>Сьогодні, ${h(formatDate(localDateKey(), { day: 'numeric', month: 'long' }))}</h1>
-        <p>Незаповнені робочі дні автоматично закриваються о 18:00.</p>
+        <p>${snapshot.settings.automaticClose ? `Незаповнені робочі дні автоматично закриваються о ${closeTimeText()}.` : 'Автоматичне закриття робочого дня вимкнено.'}</p>
       </div>
       <button class="button" data-action="open-employees">Керувати працівниками</button>
     </div>
@@ -449,7 +521,7 @@ function renderJournalPage() {
             <th class="sticky-name">Працівник</th>
             ${dates.map((date) => {
               const day = dateFromKey(date).getDay();
-              return `<th class="${day === 0 || day === 6 ? 'weekend' : ''}" title="${h(formatDate(date))}">${Number(date.slice(-2))}</th>`;
+              return `<th class="${!configuredWorkday(date) ? 'weekend' : ''}" title="${h(formatDate(date))}">${Number(date.slice(-2))}</th>`;
             }).join('')}
           </tr>
         </thead>
@@ -460,7 +532,7 @@ function renderJournalPage() {
               ${dates.map((date) => {
                 const day = dateFromKey(date).getDay();
                 const outsideEmployment = !employeeActiveOnDate(employee, date);
-                const weekend = day === 0 || day === 6;
+                const weekend = !configuredWorkday(date);
                 const workdayOverride = hasWorkdayOverride(employee.id, date);
                 if (weekend && !workdayOverride) {
                   return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
@@ -537,6 +609,8 @@ function renderDutyScheduleToolbar() {
       </label>
       <div class="duty-schedule-actions">
         <button class="button small" data-create-duty-schedule>+ Новий графік</button>
+        <button class="button small" data-copy-duty-schedule>Створити копію</button>
+        <button class="button small" data-duty-rules>Правила</button>
         <button class="button small" data-rename-duty-schedule>Перейменувати</button>
         <button class="button small danger" data-delete-duty-schedule ${schedules.length <= 1 ? 'disabled' : ''}>Видалити</button>
       </div>
@@ -591,14 +665,17 @@ function renderDutyPage() {
   const maxTotal = Math.max(...totals);
   const incompleteDates = dates.filter((date) => {
     const assignment = snapshot.duties.assignments[date];
-    return assignment && (assignment.employeeIds?.length || 0) < 2 && !assignment.singleApproved;
+    return assignment
+      && (assignment.employeeIds?.length || 0) < dutyRequiredCount(date)
+      && !assignment.singleApproved;
   });
   const incompleteDateSet = new Set(incompleteDates);
+  const fairness = ui.dutyFairness;
   return `
     <div class="page-header">
       <div>
         <h1>Графік «${h(activeDutySchedule().name)}»</h1>
-        <p>Щодня — двоє чергових, включно із суботою та неділею. Один — лише за вашим дозволом.</p>
+        <p>Будні — ${dutyRules().weekdayDutyCount}, вихідні — ${dutyRules().weekendDutyCount} чергових. Решта обмежень задається окремо для цього графіка.</p>
       </div>
       <button class="button" data-duty-history>Учасники й підсумки</button>
     </div>
@@ -612,7 +689,7 @@ function renderDutyPage() {
       <button class="button small" data-duty-month-shift="-1">← Попередній</button>
       <div class="month-title">${h(formatMonth(ui.dutyMonth))}</div>
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
-      <button class="button primary small" data-generate-duties>Сформувати наступний тиждень</button>
+      <button class="button primary small" data-generate-duties>Переглянути наступний тиждень</button>
     </div>
     <p class="duty-help">Лівий клік по колу: порожньо → чергування → реалізоване чергування → порожньо. Правий клік — «А», відсутність або жовта заборона планування. Червона колонка означає нестачу чергового: натисніть її, щоб додати другого або дозволити одного.</p>
     <div class="duty-legend">
@@ -626,9 +703,10 @@ function renderDutyPage() {
             const day = dateFromKey(date).getDay();
             const assignment = snapshot.duties.assignments[date];
             const incomplete = assignment
-              && (assignment.employeeIds?.length || 0) < 2
+              && (assignment.employeeIds?.length || 0) < dutyRequiredCount(date)
               && !assignment.singleApproved;
-            return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete' : ''}"><button data-duty-day="${date}" title="Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[day]}</small></button></th>`;
+            const locked = dutyWeekLocked(date);
+            return `<th class="${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete ' : ''}${locked ? 'duty-day-locked' : ''}"><button data-duty-day="${date}" title="${locked ? 'Тиждень заблоковано · ' : ''}Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${locked ? '🔒' : WEEKDAY_SHORT[day]}</small></button></th>`;
           }).join('')}<th class="duty-scroll-tail" aria-hidden="true"></th>
         </tr></thead>
         <tbody>${participants.map((employee, employeeIndex) => {
@@ -640,12 +718,24 @@ function renderDutyPage() {
             ${dates.map((date) => {
               const cell = dutyCell(employee, date);
               const incompleteClass = incompleteDateSet.has(date) ? ' duty-column-incomplete' : '';
-              return `<td class="matrix-cell ${cell.className}${incompleteClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}">${cell.symbol}</td>`;
+              const lockedClass = dutyWeekLocked(date) ? ' duty-cell-locked' : '';
+              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
             }).join('')}<td class="duty-scroll-tail" aria-hidden="true"></td>
           </tr>`;
         }).join('')}</tbody>
       </table>
     </div>
+    ${fairness ? `
+      <section class="panel duty-fairness-panel">
+        <div class="rules-heading"><div><h2>Справедливість розподілу</h2><p>${h(formatDate(fairness.startDate))} — ${h(formatDate(fairness.endDate))}</p></div><span class="status-badge" data-status="${fairness.spread <= 1 ? 'submitted' : 'missed'}">Різниця: ${fairness.spread}</span></div>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Працівник</th><th>Усього</th><th>Вихідні</th><th>Середній відпочинок</th><th>Останнє</th></tr></thead>
+          <tbody>${fairness.rows.map((row) => `<tr><td>${h(employeeById(row.employeeId)?.name || '—')}</td><td>${row.total}</td><td>${row.weekends}</td><td>${row.averageRestDays === null ? '—' : `${row.averageRestDays} дн.`}</td><td>${row.lastDuty ? h(formatDate(row.lastDuty, { day: 'numeric', month: 'short' })) : '—'}</td></tr>`).join('')}</tbody>
+        </table></div>
+        <h3>Повторення пар</h3>
+        <div class="pair-list">${fairness.pairs.slice(0, 12).map((pair) => `<span class="pair-chip ${pair.count > 1 ? 'repeated' : ''}">${h(pair.employeeIds.map((id) => employeeById(id)?.name || '—').join(' + '))} · ${pair.count}</span>`).join('') || '<span class="muted">Пар за цей період ще немає.</span>'}</div>
+      </section>
+    ` : ''}
   `;
 }
 
@@ -659,8 +749,12 @@ function formatDuration(minutes) {
 
 function renderTimeOffPage() {
   const employees = activeEmployees();
+  const query = ui.timeOffQuery.trim().toLocaleLowerCase('uk-UA');
   const entries = (snapshot.timeOffEntries || [])
-    .filter((entry) => entry.date.startsWith(`${ui.timeOffMonth}-`))
+    .filter((entry) => !ui.timeOffEmployee || entry.employeeId === ui.timeOffEmployee)
+    .filter((entry) => !ui.timeOffFrom || entry.date >= ui.timeOffFrom)
+    .filter((entry) => !ui.timeOffTo || entry.date <= ui.timeOffTo)
+    .filter((entry) => !query || `${entry.destination} ${entry.note || ''}`.toLocaleLowerCase('uk-UA').includes(query))
     .sort((left, right) => (
       right.date.localeCompare(left.date)
       || right.startTime.localeCompare(left.startTime)
@@ -686,6 +780,15 @@ function renderTimeOffPage() {
       </div>
       <div class="form-actions"><button class="button primary" type="submit" ${employees.length ? '' : 'disabled'}>Додати запис</button></div>
     </form>
+    <form id="time-off-filter-form" class="panel compact-panel time-off-filter-form">
+      <div class="form-grid">
+        <label class="field"><span>Працівник</span><select name="employeeId"><option value="">Усі працівники</option>${snapshot.employees.map((employee) => `<option value="${h(employee.id)}" ${ui.timeOffEmployee === employee.id ? 'selected' : ''}>${h(employee.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Від дати</span><input name="startDate" type="date" value="${h(ui.timeOffFrom)}"></label>
+        <label class="field"><span>До дати</span><input name="endDate" type="date" value="${h(ui.timeOffTo)}"></label>
+        <label class="field"><span>Куди / причина</span><input name="query" value="${h(ui.timeOffQuery)}" placeholder="Пошук у причині та примітці"></label>
+      </div>
+      <div class="form-actions"><button class="button primary small" type="submit">Застосувати фільтр</button><button class="button small" type="button" data-clear-time-off-filter>Очистити</button></div>
+    </form>
     <div class="table-toolbar">
       <button class="button small" data-time-off-month-shift="-1">← Попередній</button>
       <div class="month-title">${h(formatMonth(ui.timeOffMonth))}</div>
@@ -699,7 +802,7 @@ function renderTimeOffPage() {
           <tbody>${entries.map((entry) => {
             const employee = employeeById(entry.employeeId);
             return `<tr><td>${h(formatDate(entry.date, { day: 'numeric', month: 'short', year: 'numeric' }))}</td><td>${h(employee?.name || 'Видалений працівник')}</td><td>${h(entry.startTime)}–${h(entry.endTime)}</td><td>${h(formatDuration(entry.durationMinutes))}</td><td>${h(entry.destination)}</td><td>${h(entry.note || '—')}</td><td><button class="button small danger" data-delete-time-off="${h(entry.id)}" title="Видалити запис">Видалити</button></td></tr>`;
-          }).join('') || '<tr><td colspan="7" class="muted">За цей місяць записів немає.</td></tr>'}</tbody>
+          }).join('') || '<tr><td colspan="7" class="muted">За обраним фільтром записів немає.</td></tr>'}</tbody>
         </table>
       </div>
     </section>
@@ -810,7 +913,7 @@ function renderEmployeesPage() {
         ${active.map((employee) => `<div class="employee-row"><div><strong>${h(employee.name)}</strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
       </div>
     </section>
-    ${archived.length ? `
+    ${archived.length && snapshot.settings.showArchivedEmployees ? `
       <section class="panel">
         <h2>Архів</h2>
         <div class="employee-list">
@@ -822,74 +925,50 @@ function renderEmployeesPage() {
 }
 
 function renderDataPage() {
+  const settings = snapshot.settings;
+  const weekdays = [
+    [1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [0, 'Нд'],
+  ];
+  const colorLabels = {
+    pending: 'Очікується', submitted: 'Подав', submitted_late: 'Із запізненням',
+    submitted_advance: 'Наперед', missed: 'Не подав', other_tasks: 'Інші завдання',
+    personal_permission: 'Особисті справи', sick: 'Лікарняний', vacation: 'Відпустка',
+    day_off: 'Відгул', holiday: 'Свято / вихідний',
+  };
   return `
     <div class="page-header">
-      <div><h1>Налаштування та дані</h1><p>Поведінка програми, умовні позначення й резервні копії.</p></div>
+      <div><h1>Налаштування</h1><p>Параметри програми. Позначення та пояснення винесено в окрему «Довідку».</p></div>
     </div>
-    <section class="panel">
-      <h2>Поведінка віджета</h2>
-      <label class="check-row">
-        <input id="always-on-top" type="checkbox" ${snapshot.settings.alwaysOnTop ? 'checked' : ''}>
-        <span><strong>Завжди поверх інших вікон</strong><span>Віджет залишатиметься видимим під час роботи в інших програмах.</span></span>
-      </label>
-    </section>
-    <section class="panel rules-panel">
-      <div class="rules-heading">
-        <div><h2>Як працює облік</h2><p>Часові правила та умови, за якими змінюється колір віджета.</p></div>
-        <span class="rules-local-badge">Місцевий час комп’ютера</span>
-      </div>
-      <div class="rules-grid">
-        <article class="rule-card">
-          <div class="rule-time">00:00</div>
-          <div><strong>Початок нового дня</strong><p>Не пізніше ніж за 30 секунд віджет переходить до поточного дня. Новий незаповнений робочий день сірий; учорашній червоний пропуск залишається в табелі.</p></div>
-        </article>
-        <article class="rule-card">
-          <div class="rule-time danger">18:00</div>
-          <div><strong>Автоматичне закриття</strong><p>Упродовж 30 секунд незаповнений робочий день стає червоним — «Не подав». Якщо програма була закрита, пропущені дні обробляються під час наступного запуску.</p></div>
-        </article>
-        <article class="rule-card">
-          <div class="rule-icon">↶</div>
-          <div><strong>Додаткові одиниці</strong><p>Після поточного дня вони закривають найближчі попередні пропуски. Зарахування наперед виконується лише після окремого підтвердження.</p></div>
-        </article>
-        <article class="rule-card">
-          <div class="rule-icon">ВХ</div>
-          <div><strong>Субота й неділя</strong><p>Автоматично позначаються вихідними й не вимагають запиту. Конкретний вихідний можна вручну зробити робочим днем.</p></div>
-        </article>
-        <article class="rule-card">
-          <div class="rule-icon">◫</div>
-          <div><strong>Окремі графіки</strong><p>Кожен графік чергувань має власних учасників, календар, позначки, підсумки та незалежне формування наступного тижня.</p></div>
-        </article>
-        <article class="rule-card">
-          <div class="rule-icon">↗</div>
-          <div><strong>Журнал «Відпросився»</strong><p>Короткі відлучення з точним часом зберігаються окремо й не змінюють табель або кількість відпрацьованих днів.</p></div>
-        </article>
-      </div>
-
-      <h3 class="rules-subtitle">Кольори щоденного обліку</h3>
-      <div class="legend-grid">
-        <div class="legend-item"><span class="legend-swatch pending"></span><span><strong>Сірий · Очікується</strong><small>Робочий день ще не закрито</small></span></div>
-        <div class="legend-item"><span class="legend-swatch submitted"></span><span><strong>Зелений · Подав</strong><small>Запит зараховано вчасно</small></span></div>
-        <div class="legend-item"><span class="legend-swatch late"></span><span><strong>Світло-зелений · Із запізненням</strong><small>Подано після 18:00</small></span></div>
-        <div class="legend-item"><span class="legend-swatch advance"></span><span><strong>М’ятний · Наперед</strong><small>Майбутній день закрито з дозволу</small></span></div>
-        <div class="legend-item"><span class="legend-swatch missed"></span><span><strong>Червоний · Не подав</strong><small>Незаповнений день після 18:00</small></span></div>
-        <div class="legend-item"><span class="legend-swatch other-tasks"></span><span><strong>Бірюзовий · Інші завдання</strong><small>Зараховується як відпрацьований день</small></span></div>
-        <div class="legend-item"><span class="legend-swatch personal"></span><span><strong>Рожевий · Особисті справи</strong><small>Окремо, не є відпрацьованим днем</small></span></div>
-        <div class="legend-item"><span class="legend-swatch sick"></span><span><strong>Помаранчевий · Лікарняний</strong><small>Не є відпрацьованим днем</small></span></div>
-        <div class="legend-item"><span class="legend-swatch vacation"></span><span><strong>Фіолетовий · Відпустка</strong><small>Не є відпрацьованим днем</small></span></div>
-        <div class="legend-item"><span class="legend-swatch day-off"></span><span><strong>Синій · Відгул</strong><small>Не є відпрацьованим днем</small></span></div>
-        <div class="legend-item"><span class="legend-swatch holiday"></span><span><strong>Сіро-синій · Свято / вихідний</strong><small>Не є відпрацьованим днем</small></span></div>
-      </div>
-
-      <h3 class="rules-subtitle">Позначення чергувань</h3>
-      <div class="legend-grid duty-legend-grid">
-        <div class="legend-item"><span class="legend-duty duty"></span><span><strong>Синя «1»</strong><small>Призначене чергування</small></span></div>
-        <div class="legend-item"><span class="legend-duty realized"></span><span><strong>Зелена «1»</strong><small>Під час чергування були завдання</small></span></div>
-        <div class="legend-item"><span class="legend-duty a-mark"></span><span><strong>Коричнева «А»</strong><small>Залучення; після чергування наступного дня не ставиться</small></span></div>
-        <div class="legend-item"><span class="legend-duty planning">—</span><span><strong>Жовтий · Не планувати</strong><small>Не входить до статистики</small></span></div>
-        <div class="legend-item"><span class="legend-duty unavailable">ВП</span><span><strong>Сіро-синій · Відсутність</strong><small>Не бере участі в розподілі чергувань</small></span></div>
-      </div>
-      <div class="workday-note"><strong>До відпрацьованих днів входять:</strong> дні, закриті запитами, та «Інші завдання». Особисті справи, лікарняний, відпустка, відгул, свято, вихідний і пропуск не зараховуються.</div>
-    </section>
+    <form id="settings-form">
+      <section class="panel">
+        <h2>Час і робочі дні</h2>
+        <div class="form-grid">
+          <label class="field"><span>Час автоматичного закриття</span><input name="closeTime" type="time" value="${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}" required></label>
+          <label class="field"><span>Формат дати</span><select name="dateStyle"><option value="long" ${settings.dateStyle === 'long' ? 'selected' : ''}>24 серпня 2026</option><option value="short" ${settings.dateStyle === 'short' ? 'selected' : ''}>24 серп. 2026</option><option value="numeric" ${settings.dateStyle === 'numeric' ? 'selected' : ''}>24.08.2026</option></select></label>
+        </div>
+        <label class="check-row"><input name="automaticClose" type="checkbox" ${settings.automaticClose ? 'checked' : ''}><span><strong>Автоматично позначати пропуск</strong><span>Після заданого часу незаповнений робочий день стає червоним.</span></span></label>
+        <div class="weekday-settings">${weekdays.map(([value, label]) => `<label><input type="checkbox" name="workdays" value="${value}" ${settings.workdays.includes(value) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div>
+      </section>
+      <section class="panel">
+        <h2>Віджет і таблиця</h2>
+        <div class="settings-grid">
+          <label class="check-row"><input name="alwaysOnTop" type="checkbox" ${settings.alwaysOnTop ? 'checked' : ''}><span><strong>Завжди поверх інших вікон</strong><span>Круглий віджет не ховається за програмами.</span></span></label>
+          <label class="check-row"><input name="confirmDestructiveActions" type="checkbox" ${settings.confirmDestructiveActions ? 'checked' : ''}><span><strong>Підтверджувати небезпечні дії</strong><span>Видалення графіків, записів та імпорт бази потребують підтвердження.</span></span></label>
+          <label class="check-row"><input name="showArchivedEmployees" type="checkbox" ${settings.showArchivedEmployees ? 'checked' : ''}><span><strong>Показувати архів працівників</strong><span>Архів залишається доступним на сторінці працівників.</span></span></label>
+        </div>
+        <div class="form-grid settings-number-grid">
+          <label class="field"><span>Ширина колонки імен, px</span><input name="dutyNameWidth" type="number" min="130" max="320" value="${settings.dutyNameWidth}" required></label>
+          <label class="field"><span>Висота рядка графіка, px</span><input name="dutyRowHeight" type="number" min="34" max="72" value="${settings.dutyRowHeight}" required></label>
+          <label class="field"><span>Товщина кольорової лінії</span><select name="dutyLineStrength"><option value="1" ${settings.dutyLineStrength === 1 ? 'selected' : ''}>Тонка</option><option value="2" ${settings.dutyLineStrength === 2 ? 'selected' : ''}>Середня</option><option value="3" ${settings.dutyLineStrength === 3 ? 'selected' : ''}>Помітна</option></select></label>
+          <label class="field"><span>Кількість щоденних копій</span><input name="backupRetention" type="number" min="1" max="30" value="${settings.backupRetention}" required></label>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Кольори статусів</h2>
+        <div class="color-settings">${Object.entries(colorLabels).map(([key, label]) => `<label><input type="color" name="color-${key}" value="${h(settings.statusColors[key])}"><span>${h(label)}</span></label>`).join('')}</div>
+      </section>
+      <div class="form-actions settings-save-actions"><button class="button" type="button" data-reset-settings>Відновити стандартні</button><button class="button primary" type="submit">Зберегти налаштування</button></div>
+    </form>
     <section class="panel">
       <h2>Резервні копії</h2>
       <p class="panel-copy settings-privacy">Програма не передає дані в інтернет. Усі записи зберігаються поруч із застосунком.</p>
@@ -906,6 +985,34 @@ function renderDataPage() {
         <p class="panel-copy">Видаляє всіх працівників, табель, документи, усі графіки чергувань, журнал «Відпросився», обмеження, підсумки та внутрішню резервну копію. Застосунок повернеться до першого запуску.</p>
       </div>
       <button class="button danger" data-action="reset-all-data">Обнулити всі дані</button>
+    </section>
+  `;
+}
+
+function renderHelpPage() {
+  const settings = snapshot.settings;
+  const closeTime = `${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}`;
+  return `
+    <div class="page-header"><div><h1>Довідка та позначення</h1><p>Пояснення роботи програми без зміни її параметрів.</p></div></div>
+    <section class="panel rules-panel">
+      <div class="rules-grid">
+        <article class="rule-card"><div class="rule-time">00:00</div><div><strong>Новий день</strong><p>Віджет переходить до поточної дати; попередня історія зберігається.</p></div></article>
+        <article class="rule-card"><div class="rule-time danger">${closeTime}</div><div><strong>Автоматичне закриття</strong><p>${settings.automaticClose ? 'Незаповнений робочий день стає червоним.' : 'Зараз вимкнено в налаштуваннях.'}</p></div></article>
+        <article class="rule-card"><div class="rule-icon">↶</div><div><strong>Додаткові одиниці</strong><p>Закривають найближчі попередні пропуски; наперед — лише після дозволу.</p></div></article>
+        <article class="rule-card"><div class="rule-icon">◫</div><div><strong>Окремі графіки</strong><p>Кожен має власні правила, учасників, історію, блокування та підсумки.</p></div></article>
+      </div>
+      <h3 class="rules-subtitle">Кольори щоденного обліку</h3>
+      <div class="legend-grid">${Object.entries(STATUS_LABELS).filter(([key]) => key !== 'weekend').map(([key, label]) => `<div class="legend-item"><span class="legend-swatch" style="background:${h(statusColor(key))}"></span><span><strong>${h(label)}</strong><small>${key === 'missed' ? 'Незаповнений день після часу закриття' : key === 'other_tasks' ? 'Зараховується як відпрацьований день' : 'Статус щоденного обліку'}</small></span></div>`).join('')}</div>
+      <h3 class="rules-subtitle">Позначення чергувань</h3>
+      <div class="legend-grid duty-legend-grid">
+        <div class="legend-item"><span class="legend-duty duty"></span><span><strong>Синя «1»</strong><small>Призначене чергування</small></span></div>
+        <div class="legend-item"><span class="legend-duty realized"></span><span><strong>Зелена «1»</strong><small>Реалізоване чергування</small></span></div>
+        <div class="legend-item"><span class="legend-duty a-mark"></span><span><strong>«А»</strong><small>Залучення; після чергування наступного дня не ставиться</small></span></div>
+        <div class="legend-item"><span class="legend-duty planning">—</span><span><strong>Не планувати</strong><small>Жовта заборона без впливу на статистику</small></span></div>
+        <div class="legend-item"><span class="legend-duty unavailable">ВП</span><span><strong>Відсутність</strong><small>Працівник не бере участі в розподілі</small></span></div>
+        <div class="legend-item"><span class="legend-duty unavailable">🔒</span><span><strong>Заблокований тиждень</strong><small>Зміни дозволені лише після розблокування</small></span></div>
+      </div>
+      <div class="workday-note"><strong>До відпрацьованих днів входять:</strong> дні, закриті запитами, та «Інші завдання». Особисті справи, лікарняний, відпустка, відгул, свято, вихідний і пропуск не зараховуються.</div>
     </section>
   `;
 }
@@ -946,6 +1053,74 @@ function openDutyScheduleModal(mode = 'create') {
       <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">${creating ? 'Створити графік' : 'Зберегти назву'}</button></footer>
     </form>
   `);
+}
+
+function openDutyCopyModal() {
+  const schedule = activeDutySchedule();
+  openModal(`
+    <form id="duty-copy-form" data-schedule-id="${h(schedule.id)}">
+      <header class="modal-head"><div><h2>Створити копію графіка</h2><p>${h(schedule.name)}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        <label class="field"><span>Назва нового графіка</span><input name="name" maxlength="80" value="${h(`${schedule.name} — копія`)}" required autofocus></label>
+        <div class="confirm-box">Буде скопійовано учасників і правила. Призначення, відсутності, блокування та статистика нового графіка почнуться з нуля.</div>
+      </div>
+      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Створити копію</button></footer>
+    </form>
+  `);
+}
+
+function openDutyRulesModal() {
+  const schedule = activeDutySchedule();
+  const rules = dutyRules();
+  openModal(`
+    <form id="duty-rules-form" data-schedule-id="${h(schedule.id)}">
+      <header class="modal-head"><div><h2>Правила графіка</h2><p>${h(schedule.name)} · зміни не перераховують старі тижні</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body duty-rules-form">
+        <div class="form-grid">
+          <label class="field"><span>Чергових у будні</span><select name="weekdayDutyCount"><option value="2" ${rules.weekdayDutyCount === 2 ? 'selected' : ''}>2</option><option value="1" ${rules.weekdayDutyCount === 1 ? 'selected' : ''}>1</option></select></label>
+          <label class="field"><span>Чергових у вихідні</span><select name="weekendDutyCount"><option value="2" ${rules.weekendDutyCount === 2 ? 'selected' : ''}>2</option><option value="1" ${rules.weekendDutyCount === 1 ? 'selected' : ''}>1</option></select></label>
+          <label class="field"><span>Мінімум повних днів відпочинку</span><input name="minimumRestDays" type="number" min="0" max="6" value="${rules.minimumRestDays}" required></label>
+          <label class="field"><span>Максимум чергувань за тиждень</span><select name="maximumDutiesPerWeek"><option value="0" ${rules.maximumDutiesPerWeek === 0 ? 'selected' : ''}>Автоматично</option>${[1, 2, 3, 4, 5, 6, 7].map((value) => `<option value="${value}" ${rules.maximumDutiesPerWeek === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+          <label class="field"><span>Історія пар</span><select name="pairHistoryPeriod"><option value="month" ${rules.pairHistoryPeriod === 'month' ? 'selected' : ''}>Поточний місяць</option><option value="quarter" ${rules.pairHistoryPeriod === 'quarter' ? 'selected' : ''}>Поточний квартал</option><option value="year" ${rules.pairHistoryPeriod === 'year' ? 'selected' : ''}>Поточний рік</option></select></label>
+        </div>
+        <div class="settings-grid">
+          <label class="check-row"><input name="preventConsecutiveDays" type="checkbox" ${rules.preventConsecutiveDays ? 'checked' : ''}><span><strong>Заборонити два дні поспіль</strong><span>Жорстке правило, крім разового винятку.</span></span></label>
+          <label class="check-row"><input name="preventConsecutiveWeekends" type="checkbox" ${rules.preventConsecutiveWeekends ? 'checked' : ''}><span><strong>Заборонити сусідні уікенди</strong><span>Хто чергував у суботу або неділю, пропускає наступний уікенд.</span></span></label>
+          <label class="check-row"><input name="compensateNextWeek" type="checkbox" ${rules.compensateNextWeek ? 'checked' : ''}><span><strong>Компенсувати наступного тижня</strong><span>Одне чергування дає пріоритет на два наступного тижня.</span></span></label>
+          <label class="check-row"><input name="avoidRepeatedPairs" type="checkbox" ${rules.avoidRepeatedPairs ? 'checked' : ''}><span><strong>Уникати повторення пар</strong><span>Однакові поєднання використовуються в останню чергу.</span></span></label>
+        </div>
+        <div class="confirm-box">Якщо жорсткі правила не дозволяють знайти потрібну кількість людей, місце залишається порожнім, а колонка дня стає червоною.</div>
+      </div>
+      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти правила</button></footer>
+    </form>
+  `, true);
+}
+
+function renderDutyExplanation(explanation) {
+  if (!explanation) return '<p class="muted">Цей склад внесено вручну; автоматичного пояснення немає.</p>';
+  return `
+    <div class="duty-explanation">
+      ${explanation.selected?.map((item) => `<article><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong><ul>${item.reasons.map((reason) => `<li>${h(reason)}</li>`).join('')}</ul></article>`).join('') || '<p class="muted">Чергових не призначено.</p>'}
+      ${explanation.notSelected?.length ? `<details><summary>Чому не обрано інших</summary>${explanation.notSelected.map((item) => `<div class="explanation-rejected"><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong>: ${h(item.reasons.join('; '))}</div>`).join('')}</details>` : ''}
+    </div>
+  `;
+}
+
+async function openDutyPreviewModal(startDate, endDate) {
+  try {
+    const preview = await window.counter.previewDuties({ startDate, endDate });
+    openModal(`
+      <header class="modal-head"><div><h2>Попередній перегляд графіка</h2><p>${h(formatDate(startDate))} — ${h(formatDate(endDate))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        <div class="preview-summary"><span>Різниця навантаження: <strong>${preview.fairness.spread}</strong></span><span>Повторених пар: <strong>${preview.fairness.repeatedPairCount}</strong></span><span>Дефіцитних днів: <strong>${preview.shortages.length}</strong></span></div>
+        <div class="preview-days">${preview.assignments.map((assignment) => `<article class="preview-day ${assignment.employeeIds.length < assignment.requiredCount && !assignment.singleApproved ? 'shortage' : ''}"><div><strong>${h(formatDate(assignment.date, { weekday: 'short', day: 'numeric', month: 'short' }))}</strong><small>Потрібно: ${assignment.requiredCount}</small></div><span>${h(assignment.employeeIds.map((id) => employeeById(id)?.name || '—').join(' + ') || 'Не призначено')}</span></article>`).join('')}</div>
+        <div class="confirm-box">Це лише розрахунок. Поточна база ще не змінена. Після застосування вже заповнені вручну дні залишаться без змін.</div>
+      </div>
+      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" data-apply-duty-preview data-start-date="${startDate}" data-end-date="${endDate}">Застосувати графік</button></footer>
+    `, true);
+  } catch (error) {
+    showToast(error.message || String(error), { error: true });
+  }
 }
 
 function openDutyHistoryModal() {
@@ -990,23 +1165,42 @@ function dutyRestrictionText(employeeId, date) {
 
 function openDutyDayModal(date) {
   const assignment = snapshot.duties.assignments[date] || { employeeIds: [], singleApproved: false };
-  const missing = Math.max(0, 2 - assignment.employeeIds.length);
+  const requiredCount = dutyRequiredCount(date);
+  const missing = Math.max(0, requiredCount - assignment.employeeIds.length);
   const incomplete = missing > 0 && !assignment.singleApproved;
+  const locked = dutyWeekLocked(date);
+  const exception = snapshot.duties.dayExceptions?.[date] || {};
   openModal(`
     <form id="duty-day-form" data-date="${date}">
-      <header class="modal-head"><div><h2>Склад чергових</h2><p>${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <header class="modal-head"><div><h2>Склад чергових ${locked ? '· 🔒' : ''}</h2><p>${h(formatDate(date))} · тиждень від ${h(formatDate(dutyWeekStart(date)))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
+        ${locked ? '<div class="confirm-box duty-locked-notice">Тиждень заблоковано від випадкових змін. Для редагування спочатку розблокуйте його.</div>' : ''}
         <div class="confirm-box ${incomplete ? 'duty-shortage-modal' : ''}">${incomplete
           ? `Не вистачає ${missing} ${missing === 1 ? 'чергового' : 'чергових'}. Додайте другого працівника або залиште одного й увімкніть окремий дозвіл нижче.`
-          : 'Оберіть двох працівників. Якщо обрано одного, окремо підтвердьте дозвіл на одиночне чергування.'}</div>
+          : `Для цього дня потрібно: ${requiredCount}. ${requiredCount === 2 ? 'Якщо обрано одного, окремо підтвердьте одиночне чергування.' : 'Окремий дозвіл на одного не потрібен.'}`}</div>
         <div class="duty-picker">${dutyParticipants().map((employee) => {
           const restriction = dutyRestrictionText(employee.id, date);
           const checked = assignment.employeeIds.includes(employee.id);
-          return `<label class="duty-pick ${restriction ? 'restricted' : ''}"><input type="checkbox" name="employeeIds" value="${h(employee.id)}" ${checked ? 'checked' : ''} ${restriction ? 'disabled' : ''}><span><strong>${h(employee.name)}</strong>${restriction ? `<small>${h(restriction)}</small>` : '<small>Доступний</small>'}</span></label>`;
+          return `<label class="duty-pick ${restriction ? 'restricted' : ''}"><input type="checkbox" name="employeeIds" value="${h(employee.id)}" ${checked ? 'checked' : ''} ${restriction || locked ? 'disabled' : ''}><span><strong>${h(employee.name)}</strong>${restriction ? `<small>${h(restriction)}</small>` : '<small>Доступний</small>'}</span></label>`;
         }).join('')}</div>
-        <label class="check-row"><input type="checkbox" name="singleApproved" ${assignment.singleApproved ? 'checked' : ''}><span><strong>Дозволяю чергування однієї людини</strong><span>Потрібно лише тоді, коли в списку залишено одного працівника.</span></span></label>
+        ${requiredCount === 2 ? `<label class="check-row"><input type="checkbox" name="singleApproved" ${assignment.singleApproved ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволяю чергування однієї людини</strong><span>Потрібно лише тоді, коли в списку залишено одного працівника.</span></span></label>` : ''}
+        <details class="modal-details" ${assignment.explanation ? 'open' : ''}><summary>Чому обрано саме цих працівників</summary>${renderDutyExplanation(assignment.explanation)}</details>
+        <section class="day-exception-box">
+          <h3>Разовий виняток лише на цей день</h3>
+          <div class="settings-grid">
+            <label class="check-row"><input id="exception-consecutive" type="checkbox" ${exception.allowConsecutiveDay ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволити після попереднього дня</strong></span></label>
+            <label class="check-row"><input id="exception-weekend" type="checkbox" ${exception.allowConsecutiveWeekend ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволити сусідній уікенд</strong></span></label>
+            <label class="check-row"><input id="exception-rest" type="checkbox" ${exception.allowRestGap ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Ігнорувати бажаний відпочинок</strong></span></label>
+            <label class="check-row"><input id="exception-limit" type="checkbox" ${exception.allowWeeklyLimit ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Перевищити тижневий ліміт</strong></span></label>
+          </div>
+          <label class="field"><span>Причина винятку</span><input id="exception-note" maxlength="500" value="${h(exception.note || '')}" ${locked ? 'disabled' : ''}></label>
+          ${locked ? '' : `<button class="button small" type="button" data-save-day-exception="${date}">Зберегти виняток</button>`}
+        </section>
       </div>
-      <footer class="modal-foot"><button class="button danger" type="button" data-clear-duty-day="${date}">Очистити день</button><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти склад</button></footer>
+      <footer class="modal-foot">
+        <button class="button ${locked ? 'primary' : ''}" type="button" data-toggle-week-lock="${date}" data-locked="${locked ? 'true' : 'false'}">${locked ? 'Розблокувати тиждень' : 'Заблокувати тиждень'}</button>
+        ${locked ? '' : `<button class="button danger" type="button" data-clear-duty-day="${date}">Очистити день</button><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти склад</button>`}
+      </footer>
     </form>
   `, true);
 }
@@ -1093,7 +1287,7 @@ function openStatusModal(employeeId, date) {
   const employee = employeeById(employeeId);
   const record = recordFor(employeeId, date);
   const day = dateFromKey(date).getDay();
-  const calendarWeekend = day === 0 || day === 6;
+  const calendarWeekend = !configuredWorkday(date);
   const workdayOverride = hasWorkdayOverride(employeeId, date);
   const canEditWorkday = !calendarWeekend || workdayOverride;
   openModal(`
@@ -1105,7 +1299,7 @@ function openStatusModal(employeeId, date) {
         <button class="button primary" type="button" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>
       ` : ''}
       ${calendarWeekend && workdayOverride ? `
-        <div class="confirm-box success-box">Цей календарний вихідний вручну зроблено робочим. Він входить у норму й закривається о 18:00 як звичайний робочий день.</div>
+        <div class="confirm-box success-box">Цей календарний вихідний вручну зроблено робочим. Він входить у норму${snapshot.settings.automaticClose ? ` й закривається о ${closeTimeText()} як звичайний робочий день` : '; автоматичне закриття зараз вимкнено'}.</div>
       ` : ''}
       ${date === localDateKey() && canEditWorkday ? `
         <div class="button-row">
@@ -1153,7 +1347,11 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
     });
   }
   if (duties && snapshot.duties?.initialized) {
-    ui.dutyStats = await window.counter.getDutyStats(ui.dutyMonth.slice(0, 4));
+    const year = ui.dutyMonth.slice(0, 4);
+    [ui.dutyStats, ui.dutyFairness] = await Promise.all([
+      window.counter.getDutyStats(year),
+      window.counter.getDutyFairness({ startDate: `${year}-01-01`, endDate: `${year}-12-31` }),
+    ]);
   }
   renderShell();
 }
@@ -1225,14 +1423,14 @@ appRoot.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'import-data') {
-      if (!window.confirm('Імпорт замінить поточну базу даних. Продовжити?')) return;
+      if (!confirmAction('Імпорт замінить поточну базу даних. Продовжити?')) return;
       const result = await run(() => window.counter.importData(), null, { undo: true });
       if (result && !result.canceled) showToast('Резервну копію імпортовано.', { undo: true });
       return;
     }
     if (action === 'reset-all-data') {
-      if (!window.confirm('Це назавжди видалить УСІ дані застосунку. Продовжити?')) return;
-      if (!window.confirm('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань і журнал «Відпросився» без можливості скасування?')) return;
+      if (!confirmAction('Це назавжди видалить УСІ дані застосунку. Продовжити?', true)) return;
+      if (!confirmAction('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань і журнал «Відпросився» без можливості скасування?', true)) return;
       const result = await run(
         () => window.counter.resetAllData(),
         null,
@@ -1287,13 +1485,47 @@ appRoot.addEventListener('click', async (event) => {
   const timeOffMonthButton = event.target.closest('[data-time-off-month-shift]');
   if (timeOffMonthButton) {
     ui.timeOffMonth = monthShift(ui.timeOffMonth, Number(timeOffMonthButton.dataset.timeOffMonthShift));
+    ui.timeOffFrom = `${ui.timeOffMonth}-01`;
+    ui.timeOffTo = `${ui.timeOffMonth}-${String(daysInMonth(ui.timeOffMonth)).padStart(2, '0')}`;
     renderShell();
+    return;
+  }
+
+  if (event.target.closest('[data-clear-time-off-filter]')) {
+    ui.timeOffEmployee = '';
+    ui.timeOffQuery = '';
+    ui.timeOffFrom = `${ui.timeOffMonth}-01`;
+    ui.timeOffTo = `${ui.timeOffMonth}-${String(daysInMonth(ui.timeOffMonth)).padStart(2, '0')}`;
+    renderShell();
+    return;
+  }
+
+  if (event.target.closest('[data-reset-settings]')) {
+    const result = await run(
+      () => window.counter.updateSettings({
+        closeHour: 18,
+        closeMinute: 0,
+        automaticClose: true,
+        workdays: [1, 2, 3, 4, 5],
+        alwaysOnTop: true,
+        dutyNameWidth: 180,
+        dutyRowHeight: 46,
+        dutyLineStrength: 2,
+        confirmDestructiveActions: true,
+        showArchivedEmployees: true,
+        dateStyle: 'long',
+        backupRetention: 7,
+        statusColors: { ...STATUS_COLORS },
+      }),
+      'Стандартні налаштування відновлено.',
+    );
+    if (result) renderShell();
     return;
   }
 
   const deleteTimeOffButton = event.target.closest('[data-delete-time-off]');
   if (deleteTimeOffButton) {
-    if (!window.confirm('Видалити цей запис із журналу «Відпросився»?')) return;
+    if (!confirmAction('Видалити цей запис із журналу «Відпросився»?')) return;
     await run(
       () => window.counter.deleteTimeOffEntry(deleteTimeOffButton.dataset.deleteTimeOff),
       'Запис видалено.',
@@ -1305,13 +1537,21 @@ appRoot.addEventListener('click', async (event) => {
     openDutyScheduleModal('create');
     return;
   }
+  if (event.target.closest('[data-copy-duty-schedule]')) {
+    openDutyCopyModal();
+    return;
+  }
+  if (event.target.closest('[data-duty-rules]')) {
+    openDutyRulesModal();
+    return;
+  }
   if (event.target.closest('[data-rename-duty-schedule]')) {
     openDutyScheduleModal('rename');
     return;
   }
   if (event.target.closest('[data-delete-duty-schedule]')) {
     const schedule = activeDutySchedule();
-    if (!window.confirm(`Видалити графік «${schedule.name}» разом із його історією та позначками? Інші графіки не зміняться.`)) return;
+    if (!confirmAction(`Видалити графік «${schedule.name}» разом із його історією та позначками? Інші графіки не зміняться.`)) return;
     const result = await run(
       () => window.counter.deleteDutySchedule(schedule.id),
       `Графік «${schedule.name}» видалено.`,
@@ -1337,9 +1577,9 @@ appRoot.addEventListener('click', async (event) => {
     const date = dutyCellButton.dataset.date;
     const assignment = snapshot.duties.assignments[date];
     const incomplete = assignment
-      && (assignment.employeeIds?.length || 0) < 2
+      && (assignment.employeeIds?.length || 0) < dutyRequiredCount(date)
       && !assignment.singleApproved;
-    if (incomplete) {
+    if (incomplete || dutyWeekLocked(date)) {
       openDutyDayModal(date);
       return;
     }
@@ -1354,35 +1594,13 @@ appRoot.addEventListener('click', async (event) => {
   if (generateDutiesButton) {
     const { startDate, endDate } = nextWeekRange();
     ui.dutyMonth = startDate.slice(0, 7);
-    const result = await run(
-      () => window.counter.generateDuties({ startDate, endDate }),
-      null,
-    );
-    if (result) {
-      const weekendConflictCount = result.weekendConflicts?.length || 0;
-      let message = `Графік на ${formatDate(startDate)} — ${formatDate(endDate)} сформовано.`;
-      if (result.generated === 0 && !result.shortages.length) {
-        message = 'Наступний тиждень уже заповнений. Існуючий графік не змінено.';
-      } else if (result.shortages.length) {
-        const details = result.shortages.map((item) => {
-          const missing = item.missing || 1;
-          return `${formatDate(item.date)} — бракує ${missing} ${missing === 1 ? 'чергового' : 'чергових'}`;
-        }).join('; ');
-        message = `Графік сформовано частково: ${details}. Повторів наступного дня не створено.`;
-      } else if (weekendConflictCount) {
-        message = `Графік сформовано, але ${weekendConflictCount} порушень правил вихідних неможливо уникнути через ручні позначки або недоступність.`;
-      }
-      showToast(message, {
-        error: result.shortages.length > 0 || weekendConflictCount > 0,
-        undo: true,
-      });
-    }
+    await openDutyPreviewModal(startDate, endDate);
     return;
   }
 
   const archiveButton = event.target.closest('[data-archive-employee]');
   if (archiveButton) {
-    if (!window.confirm('Прибрати працівника з активного віджета? Історія залишиться в архіві.')) return;
+    if (!confirmAction('Прибрати працівника з активного віджета? Історія залишиться в архіві.')) return;
     await run(() => window.counter.archiveEmployee(archiveButton.dataset.archiveEmployee), 'Працівника переміщено до архіву.');
     return;
   }
@@ -1469,6 +1687,42 @@ appRoot.addEventListener('contextmenu', (event) => {
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'settings-form') {
+    const form = new FormData(event.target);
+    const [closeHour, closeMinute] = String(form.get('closeTime') || '18:00').split(':').map(Number);
+    const statusColors = Object.fromEntries(Object.keys(STATUS_COLORS).map((key) => [
+      key,
+      String(form.get(`color-${key}`) || STATUS_COLORS[key]),
+    ]));
+    await run(
+      () => window.counter.updateSettings({
+        closeHour,
+        closeMinute,
+        automaticClose: form.get('automaticClose') === 'on',
+        workdays: form.getAll('workdays').map(Number),
+        alwaysOnTop: form.get('alwaysOnTop') === 'on',
+        confirmDestructiveActions: form.get('confirmDestructiveActions') === 'on',
+        showArchivedEmployees: form.get('showArchivedEmployees') === 'on',
+        dutyNameWidth: Number(form.get('dutyNameWidth')),
+        dutyRowHeight: Number(form.get('dutyRowHeight')),
+        dutyLineStrength: Number(form.get('dutyLineStrength')),
+        backupRetention: Number(form.get('backupRetention')),
+        dateStyle: String(form.get('dateStyle') || 'long'),
+        statusColors,
+      }),
+      'Налаштування збережено.',
+    );
+    return;
+  }
+  if (event.target.id === 'time-off-filter-form') {
+    const form = new FormData(event.target);
+    ui.timeOffEmployee = String(form.get('employeeId') || '');
+    ui.timeOffFrom = String(form.get('startDate') || '');
+    ui.timeOffTo = String(form.get('endDate') || '');
+    ui.timeOffQuery = String(form.get('query') || '');
+    renderShell();
+    return;
+  }
   if (event.target.id === 'time-off-form') {
     const form = new FormData(event.target);
     const result = await run(
@@ -1537,6 +1791,53 @@ appRoot.addEventListener('change', async (event) => {
 modalRoot.addEventListener('click', async (event) => {
   if (event.target.matches('[data-modal-close]') || event.target.closest('[data-close-modal]')) {
     closeModal();
+    return;
+  }
+
+  const applyPreviewButton = event.target.closest('[data-apply-duty-preview]');
+  if (applyPreviewButton) {
+    const result = await run(
+      () => window.counter.generateDuties({
+        startDate: applyPreviewButton.dataset.startDate,
+        endDate: applyPreviewButton.dataset.endDate,
+      }),
+      null,
+    );
+    if (result) {
+      closeModal();
+      showToast(result.shortages?.length
+        ? `Графік застосовано частково: дефіцитних днів — ${result.shortages.length}.`
+        : 'Перевірений графік застосовано.', { error: Boolean(result.shortages?.length), undo: true });
+    }
+    return;
+  }
+
+  const weekLockButton = event.target.closest('[data-toggle-week-lock]');
+  if (weekLockButton) {
+    const willLock = weekLockButton.dataset.locked !== 'true';
+    if (willLock && !confirmAction('Заблокувати весь тиждень від змін?')) return;
+    const result = await run(
+      () => window.counter.setDutyWeekLocked(weekLockButton.dataset.toggleWeekLock, willLock),
+      willLock ? 'Тиждень заблоковано.' : 'Тиждень розблоковано.',
+    );
+    if (result) openDutyDayModal(weekLockButton.dataset.toggleWeekLock);
+    return;
+  }
+
+  const saveExceptionButton = event.target.closest('[data-save-day-exception]');
+  if (saveExceptionButton) {
+    const date = saveExceptionButton.dataset.saveDayException;
+    const result = await run(
+      () => window.counter.setDutyDayException(date, {
+        allowConsecutiveDay: modalRoot.querySelector('#exception-consecutive')?.checked,
+        allowConsecutiveWeekend: modalRoot.querySelector('#exception-weekend')?.checked,
+        allowRestGap: modalRoot.querySelector('#exception-rest')?.checked,
+        allowWeeklyLimit: modalRoot.querySelector('#exception-limit')?.checked,
+        note: modalRoot.querySelector('#exception-note')?.value || '',
+      }),
+      'Разовий виняток збережено.',
+    );
+    if (result !== undefined) openDutyDayModal(date);
     return;
   }
 
@@ -1674,6 +1975,41 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'duty-copy-form') {
+    const form = new FormData(event.target);
+    const result = await run(
+      () => window.counter.duplicateDutySchedule(
+        event.target.dataset.scheduleId,
+        String(form.get('name') || ''),
+      ),
+      'Копію графіка створено.',
+    );
+    if (result) {
+      ui.dutyStats = null;
+      ui.dutyFairness = null;
+      closeModal();
+    }
+    return;
+  }
+  if (event.target.id === 'duty-rules-form') {
+    const form = new FormData(event.target);
+    const result = await run(
+      () => window.counter.updateDutyScheduleRules(event.target.dataset.scheduleId, {
+        weekdayDutyCount: Number(form.get('weekdayDutyCount')),
+        weekendDutyCount: Number(form.get('weekendDutyCount')),
+        minimumRestDays: Number(form.get('minimumRestDays')),
+        maximumDutiesPerWeek: Number(form.get('maximumDutiesPerWeek')),
+        pairHistoryPeriod: String(form.get('pairHistoryPeriod') || 'year'),
+        preventConsecutiveDays: form.get('preventConsecutiveDays') === 'on',
+        preventConsecutiveWeekends: form.get('preventConsecutiveWeekends') === 'on',
+        compensateNextWeek: form.get('compensateNextWeek') === 'on',
+        avoidRepeatedPairs: form.get('avoidRepeatedPairs') === 'on',
+      }),
+      'Правила цього графіка збережено.',
+    );
+    if (result) closeModal();
+    return;
+  }
   if (event.target.id === 'duty-schedule-form') {
     const form = new FormData(event.target);
     const name = String(form.get('name') || '');
@@ -1747,7 +2083,11 @@ window.counter.onChanged(async (nextSnapshot) => {
   }
   if (ui.tab === 'duties' && snapshot.duties?.initialized) {
     try {
-      ui.dutyStats = await window.counter.getDutyStats(ui.dutyMonth.slice(0, 4));
+      const year = ui.dutyMonth.slice(0, 4);
+      [ui.dutyStats, ui.dutyFairness] = await Promise.all([
+        window.counter.getDutyStats(year),
+        window.counter.getDutyFairness({ startDate: `${year}-01-01`, endDate: `${year}-12-31` }),
+      ]);
     } catch (error) {
       showToast(error.message || String(error), { error: true });
     }

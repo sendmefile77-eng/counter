@@ -6,6 +6,7 @@ const {
   allocateReceiptBackward,
   allocateReceiptForward,
   archiveEmployee,
+  calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
   clearDutyRestriction,
@@ -18,21 +19,27 @@ const {
   dateKeyFromDate,
   deleteDutySchedule,
   deleteTimeOffEntry,
+  duplicateDutySchedule,
   ensureAutomaticMisses,
   generateDutySchedule,
   initializeDutyHistory,
   normalizeState,
+  previewDutySchedule,
   removeDutyAssignment,
   recordSubmission,
   renameDutySchedule,
   restoreEmployee,
   setManualStatus,
   setDutyAssignment,
+  setDutyDayException,
   setDutyRealized,
   setDutyRestriction,
+  setDutyWeekLocked,
   setWorkdayOverride,
   switchDutySchedule,
   toggleDutyAssignment,
+  updateDutyScheduleRules,
+  updateSettings,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
 
@@ -347,6 +354,9 @@ function registerIpc() {
   ipcMain.handle('duties:generate', (_event, filter) => (
     mutate('duties:generate', (state) => generateDutySchedule(state, filter))
   ));
+  ipcMain.handle('duties:preview', (_event, filter) => (
+    previewDutySchedule(store.state, filter)
+  ));
   ipcMain.handle('duties:set-assignment', (_event, payload) => (
     mutate('duties:set-assignment', (state) => setDutyAssignment(state, payload))
   ));
@@ -366,6 +376,7 @@ function registerIpc() {
     mutate('duties:clear-restriction', (state) => clearDutyRestriction(state, employeeId, date))
   ));
   ipcMain.handle('duties:stats', (_event, { year } = {}) => calculateDutyStatistics(store.state, year));
+  ipcMain.handle('duties:fairness', (_event, filter) => calculateDutyFairness(store.state, filter));
   ipcMain.handle('duties:schedule-create', (_event, { name }) => (
     mutate('duties:schedule-create', (state) => createDutySchedule(state, name))
   ));
@@ -378,12 +389,29 @@ function registerIpc() {
   ipcMain.handle('duties:schedule-delete', (_event, { scheduleId }) => (
     mutate('duties:schedule-delete', (state) => deleteDutySchedule(state, scheduleId))
   ));
+  ipcMain.handle('duties:schedule-duplicate', (_event, { scheduleId, name }) => (
+    mutate('duties:schedule-duplicate', (state) => duplicateDutySchedule(state, scheduleId, name))
+  ));
+  ipcMain.handle('duties:schedule-rules', (_event, { scheduleId, rules }) => (
+    mutate('duties:schedule-rules', (state) => updateDutyScheduleRules(state, scheduleId, rules))
+  ));
+  ipcMain.handle('duties:week-lock', (_event, { date, locked }) => (
+    mutate('duties:week-lock', (state) => setDutyWeekLocked(state, date, locked))
+  ));
+  ipcMain.handle('duties:day-exception', (_event, { date, exception }) => (
+    mutate('duties:day-exception', (state) => setDutyDayException(state, date, exception))
+  ));
   ipcMain.handle('time-off:create', (_event, payload) => (
     mutate('time-off:create', (state) => createTimeOffEntry(state, payload))
   ));
   ipcMain.handle('time-off:delete', (_event, { entryId }) => (
     mutate('time-off:delete', (state) => deleteTimeOffEntry(state, entryId))
   ));
+  ipcMain.handle('settings:update', (_event, settings) => {
+    const result = mutate('settings:update', (state) => updateSettings(state, settings));
+    mainWindow?.setAlwaysOnTop(result.alwaysOnTop);
+    return result;
+  });
 
   ipcMain.handle('history:undo', () => {
     const last = undoStack.pop();

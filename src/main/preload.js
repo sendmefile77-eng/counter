@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('counter', {
   getAnalytics: (filter) => ipcRenderer.invoke('analytics:get', filter),
   initializeDuties: (entries, participantIds) => ipcRenderer.invoke('duties:initialize', { entries, participantIds }),
   generateDuties: (filter) => ipcRenderer.invoke('duties:generate', filter),
+  previewDuties: (filter) => ipcRenderer.invoke('duties:preview', filter),
   setDutyAssignment: (payload) => ipcRenderer.invoke('duties:set-assignment', payload),
   toggleDutyAssignment: (employeeId, date) => (
     ipcRenderer.invoke('duties:toggle-assignment', { employeeId, date })
@@ -34,6 +35,7 @@ contextBridge.exposeInMainWorld('counter', {
     ipcRenderer.invoke('duties:clear-restriction', { employeeId, date })
   ),
   getDutyStats: (year) => ipcRenderer.invoke('duties:stats', { year }),
+  getDutyFairness: (filter) => ipcRenderer.invoke('duties:fairness', filter),
   createDutySchedule: (name) => ipcRenderer.invoke('duties:schedule-create', { name }),
   renameDutySchedule: (scheduleId, name) => (
     ipcRenderer.invoke('duties:schedule-rename', { scheduleId, name })
@@ -44,12 +46,25 @@ contextBridge.exposeInMainWorld('counter', {
   deleteDutySchedule: (scheduleId) => (
     ipcRenderer.invoke('duties:schedule-delete', { scheduleId })
   ),
+  duplicateDutySchedule: (scheduleId, name) => (
+    ipcRenderer.invoke('duties:schedule-duplicate', { scheduleId, name })
+  ),
+  updateDutyScheduleRules: (scheduleId, rules) => (
+    ipcRenderer.invoke('duties:schedule-rules', { scheduleId, rules })
+  ),
+  setDutyWeekLocked: (date, locked) => (
+    ipcRenderer.invoke('duties:week-lock', { date, locked })
+  ),
+  setDutyDayException: (date, exception) => (
+    ipcRenderer.invoke('duties:day-exception', { date, exception })
+  ),
   createTimeOffEntry: (payload) => ipcRenderer.invoke('time-off:create', payload),
   deleteTimeOffEntry: (entryId) => ipcRenderer.invoke('time-off:delete', { entryId }),
   undo: () => ipcRenderer.invoke('history:undo'),
   exportData: (format) => ipcRenderer.invoke('data:export', { format }),
   importData: () => ipcRenderer.invoke('data:import'),
   resetAllData: () => ipcRenderer.invoke('data:reset-all'),
+  updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
   setWindowMode: (mode) => ipcRenderer.invoke('window:set-mode', { mode }),
   resizeWidget: (size, persist = false) => ipcRenderer.invoke('window:resize-widget', { size, persist }),
   setAlwaysOnTop: (value) => ipcRenderer.invoke('window:set-always-on-top', { value }),
