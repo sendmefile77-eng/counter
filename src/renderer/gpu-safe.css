@@ -1,0 +1,30 @@
+/*
+ * Windows/Electron compositor safety overrides.
+ * Keep the Executive Graphite look while avoiding the most expensive
+ * compositor operations inside the transparent circular widget.
+ */
+
+body.mode-widget .radial-svg {
+  filter: none;
+}
+
+body.mode-widget .sector path {
+  transition: opacity 140ms ease, stroke 140ms ease;
+  transform: none !important;
+  filter: none !important;
+}
+
+body.mode-widget .sector:hover path {
+  transform: none !important;
+  filter: none !important;
+  opacity: 1;
+}
+
+body.mode-widget .widget-controls {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+body.mode-widget .widget-circle {
+  isolation: auto;
+}
