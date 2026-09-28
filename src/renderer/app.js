@@ -94,12 +94,15 @@ let widgetDialogExpanded = false;
 let widgetWindowTransition = Promise.resolve();
 let ui = {
   mode: 'widget',
+  widgetList: false,
   tab: 'today',
   month: localDateKey().slice(0, 7),
   analyticsStart: `${localDateKey().slice(0, 7)}-01`,
   analyticsEnd: localDateKey(),
   analyticsEmployee: '',
   analytics: null,
+  analyticsTrend: null,
+  backups: [],
   dutyMonth: localDateKey().slice(0, 7),
   dutySelectedWeek: '',
   dutyFocusedEmployeeId: '',
@@ -409,8 +412,8 @@ function renderWidget() {
   return `
     <section class="widget-view">
       <div class="widget-circle">
-        <div class="radial-wrap">
-          ${employees.length ? renderRadial(employees) : `
+        <div class="radial-wrap ${ui.widgetList ? 'widget-list-mode' : ''}">
+          ${employees.length && ui.widgetList ? `<div class="widget-person-list" aria-label="Список працівників">${employees.map((employee) => `<div class="widget-person"><button data-status-modal="${h(employee.id)}" data-date="${localDateKey()}" title="Відкрити дії для ${h(employee.name)}">${h(shortName(employee.name))}</button><span class="widget-person-status">${h(STATUS_LABELS[statusFor(employee.id)] || 'Очікується')}</span></div>`).join('')}</div>` : employees.length ? renderRadial(employees) : `
             <div class="empty-widget">
               <h2>Немає працівників</h2>
               <p>Відкрийте журнал і додайте до 15 людей.</p>
@@ -418,7 +421,7 @@ function renderWidget() {
             </div>
           `}
         </div>
-        ${employees.length ? `
+        ${employees.length && !ui.widgetList ? `
           <div class="widget-center" data-widget-drag title="Перетягніть, щоб перемістити">
             <span>${h(formatDate(localDateKey(), { day: 'numeric', month: 'long' }))}</span>
             <strong>${submitted}/${employees.length}</strong>
@@ -426,6 +429,7 @@ function renderWidget() {
           </div>
         ` : ''}
         <div class="widget-controls">
+          <button data-action="toggle-widget-list" title="${ui.widgetList ? 'Показати сектори' : 'Показати список'}" aria-label="${ui.widgetList ? 'Показати сектори' : 'Показати список'}">${ui.widgetList ? '◉' : '☷'}</button>
           <button data-action="resize-decrease" title="Зменшити">−</button>
           <button data-action="resize-increase" title="Збільшити">+</button>
           <button data-action="undo" title="Скасувати останнє">↶</button>
@@ -548,6 +552,7 @@ function renderJournalPage() {
       <button class="button small" data-month-shift="-1">← Попередній</button>
       <div class="month-title">${h(formatMonth(ui.month))}</div>
       <button class="button small" data-month-shift="1">Наступний →</button>
+      <button class="button small" data-status-period>Статус на період</button>
     </div>
     <div class="table-scroll">
       <table class="matrix">
@@ -571,14 +576,14 @@ function renderJournalPage() {
                 const workdayOverride = hasWorkdayOverride(employee.id, date);
                 const todayClass = date === localDateKey() ? ' is-today' : '';
                 if (weekend && !workdayOverride) {
-                  return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
+                  return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" role="button" tabindex="${employee === employees[0] && date === dates[0] ? '0' : '-1'}" aria-label="${h(employee.name)} · ${h(formatDate(date))} · вихідний" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
                 }
                 const status = statusFor(employee.id, date);
                 const record = recordFor(employee.id, date);
                 const tooltip = `${employee.name}\n${formatDate(date)}${outsideEmployment ? '\nІсторична дата — можна заповнити вручну' : ''}${workdayOverride ? '\nРобочий день замість вихідного' : ''}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
                 const symbol = workdayOverride && status === 'pending' ? 'РД' : STATUS_SYMBOLS[status];
                 const overrideClass = `${workdayOverride && status === 'pending' ? ' cell-workday-override' : ''}${outsideEmployment ? ' cell-history' : ''}`;
-                return `<td class="matrix-cell cell-${status}${overrideClass}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" title="${h(tooltip)}">${symbol}</td>`;
+                return `<td class="matrix-cell cell-${status}${overrideClass}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" role="button" tabindex="${employee === employees[0] && date === dates[0] ? '0' : '-1'}" aria-label="${h(employee.name)} · ${h(formatDate(date))} · ${h(STATUS_LABELS[status] || 'очікується')}" title="${h(tooltip)}">${symbol}</td>`;
               }).join('')}
             </tr>
           `).join('')}
@@ -740,7 +745,7 @@ function renderDutyPage() {
         <button class="button danger small" data-clear-duty-week="all" ${selectedWeekLocked || !selectedWeekAssignments.length ? 'disabled' : ''}>Очистити весь тиждень</button>
       </div>
     </div>
-    <p class="duty-help">Натисніть ім’я, щоб виділити рядок. Лівий клік по клітинці: порожньо → чергування → реалізоване → порожньо. Правий клік — «А», відсутність або заборона планування. Червона колонка означає нестачу чергового.</p>
+    <p class="duty-help">Натисніть ім’я, щоб виділити рядок. Клік по порожній клітинці призначає чергування; клік по призначеній відкриває окремі дії для виконання або зняття. Правий клік — «А», відсутність або заборона планування. Червона колонка означає нестачу чергового.</p>
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
@@ -771,7 +776,7 @@ function renderDutyPage() {
               const lockedClass = dutyWeekLocked(date) ? ' duty-cell-locked' : '';
               const todayClass = date === localDateKey() ? ' is-today' : '';
               const weekStartClass = dateFromKey(date).getDay() === 1 ? ' duty-week-start' : '';
-              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}${todayClass}${weekStartClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
+              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}${todayClass}${weekStartClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" role="button" tabindex="${employee === participants[0] && date === dates[0] ? '0' : '-1'}" aria-label="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
             }).join('')}<td class="duty-scroll-tail" aria-hidden="true"></td>
           </tr>`;
         }).join('')}</tbody>
@@ -853,7 +858,7 @@ function renderTimeOffPage() {
           <thead><tr><th>Дата</th><th>Працівник</th><th>Час</th><th>Тривалість</th><th>Куди / причина</th><th>Примітка</th><th></th></tr></thead>
           <tbody>${entries.map((entry) => {
             const employee = employeeById(entry.employeeId);
-            return `<tr><td>${h(formatDate(entry.date, { day: 'numeric', month: 'short', year: 'numeric' }))}</td><td>${h(employee?.name || 'Видалений працівник')}</td><td>${h(entry.startTime)}–${h(entry.endTime)}</td><td>${h(formatDuration(entry.durationMinutes))}</td><td>${h(entry.destination)}</td><td>${h(entry.note || '—')}</td><td><button class="button small danger" data-delete-time-off="${h(entry.id)}" title="Видалити запис">Видалити</button></td></tr>`;
+            return `<tr><td>${h(formatDate(entry.date, { day: 'numeric', month: 'short', year: 'numeric' }))}</td><td>${h(employee?.name || 'Видалений працівник')}</td><td>${h(entry.startTime)}–${h(entry.endTime)}</td><td>${h(formatDuration(entry.durationMinutes))}</td><td>${h(entry.destination)}</td><td>${h(entry.note || '—')}</td><td><button class="button small" data-edit-time-off="${h(entry.id)}">Змінити</button> <button class="button small danger" data-delete-time-off="${h(entry.id)}" title="Видалити запис">Видалити</button></td></tr>`;
           }).join('') || '<tr><td colspan="7" class="muted">За обраним фільтром записів немає.</td></tr>'}</tbody>
         </table>
       </div>
@@ -903,6 +908,10 @@ function renderAnalyticsResult(analytics) {
       <div class="metric-card"><strong>${total.completionPercent || 0}%</strong><span>виконання норми</span></div>
     </div>
     <section class="panel">
+      <div class="rules-heading"><div><h2>Динаміка за місяцями</h2><p>Закриті запитами дні та пропуски у вибраному періоді</p></div><button class="button small" data-export-analytics>Експортувати цей звіт</button></div>
+      ${(ui.analyticsTrend || []).length ? `<div class="analytics-trend"><p class="muted">Зелений — дні, закриті запитами; червоний — пропуски. Числа праворуч у тому самому порядку.</p>${ui.analyticsTrend.map((item) => `<div class="analytics-trend-row"><span>${h(formatMonth(item.month))}</span><div class="analytics-trend-track" title="${item.requestDays} закрито, ${item.missed} пропусків"><i style="width:${item.requestDays + item.missed ? Math.round(item.requestDays * 100 / (item.requestDays + item.missed)) : 0}%"></i></div><strong>${item.requestDays} / ${item.missed}</strong></div>`).join('')}</div>` : '<p class="muted">Для графіка оберіть період до 36 місяців.</p>'}
+    </section>
+    <section class="panel">
       <h2>Письмова аналітика</h2>
       <div class="analytics-text">
         ${analytics.rows.map((row) => `
@@ -936,7 +945,7 @@ function renderAnalyticsResult(analytics) {
           <tbody>
             ${filteredReceipts.map((receipt) => {
               const employee = employeeById(receipt.employeeId);
-              return `<tr><td>${receipt.receivedDate}</td><td>${h(employee?.name || '—')}</td><td>${h(receipt.documentRef || '—')}</td><td>${receipt.actualRequestCount}</td><td>${receipt.complexTwoDay ? 'Так, 2 дні' : 'Ні'}</td><td>${receipt.allocations.length}</td><td>${h(receipt.allocations.map((item) => item.date).join(', ') || '—')}</td><td>${receipt.unallocatedCredit}${receipt.unallocatedCredit ? `<br><button class="button small" data-allocate-receipt="${h(receipt.id)}">Розподілити</button>` : ''}</td></tr>`;
+              return `<tr><td>${receipt.receivedDate}</td><td>${h(employee?.name || '—')}</td><td>${h(receipt.documentRef || '—')}<br><button class="button small" data-correct-receipt="${h(receipt.id)}">Виправити</button></td><td>${receipt.actualRequestCount}</td><td>${receipt.complexTwoDay ? 'Так, 2 дні' : 'Ні'}</td><td>${receipt.allocations.length}</td><td>${h(receipt.allocations.map((item) => item.date).join(', ') || '—')}</td><td>${receipt.unallocatedCredit}${receipt.unallocatedCredit ? `<br><button class="button small" data-allocate-receipt="${h(receipt.id)}">Розподілити</button>` : ''}</td></tr>`;
             }).join('') || '<tr><td colspan="8">За обраний період документів немає.</td></tr>'}
           </tbody>
         </table>
@@ -962,7 +971,7 @@ function renderEmployeesPage() {
     <section class="panel">
       <h2>Активні</h2>
       <div class="employee-list">
-        ${active.map((employee) => `<div class="employee-row"><div><strong>${h(employee.name)}</strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
+        ${active.map((employee, index) => `<div class="employee-row"><div><strong>${h(employee.name)}</strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Ім’я</button><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
       </div>
     </section>
     ${archived.length && snapshot.settings.showArchivedEmployees ? `
@@ -1028,6 +1037,9 @@ function renderDataPage() {
         <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, усі графіки, відлучення та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
         <div class="data-action"><h3>Таблиця CSV</h3><p>Плоска таблиця для відкриття в Excel або іншій програмі.</p><button class="button" data-export="csv">Експортувати таблицю</button></div>
         <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
+      </div>
+      <div class="backup-list"><h3>Доступні локальні копії</h3>
+        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
       </div>
       <p class="panel-copy data-file-path"><strong>Локальний файл:</strong> ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
@@ -1191,7 +1203,7 @@ async function openDutyPreviewModal(startDate, endDate, pinnedAssignments = []) 
             <div class="preview-day-head"><strong>${h(formatDate(assignment.date, { weekday: 'short', day: 'numeric', month: 'short' }))}</strong><small>Потрібно: ${assignment.requiredCount}</small></div>
             <div class="preview-day-content"><strong>${h(assignment.employeeIds.map((id) => employeeById(id)?.name || '—').join(' + ') || 'Не призначено')}</strong>
               ${slots ? `<div class="preview-pin-fields">${Array.from({ length: slots }, (_, index) => `<label><span>Закріпити ${index + 1}</span><select data-duty-pin="${assignment.date}" data-pin-slot="${index}"><option value="">Автоматично</option>${available.map((employee) => `<option value="${h(employee.id)}" ${selectedPins[index] === employee.id ? 'selected' : ''}>${h(employee.name)}</option>`).join('')}</select></label>`).join('')}</div>` : '<small>Склад дня вже зафіксовано.</small>'}
-              ${shortage ? `<details class="preview-shortage-details"><summary>Бракує ${shortage.missing}: показати причини</summary><ul>${shortage.blocked.map((item) => `<li><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong> — ${h(item.reasons.join('; '))}</li>`).join('')}${shortage.available.length ? `<li>Формально доступні: ${h(shortage.available.map((id) => employeeById(id)?.name || '—').join(', '))}. Сумісний розподіл на весь тиждень не знайдено.</li>` : ''}</ul></details>` : ''}
+              ${shortage ? `<details class="preview-shortage-details"><summary>Бракує ${shortage.missing}: показати причини</summary><ul>${shortage.blocked.map((item) => `<li><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong> — ${h(item.reasons.join('; '))}</li>`).join('')}${shortage.available.length ? `<li>Доступні окремо: ${h(shortage.available.map((id) => employeeById(id)?.name || '—').join(', '))}. Спробуйте інше закріплення або склад сусідніх днів.</li>` : ''}${shortage.searchLimited ? '<li>Пошук було обмежено; можливість заповнення цього місця остаточно не виключена.</li>' : ''}</ul></details>` : ''}
             </div>
           </article>`;
         }).join('')}</div>
@@ -1304,7 +1316,7 @@ function openDutyEmployeeModal(employeeId, date) {
     <div class="modal-body">
       <div>Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
       ${assigned ? `
-        <div class="confirm-box">Реалізоване чергування позначається лише другим лівим кліком по синій одиниці.</div>
+        <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-realized="${realized ? 'false' : 'true'}" data-date="${date}" data-employee-id="${h(employeeId)}">${realized ? 'Скасувати позначку виконання' : 'Позначити виконаним'}</button>
         <button class="button danger" data-remove-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
         <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
       ` : `
@@ -1344,10 +1356,83 @@ function openSubmissionModal(employeeId) {
         </label>
         <label class="field"><span>Примітка</span><textarea name="note" maxlength="500" placeholder="Причина складності або інше пояснення"></textarea></label>
         <div class="confirm-box">Поточний день закривається першим. Решта одиниць закриває найближчі попередні пропуски: від учора назад. Для майбутніх днів програма попросить окремий дозвіл.</div>
+        <div class="confirm-box" data-submission-preview>Натисніть «Перевірити дати», щоб побачити розподіл до збереження.</div>
       </div>
-      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зарахувати</button></footer>
+      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-submission>Перевірити дати</button><button class="button primary" type="submit" disabled>Зарахувати</button></footer>
     </form>
   `);
+}
+
+function receiptFormInput(form) {
+  const data = new FormData(form);
+  return {
+    requestCount: Number(data.get('requestCount')),
+    complexTwoDay: data.get('complexTwoDay') === 'on',
+    documentRef: String(data.get('documentRef') || ''),
+    note: String(data.get('note') || ''),
+  };
+}
+
+function showReceiptPreview(container, result) {
+  container.innerHTML = `Буде зараховано ${result.creditUnits} од.: <strong>${h(result.dates.map((date) => formatDate(date)).join(', ') || 'жодної дати')}</strong>. Нерозподілений залишок: <strong>${result.unallocatedCredit}</strong>.`;
+}
+
+function openReceiptCorrectionModal(receiptId) {
+  const receipt = snapshot.receipts.find((item) => item.id === receiptId);
+  if (!receipt) return;
+  openModal(`
+    <form id="receipt-correction-form" data-receipt-id="${h(receiptId)}">
+      <header class="modal-head"><div><h2>Виправити документ</h2><p>${h(employeeById(receipt.employeeId)?.name || '')} · ${h(formatDate(receipt.receivedDate))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        <div class="form-grid"><label class="field"><span>Фактичні запити</span><input name="requestCount" type="number" min="1" max="100" value="${receipt.actualRequestCount}" required></label><label class="field"><span>Документ</span><input name="documentRef" maxlength="120" value="${h(receipt.documentRef || '')}"></label></div>
+        <label class="check-row"><input name="complexTwoDay" type="checkbox" ${receipt.complexTwoDay ? 'checked' : ''}><span>Складний запит за два дні</span></label>
+        <label class="field"><span>Примітка</span><textarea name="note" maxlength="500">${h(receipt.note || '')}</textarea></label>
+        <div class="confirm-box">Програма перерахує дні документа від його первісної дати. Раніше дозволений розподіл залишку наперед або назад потрібно буде підтвердити повторно.</div>
+        <div class="confirm-box" data-submission-preview>Перевірте новий розподіл перед збереженням.</div>
+      </div>
+      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-submission>Перевірити дати</button><button class="button primary" type="submit" disabled>Зберегти виправлення</button></footer>
+    </form>
+  `, true);
+}
+
+function openStatusPeriodModal() {
+  openModal(`
+    <form id="status-period-form">
+      <header class="modal-head"><div><h2>Статус на період</h2><p>Лише робочі дні вибраного працівника</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body form-grid">
+        <label class="field"><span>Працівник</span><select name="employeeId" required>${activeEmployees().map((employee) => `<option value="${h(employee.id)}">${h(employee.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Від</span><input name="startDate" type="date" value="${ui.month}-01" required></label>
+        <label class="field"><span>До</span><input name="endDate" type="date" value="${ui.month}-${String(daysInMonth(ui.month)).padStart(2, '0')}" required></label>
+        <label class="field"><span>Статус</span><select name="status"><option value="vacation">Відпустка</option><option value="sick">Лікарняний</option><option value="day_off">Відгул</option><option value="other_tasks">Інші завдання</option><option value="personal_permission">Особисті справи</option><option value="holiday">Свято</option><option value="missed">Не подав</option></select></label>
+        <label class="field"><span>Примітка</span><input name="note" maxlength="500"></label>
+        <p class="confirm-box" data-period-preview>Дні, зараховані документами, не змінюються. Натисніть «Перевірити дні», щоб побачити кількість змін.</p>
+      </div>
+      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-period>Перевірити дні</button><button class="button primary" type="submit" disabled>Застосувати</button></footer>
+    </form>
+  `, true);
+}
+
+function statusPeriodInput(formElement) {
+  const form = new FormData(formElement);
+  return {
+    employeeId: String(form.get('employeeId')),
+    startDate: String(form.get('startDate')),
+    endDate: String(form.get('endDate')),
+    status: String(form.get('status')),
+    note: String(form.get('note') || ''),
+  };
+}
+
+function openEmployeeRenameModal(employeeId) {
+  const employee = employeeById(employeeId);
+  if (!employee) return;
+  openModal(`<form id="employee-rename-form" data-employee-id="${h(employeeId)}"><header class="modal-head"><div><h2>Змінити ім’я</h2></div><button class="icon-button" type="button" data-close-modal>×</button></header><div class="modal-body"><label class="field"><span>Ім’я працівника</span><input name="name" maxlength="80" value="${h(employee.name)}" required></label></div><footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти</button></footer></form>`);
+}
+
+function openTimeOffEditModal(entryId) {
+  const entry = snapshot.timeOffEntries.find((item) => item.id === entryId);
+  if (!entry) return;
+  openModal(`<form id="time-off-edit-form" data-entry-id="${h(entry.id)}"><header class="modal-head"><div><h2>Змінити відлучення</h2></div><button class="icon-button" type="button" data-close-modal>×</button></header><div class="modal-body form-grid"><label class="field"><span>Працівник</span><select name="employeeId">${snapshot.employees.map((employee) => `<option value="${h(employee.id)}" ${employee.id === entry.employeeId ? 'selected' : ''}>${h(employee.name)}</option>`).join('')}</select></label><label class="field"><span>Дата</span><input name="date" type="date" value="${h(entry.date)}" required></label><label class="field"><span>Від</span><input name="startTime" type="time" value="${h(entry.startTime)}" required></label><label class="field"><span>До</span><input name="endTime" type="time" value="${h(entry.endTime)}" required></label><label class="field"><span>Куди / причина</span><input name="destination" maxlength="200" value="${h(entry.destination)}" required></label><label class="field"><span>Примітка</span><input name="note" maxlength="500" value="${h(entry.note || '')}"></label></div><footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти</button></footer></form>`, true);
 }
 
 function openFutureApproval(receipt) {
@@ -1428,11 +1513,14 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
     ui.dutyFocusedEmployeeId = '';
   }
   if (analytics) {
-    ui.analytics = await window.counter.getAnalytics({
+    const filter = {
       employeeId: ui.analyticsEmployee || null,
       startDate: ui.analyticsStart,
       endDate: ui.analyticsEnd,
-    });
+    };
+    ui.analytics = await window.counter.getAnalytics(filter);
+    try { ui.analyticsTrend = await window.counter.getAnalyticsTrend(filter); }
+    catch (_error) { ui.analyticsTrend = null; }
   }
   if (duties && snapshot.duties?.initialized) {
     const year = ui.dutyMonth.slice(0, 4);
@@ -1441,6 +1529,7 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
       window.counter.getDutyFairness({ startDate: `${year}-01-01`, endDate: `${year}-12-31` }),
     ]);
   }
+  if (ui.tab === 'data') ui.backups = await window.counter.listBackups();
   renderShell();
 }
 
@@ -1457,8 +1546,14 @@ async function run(action, successMessage, { undo = true, refreshAnalytics = fal
 }
 
 async function submitOne(employeeId) {
+  const payload = { employeeId, requestCount: 1, complexTwoDay: false };
+  let preview;
+  try { preview = await window.counter.previewSubmission(payload); }
+  catch (error) { showToast(error.message || String(error), { error: true }); return; }
+  if ((preview.dates.length !== 1 || preview.dates[0] !== localDateKey() || preview.unallocatedCredit)
+    && !confirmAction(`Один запит закриє: ${preview.dates.map((date) => formatDate(date)).join(', ') || 'жодного дня'}. Залишок: ${preview.unallocatedCredit}. Зарахувати?`, true)) return;
   const receipt = await run(
-    () => window.counter.recordSubmission({ employeeId, requestCount: 1, complexTwoDay: false }),
+    () => window.counter.recordSubmission(payload),
     'Один запит зараховано.',
   );
   if (receipt?.unallocatedCredit > 0) openFutureApproval(receipt);
@@ -1502,6 +1597,11 @@ appRoot.addEventListener('click', async (event) => {
       renderShell();
       return;
     }
+    if (action === 'toggle-widget-list') {
+      ui.widgetList = !ui.widgetList;
+      renderShell();
+      return;
+    }
     if (action === 'resize-decrease') return resizeWidgetBy(-40);
     if (action === 'resize-increase') return resizeWidgetBy(40);
     if (action === 'minimize') return window.counter.minimize();
@@ -1542,9 +1642,19 @@ appRoot.addEventListener('click', async (event) => {
       await refresh({ analytics: true });
     } else if (ui.tab === 'duties' && !ui.dutyStats && snapshot.duties?.initialized) {
       await refresh({ duties: true });
+    } else if (ui.tab === 'data') {
+      await refresh({ analytics: false, duties: false });
     } else {
       renderShell();
     }
+    return;
+  }
+
+  if (event.target.closest('[data-export-analytics]')) {
+    const result = await run(() => window.counter.exportAnalytics({
+      employeeId: ui.analyticsEmployee || null, startDate: ui.analyticsStart, endDate: ui.analyticsEnd,
+    }), null, { undo: false });
+    if (result && !result.canceled) showToast('Звіт за вибраний період експортовано.');
     return;
   }
 
@@ -1559,6 +1669,18 @@ appRoot.addEventListener('click', async (event) => {
 
   const statusModal = event.target.closest('[data-status-modal]');
   if (statusModal) return openStatusModal(statusModal.dataset.statusModal, statusModal.dataset.date);
+
+  if (event.target.closest('[data-status-period]')) return openStatusPeriodModal();
+  const renameEmployeeButton = event.target.closest('[data-rename-employee]');
+  if (renameEmployeeButton) return openEmployeeRenameModal(renameEmployeeButton.dataset.renameEmployee);
+  const moveEmployeeButton = event.target.closest('[data-move-employee]');
+  if (moveEmployeeButton) {
+    await run(() => window.counter.moveEmployee(moveEmployeeButton.dataset.moveEmployee,
+      Number(moveEmployeeButton.dataset.direction)), 'Порядок працівників оновлено.');
+    return;
+  }
+  const correctReceiptButton = event.target.closest('[data-correct-receipt]');
+  if (correctReceiptButton) return openReceiptCorrectionModal(correctReceiptButton.dataset.correctReceipt);
 
   const cell = event.target.closest('[data-cell-employee]');
   if (cell) return openStatusModal(cell.dataset.cellEmployee, cell.dataset.date);
@@ -1611,6 +1733,14 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
 
+  const restoreBackupButton = event.target.closest('[data-restore-backup]');
+  if (restoreBackupButton) {
+    if (!confirmAction('Відновити вибрану копію? Поточні дані буде замінено, але дію можна скасувати.', true)) return;
+    await run(() => window.counter.restoreBackup(restoreBackupButton.dataset.restoreBackup),
+      'Резервну копію відновлено.');
+    return;
+  }
+
   const deleteTimeOffButton = event.target.closest('[data-delete-time-off]');
   if (deleteTimeOffButton) {
     if (!confirmAction('Видалити цей запис із журналу «Відпросився»?')) return;
@@ -1620,6 +1750,8 @@ appRoot.addEventListener('click', async (event) => {
     );
     return;
   }
+  const editTimeOffButton = event.target.closest('[data-edit-time-off]');
+  if (editTimeOffButton) return openTimeOffEditModal(editTimeOffButton.dataset.editTimeOff);
 
   if (event.target.closest('[data-create-duty-schedule]')) {
     openDutyScheduleModal('create');
@@ -1677,6 +1809,10 @@ appRoot.addEventListener('click', async (event) => {
       && !assignment.singleApproved;
     if (incomplete || dutyWeekLocked(date)) {
       openDutyDayModal(date);
+      return;
+    }
+    if (assignment?.employeeIds?.includes(dutyCellButton.dataset.employeeId)) {
+      openDutyEmployeeModal(dutyCellButton.dataset.employeeId, date);
       return;
     }
     await run(
@@ -1810,6 +1946,37 @@ appRoot.addEventListener('contextmenu', (event) => {
   openStatusModal(sector.dataset.employeeId, localDateKey());
 });
 
+appRoot.addEventListener('keydown', (event) => {
+  const sector = event.target.closest('.sector[data-employee-id]');
+  if (sector && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    openStatusModal(sector.dataset.employeeId, localDateKey());
+    return;
+  }
+  const cell = event.target.closest('[data-cell-employee], [data-duty-cell]');
+  if (!cell) return;
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    if (cell.dataset.dutyCell !== undefined) openDutyEmployeeModal(cell.dataset.employeeId, cell.dataset.date);
+    else openStatusModal(cell.dataset.cellEmployee, cell.dataset.date);
+    return;
+  }
+  const offsets = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] };
+  if (!offsets[event.key]) return;
+  const rows = [...cell.closest('tbody').rows];
+  const row = rows.indexOf(cell.parentElement);
+  const cells = [...cell.parentElement.querySelectorAll('[data-cell-employee], [data-duty-cell]')];
+  const column = cells.indexOf(cell);
+  const [dr, dc] = offsets[event.key];
+  const next = [...(rows[row + dr]?.querySelectorAll('[data-cell-employee], [data-duty-cell]') || [])][column + dc];
+  if (!next) return;
+  event.preventDefault();
+  cell.tabIndex = -1;
+  next.tabIndex = 0;
+  next.focus();
+  next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+});
+
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (event.target.id === 'settings-form') {
@@ -1930,9 +2097,50 @@ modalRoot.addEventListener('change', (event) => {
   if (notice) notice.textContent = 'Закріплення змінено. Натисніть «Перерахувати», щоб побачити результат перед застосуванням.';
 });
 
+modalRoot.addEventListener('input', (event) => {
+  const form = event.target.closest('#submission-form, #receipt-correction-form, #status-period-form');
+  if (!form) return;
+  form.querySelector('[type="submit"]').disabled = true;
+  const notice = form.querySelector('[data-submission-preview], [data-period-preview]');
+  if (notice) notice.textContent = 'Дані змінено. Перевірте дати ще раз.';
+});
+
 modalRoot.addEventListener('click', async (event) => {
   if (event.target.matches('[data-modal-close]') || event.target.closest('[data-close-modal]')) {
     closeModal();
+    return;
+  }
+
+  const previewSubmissionButton = event.target.closest('[data-preview-submission]');
+  if (previewSubmissionButton) {
+    const form = previewSubmissionButton.closest('form');
+    if (!form?.reportValidity()) return;
+    try {
+      const input = receiptFormInput(form);
+      const result = form.id === 'receipt-correction-form'
+        ? await window.counter.previewReceiptCorrection(form.dataset.receiptId, input)
+        : await window.counter.previewSubmission({ ...input, employeeId: form.dataset.employeeId });
+      showReceiptPreview(form.querySelector('[data-submission-preview]'), result);
+      form.querySelector('[type="submit"]').disabled = false;
+    } catch (error) {
+      form.querySelector('[type="submit"]').disabled = true;
+      showToast(error.message || String(error), { error: true });
+    }
+    return;
+  }
+
+  const previewPeriodButton = event.target.closest('[data-preview-period]');
+  if (previewPeriodButton) {
+    const form = previewPeriodButton.closest('form');
+    if (!form.reportValidity()) return;
+    try {
+      const result = await window.counter.previewStatusPeriod(statusPeriodInput(form));
+      form.querySelector('[data-period-preview]').textContent = `Буде оновлено ${result.count} робочих дн.: ${result.dates.map((date) => formatDate(date)).join(', ')}. Усе зберігається одним кроком скасування.`;
+      form.querySelector('[type="submit"]').disabled = false;
+    } catch (error) {
+      form.querySelector('[type="submit"]').disabled = true;
+      showToast(error.message || String(error), { error: true });
+    }
     return;
   }
 
@@ -2067,10 +2275,22 @@ modalRoot.addEventListener('click', async (event) => {
 
   const removeDutyButton = event.target.closest('[data-remove-duty-assignment]');
   if (removeDutyButton) {
+    const realized = snapshot.duties.assignments[removeDutyButton.dataset.date]
+      ?.realizedEmployeeIds?.includes(removeDutyButton.dataset.employeeId);
+    if (realized && !confirmAction('Зняти вже виконане чергування? Це змінить підсумки.', true)) return;
     const result = await run(
       () => window.counter.removeDutyAssignment(removeDutyButton.dataset.employeeId, removeDutyButton.dataset.date),
       'Позначку чергування знято.',
     );
+    if (result) closeModal();
+    return;
+  }
+
+  const realizedDutyButton = event.target.closest('[data-set-duty-realized]');
+  if (realizedDutyButton) {
+    const result = await run(() => window.counter.setDutyRealized(realizedDutyButton.dataset.date,
+      realizedDutyButton.dataset.employeeId, realizedDutyButton.dataset.realized === 'true'),
+    'Стан виконання чергування змінено.');
     if (result) closeModal();
     return;
   }
@@ -2140,6 +2360,40 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'employee-rename-form') {
+    const result = await run(() => window.counter.renameEmployee(event.target.dataset.employeeId,
+      new FormData(event.target).get('name')), 'Ім’я працівника виправлено.');
+    if (result) closeModal();
+    return;
+  }
+  if (event.target.id === 'time-off-edit-form') {
+    const form = new FormData(event.target);
+    const result = await run(() => window.counter.updateTimeOffEntry(event.target.dataset.entryId, {
+      employeeId: String(form.get('employeeId') || ''), date: String(form.get('date') || ''),
+      startTime: String(form.get('startTime') || ''), endTime: String(form.get('endTime') || ''),
+      destination: String(form.get('destination') || ''), note: String(form.get('note') || ''),
+    }), 'Запис відлучення оновлено.');
+    if (result) {
+      ui.timeOffMonth = result.date.slice(0, 7);
+      ui.timeOffFrom = `${ui.timeOffMonth}-01`;
+      ui.timeOffTo = `${ui.timeOffMonth}-${String(daysInMonth(ui.timeOffMonth)).padStart(2, '0')}`;
+      closeModal();
+      renderShell();
+    }
+    return;
+  }
+  if (event.target.id === 'status-period-form') {
+    const payload = statusPeriodInput(event.target);
+    const result = await run(() => window.counter.setStatusPeriod(payload), null);
+    if (result) { closeModal(); showToast(`Оновлено ${result.count} робочих дн.`, { undo: true }); }
+    return;
+  }
+  if (event.target.id === 'receipt-correction-form') {
+    const result = await run(() => window.counter.correctReceipt(event.target.dataset.receiptId,
+      receiptFormInput(event.target)), 'Документ виправлено.');
+    if (result) { closeModal(); if (result.unallocatedCredit > 0) openFutureApproval(result); }
+    return;
+  }
   if (event.target.id === 'duty-copy-form') {
     const form = new FormData(event.target);
     const result = await run(
@@ -2213,14 +2467,7 @@ modalRoot.addEventListener('submit', async (event) => {
     return;
   }
   if (event.target.id !== 'submission-form') return;
-  const form = new FormData(event.target);
-  const payload = {
-    employeeId: event.target.dataset.employeeId,
-    requestCount: Number(form.get('requestCount')),
-    complexTwoDay: form.get('complexTwoDay') === 'on',
-    documentRef: String(form.get('documentRef') || ''),
-    note: String(form.get('note') || ''),
-  };
+  const payload = { ...receiptFormInput(event.target), employeeId: event.target.dataset.employeeId };
   const receipt = await run(() => window.counter.recordSubmission(payload), 'Запити зараховано.');
   if (!receipt) return;
   closeModal();
@@ -2242,6 +2489,13 @@ window.counter.onChanged(async (nextSnapshot) => {
         startDate: ui.analyticsStart,
         endDate: ui.analyticsEnd,
       });
+      try {
+        ui.analyticsTrend = await window.counter.getAnalyticsTrend({
+          employeeId: ui.analyticsEmployee || null,
+          startDate: ui.analyticsStart,
+          endDate: ui.analyticsEnd,
+        });
+      } catch (_error) { ui.analyticsTrend = null; }
     } catch (error) {
       showToast(error.message || String(error), { error: true });
     }

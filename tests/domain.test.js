@@ -8,9 +8,11 @@ const {
   calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
+  calculateAnalyticsTrend,
   clearDutyWeek,
   clearDutyRestriction,
   clone,
+  correctReceipt,
   createDutySchedule,
   createEmployee,
   createTimeOffEntry,
@@ -22,10 +24,15 @@ const {
   generateDutySchedule,
   initializeDutyHistory,
   normalizeState,
+  moveEmployee,
+  previewReceiptCorrection,
+  previewManualStatuses,
+  previewSubmission,
   previewDutySchedule,
   archiveEmployee,
   recordKey,
   recordSubmission,
+  renameEmployee,
   removeDutyAssignment,
   renameDutySchedule,
   restoreEmployee,
@@ -35,11 +42,13 @@ const {
   setDutyRestriction,
   setDutyWeekLocked,
   setManualStatus,
+  setManualStatuses,
   setWorkdayOverride,
   switchDutySchedule,
   toggleDutyAssignment,
   updateDutyScheduleRules,
   updateSettings,
+  updateTimeOffEntry,
 } = require('../src/shared/domain');
 
 function localDate(year, monthIndex, day, hour = 9, minute = 0) {
@@ -57,6 +66,15 @@ test('о 18:00 незаповнений робочий день автомати
   const atClose = localDate(2026, 7, 17, 18, 0);
   assert.equal(ensureAutomaticMisses(state, atClose), 1);
   assert.equal(state.records[recordKey(employee.id, '2026-08-17')].status, STATUS.MISSED);
+});
+
+test('дата з правильним форматом, але неіснуючим днем відхиляється', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employee = createEmployee(state, 'Працівник', now);
+  assert.throws(() => setManualStatus(state, {
+    employeeId: employee.id, date: '2026-02-30', status: STATUS.MISSED,
+  }, now), /календарна дата/);
 });
 
 test('додаткові одиниці закривають найближчі попередні пропуски, а не найстаріші', () => {
@@ -125,6 +143,70 @@ test('майбутній день не закривається без окре�
   assert.equal(receipt.unallocatedCredit, 0);
 });
 
+test('перегляд запиту не змінює базу, а виправлення перераховує дні одним кроком', () => {
+  const now = localDate(2026, 7, 20, 12, 0);
+  const state = defaultState(localDate(2026, 7, 17, 9, 0));
+  const employee = createEmployee(state, 'Працівник', localDate(2026, 7, 17, 9, 0));
+  ensureAutomaticMisses(state, now);
+  const input = { employeeId: employee.id, requestCount: 2, documentRef: 'Документ 1' };
+  const before = clone(state);
+  assert.deepEqual(previewSubmission(state, input, now).dates, ['2026-08-20', '2026-08-19']);
+  assert.deepEqual(state, before);
+  const receipt = recordSubmission(state, input, now);
+  const preview = previewReceiptCorrection(state, receipt.id, { requestCount: 1, documentRef: 'Виправлено' }, now);
+  assert.deepEqual(preview.dates, ['2026-08-20']);
+  assert.equal(state.receipts[0].actualRequestCount, 2);
+  correctReceipt(state, receipt.id, { requestCount: 1, documentRef: 'Виправлено' }, now);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-20')].receiptId, receipt.id);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-19')].status, STATUS.MISSED);
+  assert.equal(state.receipts[0].documentRef, 'Виправлено');
+  assert.equal(state.audit.at(-1).action, 'receipt_corrected');
+  assert.equal(state.audit.filter((item) => item.action === 'receipt_recorded').length, 1);
+});
+
+test('статус на період пропускає вихідні та не змінює частину днів при конфлікті', () => {
+  const now = localDate(2026, 7, 24, 10, 0);
+  const state = defaultState(now);
+  const employee = createEmployee(state, 'Працівник', now);
+  const payload = { employeeId: employee.id, startDate: '2026-08-24', endDate: '2026-08-30', status: STATUS.VACATION };
+  const beforePreview = clone(state);
+  assert.equal(previewManualStatuses(state, payload, now).count, 5);
+  assert.deepEqual(state, beforePreview);
+  const result = setManualStatuses(state, payload, now);
+  assert.equal(result.count, 5);
+  assert.equal(state.records[recordKey(employee.id, '2026-08-29')], undefined);
+  setManualStatus(state, { employeeId: employee.id, date: '2026-08-26', status: STATUS.MISSED }, now);
+  const receipt = recordSubmission(state, { employeeId: employee.id, requestCount: 1 }, localDate(2026, 7, 26, 10, 0));
+  assert.ok(receipt.allocations.length);
+  const before = clone(state.records);
+  assert.throws(() => setManualStatuses(state, payload, now), /пов’язаний із запитом/);
+  assert.deepEqual(state.records, before);
+});
+
+test('ім’я і порядок працівників можна виправити без втрати ідентифікаторів', () => {
+  const now = localDate(2026, 7, 24, 10, 0);
+  const state = defaultState(now);
+  const first = createEmployee(state, 'Перший', now);
+  const second = createEmployee(state, 'Другий', now);
+  renameEmployee(state, first.id, 'Перший виправлений', now);
+  moveEmployee(state, second.id, -1, now);
+  assert.deepEqual(state.employees.map((employee) => employee.id), [second.id, first.id]);
+  assert.equal(state.employees[1].name, 'Перший виправлений');
+});
+
+test('відлучення редагується, але два записи однієї людини не можуть перетинатися', () => {
+  const now = localDate(2026, 7, 24, 10, 0);
+  const state = defaultState(now);
+  const employee = createEmployee(state, 'Працівник', now);
+  const input = { employeeId: employee.id, date: '2026-08-24', startTime: '10:00', endTime: '11:00', destination: 'Лікар' };
+  const first = createTimeOffEntry(state, input, now);
+  const second = createTimeOffEntry(state, { ...input, startTime: '12:00', endTime: '13:00' }, now);
+  assert.throws(() => updateTimeOffEntry(state, second.id, { ...input, startTime: '10:30', endTime: '12:00' }, now), /перетинається/);
+  updateTimeOffEntry(state, first.id, { ...input, endTime: '11:30', destination: 'Зустріч' }, now);
+  assert.equal(state.timeOffEntries[0].durationMinutes, 90);
+  assert.equal(state.timeOffEntries[0].destination, 'Зустріч');
+});
+
 test('відпрацьовані дні включають запити та інші завдання, але не особисті справи', () => {
   const createdAt = localDate(2026, 7, 17, 9, 0);
   const state = defaultState(createdAt);
@@ -148,6 +230,18 @@ test('відпрацьовані дні включають запити та і�
   assert.equal(row.personalPermission, 1);
   assert.equal(row.missed, 0);
   assert.equal(row.pending, 1);
+});
+
+test('місячна динаміка узгоджується з аналітикою вибраного періоду', () => {
+  const now = localDate(2026, 7, 31, 12, 0);
+  const state = defaultState(localDate(2026, 7, 24, 9, 0));
+  const employee = createEmployee(state, 'Працівник', localDate(2026, 7, 24, 9, 0));
+  setManualStatus(state, { employeeId: employee.id, date: '2026-08-24', status: STATUS.OTHER_TASKS }, now);
+  const filter = { employeeId: employee.id, startDate: '2026-08-24', endDate: '2026-09-06' };
+  const trend = calculateAnalyticsTrend(state, filter);
+  assert.deepEqual(trend.map((row) => row.month), ['2026-08', '2026-09']);
+  assert.equal(trend.reduce((sum, row) => sum + row.workedDays, 0),
+    calculateStatistics(state, filter).total.workedDays);
 });
 
 test('подання після 18:00 закриває поточний день як запізніле', () => {

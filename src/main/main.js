@@ -9,11 +9,13 @@ const {
   calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
+  calculateAnalyticsTrend,
   clearDutyWeek,
   clearDutyRestriction,
   clearWorkdayOverride,
   clearManualRecord,
   clone,
+  correctReceipt,
   createDutySchedule,
   createEmployee,
   createTimeOffEntry,
@@ -24,13 +26,19 @@ const {
   ensureAutomaticMisses,
   generateDutySchedule,
   initializeDutyHistory,
+  moveEmployee,
   normalizeState,
   previewDutySchedule,
+  previewReceiptCorrection,
+  previewManualStatuses,
+  previewSubmission,
   removeDutyAssignment,
   recordSubmission,
+  renameEmployee,
   renameDutySchedule,
   restoreEmployee,
   setManualStatus,
+  setManualStatuses,
   setDutyAssignment,
   setDutyDayException,
   setDutyRealized,
@@ -41,6 +49,7 @@ const {
   toggleDutyAssignment,
   updateDutyScheduleRules,
   updateSettings,
+  updateTimeOffEntry,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
 
@@ -197,9 +206,9 @@ function mutate(action, callback) {
   const before = store.snapshot();
   try {
     const result = callback(store.state);
+    store.save();
     undoStack.push({ action, before });
     if (undoStack.length > 30) undoStack.shift();
-    store.save();
     broadcast();
     return clone(result);
   } catch (error) {
@@ -327,8 +336,21 @@ function registerIpc() {
   ipcMain.handle('employee:restore', (_event, { employeeId }) => (
     mutate('employee:restore', (state) => restoreEmployee(state, employeeId))
   ));
+  ipcMain.handle('employee:rename', (_event, { employeeId, name }) => (
+    mutate('employee:rename', (state) => renameEmployee(state, employeeId, name))
+  ));
+  ipcMain.handle('employee:move', (_event, { employeeId, direction }) => (
+    mutate('employee:move', (state) => moveEmployee(state, employeeId, direction))
+  ));
+  ipcMain.handle('submission:preview', (_event, payload) => previewSubmission(store.state, payload));
   ipcMain.handle('submission:record', (_event, payload) => (
     mutate('submission:record', (state) => recordSubmission(state, payload))
+  ));
+  ipcMain.handle('submission:correct-preview', (_event, { receiptId, input }) => (
+    previewReceiptCorrection(store.state, receiptId, input)
+  ));
+  ipcMain.handle('submission:correct', (_event, { receiptId, input }) => (
+    mutate('submission:correct', (state) => correctReceipt(state, receiptId, input))
   ));
   ipcMain.handle('submission:allocate-backward', (_event, { receiptId, units }) => (
     mutate('submission:allocate-backward', (state) => allocateReceiptBackward(state, receiptId, units))
@@ -339,6 +361,10 @@ function registerIpc() {
   ipcMain.handle('record:set-status', (_event, payload) => (
     mutate('record:set-status', (state) => setManualStatus(state, payload))
   ));
+  ipcMain.handle('record:set-period', (_event, payload) => (
+    mutate('record:set-period', (state) => setManualStatuses(state, payload))
+  ));
+  ipcMain.handle('record:preview-period', (_event, payload) => previewManualStatuses(store.state, payload));
   ipcMain.handle('record:clear', (_event, { employeeId, date }) => (
     mutate('record:clear', (state) => clearManualRecord(state, employeeId, date))
   ));
@@ -349,6 +375,24 @@ function registerIpc() {
     mutate('workday-override:clear', (state) => clearWorkdayOverride(state, employeeId, date))
   ));
   ipcMain.handle('analytics:get', (_event, filter) => calculateStatistics(store.state, filter));
+  ipcMain.handle('analytics:trend', (_event, filter) => calculateAnalyticsTrend(store.state, filter));
+  ipcMain.handle('analytics:export', async (_event, filter) => {
+    const analytics = calculateStatistics(store.state, filter);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Експортувати звіт за вибраний період',
+      defaultPath: `counter-report-${filter.startDate}-${filter.endDate}.csv`,
+      filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    const header = ['Працівник', 'Робочі дні', 'Відпрацьовано', 'Фактичні запити',
+      'Закрито запитами', 'Пропуски', 'Інші завдання', 'Особисті справи', 'Виконання %'];
+    const rows = analytics.rows.map((row) => [row.name, row.calendarWorkdays, row.workedDays,
+      row.actualRequestsReceived, row.requestDays, row.missed, row.otherTasks,
+      row.personalPermission, row.completionPercent]);
+    fs.writeFileSync(result.filePath,
+      `\uFEFF${[header, ...rows].map((row) => row.map(csvEscape).join(';')).join('\r\n')}\r\n`, 'utf8');
+    return { canceled: false, filePath: result.filePath };
+  });
   ipcMain.handle('duties:initialize', (_event, { entries, participantIds }) => (
     mutate('duties:initialize', (state) => initializeDutyHistory(state, entries, participantIds))
   ));
@@ -408,6 +452,9 @@ function registerIpc() {
   ipcMain.handle('time-off:create', (_event, payload) => (
     mutate('time-off:create', (state) => createTimeOffEntry(state, payload))
   ));
+  ipcMain.handle('time-off:update', (_event, { entryId, input }) => (
+    mutate('time-off:update', (state) => updateTimeOffEntry(state, entryId, input))
+  ));
   ipcMain.handle('time-off:delete', (_event, { entryId }) => (
     mutate('time-off:delete', (state) => deleteTimeOffEntry(state, entryId))
   ));
@@ -418,9 +465,10 @@ function registerIpc() {
   });
 
   ipcMain.handle('history:undo', () => {
-    const last = undoStack.pop();
+    const last = undoStack.at(-1);
     if (!last) throw new Error('Немає дії, яку можна скасувати.');
     store.replace(last.before);
+    undoStack.pop();
     broadcast();
     return { undone: last.action };
   });
@@ -456,6 +504,16 @@ function registerIpc() {
     undoStack.push({ action: 'data:import', before });
     broadcast();
     return { canceled: false, filePath: result.filePaths[0] };
+  });
+
+  ipcMain.handle('data:backups', () => store.listBackups());
+  ipcMain.handle('data:restore-backup', (_event, { id }) => {
+    const before = store.snapshot();
+    store.restoreBackup(id);
+    undoStack.push({ action: 'data:restore-backup', before });
+    if (undoStack.length > 30) undoStack.shift();
+    broadcast();
+    return { restored: true };
   });
 
   ipcMain.handle('data:reset-all', () => {

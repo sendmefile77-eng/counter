@@ -224,6 +224,13 @@ body.mode-widget #app {
   place-items: center;
 }
 
+.widget-list-mode { padding: 16% 12% 18%; }
+.widget-person-list { width: 100%; max-height: 100%; overflow: auto; scrollbar-width: thin; }
+.widget-person { display: flex; align-items: center; justify-content: space-between; gap: 5px; border-bottom: 1px solid rgba(180, 204, 231, .17); font-size: clamp(9px, 2.8vw, 13px); }
+.widget-person button { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; padding: 7px 2px; color: #edf3f9; text-align: left; cursor: pointer; }
+.widget-person-status { color: #b7c8d8; font-size: .85em; white-space: nowrap; }
+.widget-list-mode + .widget-controls { opacity: 1; pointer-events: auto; transform: translateX(-50%); }
+
 .radial-svg {
   width: 100%;
   height: 100%;
@@ -1028,6 +1035,17 @@ body.mode-widget #app {
 .matrix-cell:hover {
   filter: brightness(1.28);
 }
+
+.matrix-cell:focus-visible { outline: 2px solid #f3ce76; outline-offset: -3px; position: relative; z-index: 2; }
+.matrix tbody tr:has(.matrix-cell:focus-visible) td { box-shadow: inset 0 -2px rgba(243, 206, 118, .5); }
+.matrix th:has(button:focus-visible) { outline: 2px solid #f3ce76; outline-offset: -3px; }
+
+.backup-list { margin-top: 18px; display: grid; gap: 7px; }
+.backup-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.analytics-trend { display: grid; gap: 8px; margin-top: 16px; }
+.analytics-trend-row { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(80px, 3fr) 70px; align-items: center; gap: 10px; font-size: 12px; }
+.analytics-trend-track { height: 12px; border-radius: 9px; background: rgba(222, 102, 100, .28); overflow: hidden; }
+.analytics-trend-track i { display: block; height: 100%; border-radius: inherit; background: #57ba8a; }
 
 .duty-matrix th,
 .duty-matrix td {

@@ -57,3 +57,51 @@ test('повне обнулення видаляє дані та внутріш�
   const persisted = JSON.parse(fs.readFileSync(store.filePath, 'utf8'));
   assert.deepEqual(persisted.employees, []);
 });
+
+test('пошкоджена база відновлюється зі справної копії без перезапису цієї копії', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'counter-recovery-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new DataStore(directory);
+  store.load();
+  createEmployee(store.state, 'Працівник', new Date(2026, 7, 20, 9, 0));
+  store.save();
+  store.save();
+  const healthy = fs.readFileSync(store.backupPath, 'utf8');
+  fs.writeFileSync(store.filePath, '{broken', 'utf8');
+  const recovered = new DataStore(directory);
+  recovered.load();
+  assert.equal(recovered.state.employees[0].name, 'Працівник');
+  assert.equal(fs.readFileSync(store.backupPath, 'utf8'), healthy);
+  assert.ok(fs.readdirSync(directory).some((name) => name.startsWith('counter-data.corrupt-')));
+  assert.ok(recovered.listBackups().length > 0);
+});
+
+test('можна переглянути й відновити вибрану локальну копію', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'counter-backups-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new DataStore(directory);
+  store.load();
+  createEmployee(store.state, 'Перший', new Date(2026, 7, 20, 9, 0));
+  store.save();
+  createEmployee(store.state, 'Другий', new Date(2026, 7, 20, 9, 0));
+  store.save();
+  assert.equal(store.listBackups().find((backup) => backup.id === 'previous').employees, 1);
+  store.restoreBackup('previous');
+  assert.deepEqual(store.state.employees.map((employee) => employee.name), ['Перший']);
+});
+
+test('за двох пошкоджених основних копій програма бере справну щоденну', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'counter-daily-recovery-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new DataStore(directory);
+  store.load();
+  createEmployee(store.state, 'Зі щоденної копії', new Date(2026, 7, 20, 9, 0));
+  store.save();
+  store.save();
+  fs.writeFileSync(store.filePath, '{broken', 'utf8');
+  fs.writeFileSync(store.backupPath, '{}', 'utf8');
+  const restored = new DataStore(directory);
+  restored.load();
+  assert.equal(restored.state.employees[0].name, 'Зі щоденної копії');
+  assert.equal(restored.listBackups().find((copy) => copy.id === 'previous').employees, 1);
+});

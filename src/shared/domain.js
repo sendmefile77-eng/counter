@@ -100,6 +100,12 @@ function assertDateKey(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) {
     throw new Error('Некоректна дата. Очікується формат РРРР-ММ-ДД.');
   }
+  const [year, month, day] = value.split('-').map(Number);
+  const normalized = new Date(Date.UTC(year, month - 1, day));
+  if (year < 1000 || normalized.getUTCFullYear() !== year
+    || normalized.getUTCMonth() !== month - 1 || normalized.getUTCDate() !== day) {
+    throw new Error('Некоректна календарна дата.');
+  }
 }
 
 function dateKeyToUtc(value) {
@@ -473,6 +479,34 @@ function createEmployee(state, name, now = new Date()) {
   return employee;
 }
 
+function renameEmployee(state, employeeId, name, now = new Date()) {
+  const employee = getEmployee(state, employeeId);
+  const cleanName = String(name || '').trim().replace(/\s+/g, ' ');
+  if (cleanName.length < 2 || cleanName.length > 80) {
+    throw new Error('Ім’я працівника має містити від 2 до 80 символів.');
+  }
+  if (state.employees.some((other) => other.id !== employeeId && other.active
+    && other.name.toLocaleLowerCase('uk-UA') === cleanName.toLocaleLowerCase('uk-UA'))) {
+    throw new Error('Працівник із таким ім’ям уже є у списку.');
+  }
+  const previousName = employee.name;
+  employee.name = cleanName;
+  appendAudit(state, 'employee_renamed', { employeeId, previousName, name: cleanName }, now);
+  return employee;
+}
+
+function moveEmployee(state, employeeId, direction, now = new Date()) {
+  const index = state.employees.findIndex((employee) => employee.id === employeeId && employee.active);
+  if (index < 0 || ![-1, 1].includes(direction)) throw new Error('Некоректне переміщення працівника.');
+  const activeIndices = state.employees.flatMap((employee, offset) => employee.active ? [offset] : []);
+  const position = activeIndices.indexOf(index);
+  const targetIndex = activeIndices[position + direction];
+  if (targetIndex === undefined) return false;
+  [state.employees[index], state.employees[targetIndex]] = [state.employees[targetIndex], state.employees[index]];
+  appendAudit(state, 'employee_moved', { employeeId, direction }, now);
+  return true;
+}
+
 function removeEmployeesFromDutyData(
   duties,
   removedIds,
@@ -751,6 +785,17 @@ function setDutyDayException(state, date, input = {}, now = new Date()) {
 }
 
 function createTimeOffEntry(state, input, now = new Date()) {
+  return saveTimeOffEntry(state, input, null, now);
+}
+
+function updateTimeOffEntry(state, entryId, input, now = new Date()) {
+  if (!state.timeOffEntries.some((entry) => entry.id === entryId)) {
+    throw new Error('Запис «Відпросився» не знайдено.');
+  }
+  return saveTimeOffEntry(state, input, entryId, now);
+}
+
+function saveTimeOffEntry(state, input, entryId, now) {
   const employee = getEmployee(state, input.employeeId);
   assertDateKey(input.date);
   const startTime = cleanTime(input.startTime);
@@ -764,8 +809,14 @@ function createTimeOffEntry(state, input, now = new Date()) {
   if (destination.length > 200) throw new Error('Поле «Куди / причина» має містити не більше 200 символів.');
   const note = String(input.note || '').trim();
   if (note.length > 500) throw new Error('Примітка має містити не більше 500 символів.');
+  if (state.timeOffEntries.some((entry) => entry.id !== entryId
+    && entry.employeeId === employee.id && entry.date === input.date
+    && startTime < entry.endTime && endTime > entry.startTime)) {
+    throw new Error('У працівника вже є відлучення, що перетинається з цим часом.');
+  }
+  const previous = entryId ? state.timeOffEntries.find((item) => item.id === entryId) : null;
   const entry = {
-    id: crypto.randomUUID(),
+    id: entryId || crypto.randomUUID(),
     employeeId: employee.id,
     date: input.date,
     startTime,
@@ -773,11 +824,12 @@ function createTimeOffEntry(state, input, now = new Date()) {
     durationMinutes,
     destination,
     note,
-    createdAt: now.toISOString(),
+    createdAt: previous?.createdAt || now.toISOString(),
     updatedAt: now.toISOString(),
   };
-  state.timeOffEntries.push(entry);
-  appendAudit(state, 'time_off_created', { ...entry }, now);
+  if (previous) Object.assign(previous, entry);
+  else state.timeOffEntries.push(entry);
+  appendAudit(state, entryId ? 'time_off_updated' : 'time_off_created', { ...entry }, now);
   return entry;
 }
 
@@ -939,6 +991,32 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   return state.records[key];
 }
 
+function setManualStatuses(state, { employeeId, startDate, endDate, status, note = '' }, now = new Date()) {
+  getEmployee(state, employeeId);
+  assertDateKey(startDate);
+  assertDateKey(endDate);
+  if (startDate > endDate || addDays(startDate, 365) < endDate) {
+    throw new Error('Оберіть період не довший за 366 днів.');
+  }
+  const draft = clone(state);
+  const dates = [];
+  for (let date = startDate; date <= endDate; date = addDays(date, 1)) {
+    if (!employeeExistsOnDate(getEmployee(draft, employeeId), date)
+      || !isEmployeeWorkday(draft, employeeId, date)) continue;
+    setManualStatus(draft, { employeeId, date, status, note }, now);
+    dates.push(date);
+  }
+  if (!dates.length) throw new Error('У вибраному періоді немає робочих днів.');
+  state.records = draft.records;
+  state.audit = draft.audit;
+  appendAudit(state, 'status_period_set', { employeeId, startDate, endDate, status, count: dates.length }, now);
+  return { count: dates.length, dates };
+}
+
+function previewManualStatuses(state, input, now = new Date()) {
+  return setManualStatuses(clone(state), input, now);
+}
+
 function clearManualRecord(state, employeeId, date, now = new Date()) {
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
@@ -951,9 +1029,9 @@ function clearManualRecord(state, employeeId, date, now = new Date()) {
   return true;
 }
 
-function recordSubmission(state, input, now = new Date()) {
+function recordSubmission(state, input, now = new Date(), { allowArchived = false } = {}) {
   const employee = getEmployee(state, input.employeeId);
-  if (!employee.active) {
+  if (!employee.active && !allowArchived) {
     throw new Error('Працівник перебуває в архіві.');
   }
   const actualRequestCount = Number(input.requestCount);
@@ -1026,6 +1104,64 @@ function recordSubmission(state, input, now = new Date()) {
     unallocatedCredit: remaining,
   }, now);
   return receipt;
+}
+
+function previewSubmission(state, input, now = new Date()) {
+  const draft = clone(state);
+  const receipt = recordSubmission(draft, input, now);
+  return {
+    dates: receipt.allocations.map((item) => item.date),
+    unallocatedCredit: receipt.unallocatedCredit,
+    creditUnits: receipt.creditUnits,
+  };
+}
+
+function correctReceipt(state, receiptId, input, now = new Date()) {
+  const previous = state.receipts.find((item) => item.id === receiptId);
+  if (!previous) throw new Error('Документ не знайдено.');
+  if (previous.allocations.some(({ date }) => (
+    state.records[recordKey(previous.employeeId, date)]?.receiptId !== receiptId
+  ))) throw new Error('Один із днів документа вже змінено. Виправлення потребує ручної перевірки.');
+  const draft = clone(state);
+  const old = draft.receipts.find((item) => item.id === receiptId);
+  for (const allocation of [...old.allocations].reverse()) {
+    const key = recordKey(old.employeeId, allocation.date);
+    if (allocation.previousRecord) draft.records[key] = allocation.previousRecord;
+    else delete draft.records[key];
+  }
+  draft.receipts = draft.receipts.filter((item) => item.id !== receiptId);
+  const corrected = recordSubmission(draft, {
+    ...input,
+    employeeId: old.employeeId,
+  }, new Date(old.receivedAt), { allowArchived: true });
+  const temporaryReceiptId = corrected.id;
+  draft.audit = draft.audit.filter((item) => (
+    item.action !== 'receipt_recorded' || item.details?.receiptId !== temporaryReceiptId
+  ));
+  corrected.id = receiptId;
+  corrected.receivedAt = old.receivedAt;
+  corrected.receivedDate = old.receivedDate;
+  for (const allocation of corrected.allocations) {
+    draft.records[recordKey(old.employeeId, allocation.date)].receiptId = receiptId;
+  }
+  draft.receipts.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+  state.records = draft.records;
+  state.receipts = draft.receipts;
+  state.audit = draft.audit;
+  appendAudit(state, 'receipt_corrected', { receiptId,
+    oldDates: old.allocations.map((item) => item.date),
+    newDates: corrected.allocations.map((item) => item.date) }, now);
+  return corrected;
+}
+
+function previewReceiptCorrection(state, receiptId, input, now = new Date()) {
+  const draft = clone(state);
+  const receipt = correctReceipt(draft, receiptId, input, now);
+  return {
+    dates: receipt.allocations.map((item) => item.date),
+    unallocatedCredit: receipt.unallocatedCredit,
+    creditUnits: receipt.creditUnits,
+  };
 }
 
 function allocateReceiptForward(state, receiptId, requestedUnits, now = new Date()) {
@@ -1839,6 +1975,7 @@ function exactDutyBlockPlan(
   });
 
   const best = beam[0];
+  let searchLimited = false;
   // The beam ranks partial weeks for fairness, but pruning can discard the
   // only combination that fills a later constrained day. Verify shortages
   // against the hard rules before presenting one to the user.
@@ -1856,7 +1993,10 @@ function exactDutyBlockPlan(
     });
     const search = (index, counts) => {
       if (index === dates.length) return true;
-      if (++inspected > 200000) return false;
+      if (++inspected > 200000) {
+        searchLimited = true;
+        return false;
+      }
       const date = dates[index];
       const previousIds = selected.get(addDays(date, -1))?.employeeIds
         || state.duties.assignments[addDays(date, -1)]?.employeeIds || [];
@@ -1896,6 +2036,7 @@ function exactDutyBlockPlan(
         selectedByDate: new Map([...selected].map(([date, option]) => [date, [...option.employeeIds]])),
         addedByDate: new Map([...selected].map(([date, option]) => [date, [...option.addedIds]])),
         shortages: [],
+        searchLimited: false,
       };
     }
   }
@@ -1907,6 +2048,7 @@ function exactDutyBlockPlan(
     shortages: dates
       .map((date) => ({ date, missing: best.selectedOptions.get(date)?.missing || 0 }))
       .filter((item) => item.missing > 0),
+    searchLimited,
   };
 }
 
@@ -1989,6 +2131,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
     balanceEmployeeIds,
   );
   const shortages = [];
+  const uncertainDates = [];
   const weekendConflicts = [];
   let generated = 0;
   let cursor = startDate;
@@ -2009,6 +2152,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       compensationTargets,
     );
     shortages.push(...plan.shortages);
+    if (plan.searchLimited) uncertainDates.push(...plan.shortages.map((item) => item.date));
     for (const date of planningDates) {
       const selected = plan.selectedByDate.get(date) || [];
       const addedIds = plan.addedByDate.get(date) || [];
@@ -2036,6 +2180,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       endDate,
       generated,
       shortages,
+      uncertainDates,
       weekendConflicts,
     };
   }
@@ -2065,6 +2210,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
         compensationTargets,
       );
       shortages.push(...plan.shortages);
+      uncertainDates.push(...plan.shortages.map((item) => item.date));
       for (const date of blockDates) {
         const selected = plan.selectedByDate.get(date);
         const addedIds = plan.addedByDate.get(date);
@@ -2175,6 +2321,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
     const addedIds = best.option.addedIds;
     const missing = Math.max(0, dutyRequiredCount(state, cursor) - selected.length);
     if (missing > 0) shortages.push({ date: cursor, missing });
+    if (missing > 0) uncertainDates.push(cursor);
     const changed = writeGeneratedDutyAssignment(state, cursor, selected, now, missing > 0);
     if (changed) {
       for (const employeeId of addedIds) {
@@ -2202,6 +2349,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
     endDate,
     generated,
     shortages,
+    uncertainDates,
     weekendConflicts,
   };
 }
@@ -2410,7 +2558,10 @@ function previewDutySchedule(state, filter, now = new Date()) {
   return {
     ...result,
     assignments,
-    shortageDetails: result.shortages.map(({ date }) => explainDutyShortage(draft, date)),
+    shortageDetails: result.shortages.map(({ date }) => ({
+      ...explainDutyShortage(draft, date),
+      searchLimited: result.uncertainDates.includes(date),
+    })),
     fairness: calculateDutyFairness(draft, filter),
     rules: clone(draft.duties.rules),
   };
@@ -2522,6 +2673,29 @@ function calculateStatistics(state, { employeeId = null, startDate, endDate }) {
   return { startDate, endDate, employeeId, rows, total };
 }
 
+function calculateAnalyticsTrend(state, { employeeId = null, startDate, endDate }) {
+  assertDateKey(startDate);
+  assertDateKey(endDate);
+  if (startDate > endDate) throw new Error('Некоректний період аналітики.');
+  const firstMonth = startDate.slice(0, 7);
+  const lastMonth = endDate.slice(0, 7);
+  const months = [];
+  let month = firstMonth;
+  while (month <= lastMonth) {
+    if (months.length >= 36) throw new Error('Для графіка оберіть період не довший за 36 місяців.');
+    const [year, number] = month.split('-').map(Number);
+    const nextMonth = `${year + (number === 12 ? 1 : 0)}-${String(number === 12 ? 1 : number + 1).padStart(2, '0')}`;
+    const from = month === firstMonth ? startDate : `${month}-01`;
+    const to = month === lastMonth ? endDate : addDays(`${nextMonth}-01`, -1);
+    const { total } = calculateStatistics(state, { employeeId, startDate: from, endDate: to });
+    months.push({ month, from, to, workedDays: total.workedDays || 0,
+      requestDays: total.requestDays || 0, missed: total.missed || 0,
+      completionPercent: total.completionPercent || 0 });
+    month = nextMonth;
+  }
+  return months;
+}
+
 module.exports = {
   SCHEMA_VERSION,
   STATUS,
@@ -2534,11 +2708,13 @@ module.exports = {
   calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
+  calculateAnalyticsTrend,
   clearDutyWeek,
   clearDutyRestriction,
   clearWorkdayOverride,
   clearManualRecord,
   clone,
+  correctReceipt,
   createDutySchedule,
   createEmployee,
   createTimeOffEntry,
@@ -2556,10 +2732,15 @@ module.exports = {
   isWorkday,
   initializeDutyHistory,
   normalizeState,
+  moveEmployee,
+  previewReceiptCorrection,
+  previewManualStatuses,
+  previewSubmission,
   previewDutySchedule,
   removeDutyAssignment,
   recordKey,
   recordSubmission,
+  renameEmployee,
   renameDutySchedule,
   restoreEmployee,
   setDutyAssignment,
@@ -2569,8 +2750,10 @@ module.exports = {
   setDutyWeekLocked,
   toggleDutyAssignment,
   setManualStatus,
+  setManualStatuses,
   setWorkdayOverride,
   switchDutySchedule,
   updateDutyScheduleRules,
   updateSettings,
+  updateTimeOffEntry,
 };
