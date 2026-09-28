@@ -8,6 +8,7 @@ const {
   calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
+  clearDutyWeek,
   clearDutyRestriction,
   clone,
   createDutySchedule,
@@ -1186,6 +1187,43 @@ test('заблокований тиждень не можна випадково
   setDutyWeekLocked(state, '2026-09-02', false, now);
   removeDutyAssignment(state, first.id, '2026-08-31', now);
   assert.deepEqual(state.duties.assignments['2026-08-31'].employeeIds, [second.id]);
+});
+
+test('очищення тижня прибирає лише призначення активного графіка й поважає блокування', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const [first, second] = ['Марія', 'Назар'].map((name) => createEmployee(state, name, now));
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id, total: 0, realized: 0,
+  })), null, now);
+  setDutyAssignment(state, { date: '2026-08-23', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: [first.id, second.id] }, now);
+  setDutyAssignment(state, { date: '2026-08-30', employeeIds: [first.id, second.id] }, now);
+  setDutyRealized(state, '2026-08-24', first.id, true, now);
+  setDutyRestriction(state, { employeeId: first.id, date: '2026-08-26', type: 'planning_block' }, now);
+  const primaryId = state.activeDutyScheduleId;
+  const other = createDutySchedule(state, 'Інший пост', now);
+  initializeDutyHistory(state, [first, second].map((employee) => ({
+    employeeId: employee.id, total: 0, realized: 0,
+  })), null, now);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: [first.id, second.id] }, now);
+  switchDutySchedule(state, primaryId, now);
+
+  setDutyWeekLocked(state, '2026-08-27', true, now);
+  assert.throws(() => clearDutyWeek(state, '2026-08-27', now), /заблоковано/);
+  assert.ok(state.duties.assignments['2026-08-24']);
+  setDutyWeekLocked(state, '2026-08-27', false, now);
+  const result = clearDutyWeek(state, '2026-08-27', now);
+  assert.deepEqual(result, {
+    weekStart: '2026-08-24', endDate: '2026-08-30',
+    removedDays: 2, removedDuties: 4, removedRealized: 1,
+  });
+  assert.equal(state.duties.assignments['2026-08-24'], undefined);
+  assert.equal(state.duties.assignments['2026-08-30'], undefined);
+  assert.ok(state.duties.assignments['2026-08-23']);
+  assert.ok(state.duties.planningBlocks[recordKey(first.id, '2026-08-26')]);
+  switchDutySchedule(state, other.id, now);
+  assert.ok(state.duties.assignments['2026-08-24']);
 });
 
 test('разовий виняток дозволяє порушити правило лише у вибраний день', () => {

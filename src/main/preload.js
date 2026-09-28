@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('counter', {
   setDutyWeekLocked: (date, locked) => (
     ipcRenderer.invoke('duties:week-lock', { date, locked })
   ),
+  clearDutyWeek: (date) => ipcRenderer.invoke('duties:week-clear', { date }),
   setDutyDayException: (date, exception) => (
     ipcRenderer.invoke('duties:day-exception', { date, exception })
   ),

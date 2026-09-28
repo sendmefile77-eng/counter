@@ -101,6 +101,8 @@ let ui = {
   analyticsEmployee: '',
   analytics: null,
   dutyMonth: localDateKey().slice(0, 7),
+  dutySelectedWeek: '',
+  dutyFocusedEmployeeId: '',
   dutyStats: null,
   dutyFairness: null,
   timeOffMonth: localDateKey().slice(0, 7),
@@ -190,6 +192,11 @@ function dutyWeekStart(date) {
   const day = value.getDay();
   value.setDate(value.getDate() + (day === 0 ? -6 : 1 - day));
   return localDateKey(value);
+}
+
+function selectedDutyWeek() {
+  const startDate = dutyWeekStart(ui.dutySelectedWeek || nextWeekRange().startDate);
+  return { startDate, endDate: shiftDate(startDate, 6) };
 }
 
 function dutyWeekLocked(date) {
@@ -690,6 +697,10 @@ function renderDutyPage() {
   });
   const incompleteDateSet = new Set(incompleteDates);
   const fairness = ui.dutyFairness;
+  const selectedWeek = selectedDutyWeek();
+  const selectedWeekDays = Array.from({ length: 7 }, (_, offset) => shiftDate(selectedWeek.startDate, offset));
+  const selectedWeekAssignments = selectedWeekDays.filter((date) => snapshot.duties.assignments[date]);
+  const selectedWeekLocked = dutyWeekLocked(selectedWeek.startDate);
   return `
     <div class="page-header">
       <div>
@@ -708,14 +719,22 @@ function renderDutyPage() {
       <button class="button small" data-duty-month-shift="-1">← Попередній</button>
       <div class="month-title">${h(formatMonth(ui.dutyMonth))}</div>
       <button class="button small" data-duty-month-shift="1">Наступний →</button>
-      <button class="button primary small" data-generate-duties>Переглянути наступний тиждень</button>
     </div>
-    <p class="duty-help">Лівий клік по колу: порожньо → чергування → реалізоване чергування → порожньо. Правий клік — «А», відсутність або жовта заборона планування. Червона колонка означає нестачу чергового: натисніть її, щоб додати другого або дозволити одного.</p>
+    <div class="duty-planner-toolbar panel compact-panel">
+      <label class="field duty-week-field"><span>Тиждень для планування</span><input type="date" data-duty-week-select value="${selectedWeek.startDate}" aria-label="Оберіть дату тижня для планування"></label>
+      <div class="duty-week-summary">${h(formatDate(selectedWeek.startDate))} — ${h(formatDate(selectedWeek.endDate))}${selectedWeekLocked ? ' · 🔒 заблоковано' : ''}</div>
+      <div class="duty-week-actions">
+        <button class="button small" data-find-duty-week>Перший незаповнений</button>
+        <button class="button primary small" data-generate-duties ${selectedWeekLocked ? 'disabled' : ''}>Переглянути й сформувати</button>
+        <button class="button danger small" data-clear-duty-week ${selectedWeekLocked || !selectedWeekAssignments.length ? 'disabled' : ''}>Очистити тиждень</button>
+      </div>
+    </div>
+    <p class="duty-help">Натисніть ім’я, щоб виділити рядок. Лівий клік по клітинці: порожньо → чергування → реалізоване → порожньо. Правий клік — «А», відсутність або заборона планування. Червона колонка означає нестачу чергового.</p>
     <div class="duty-legend">
       <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
     <div class="table-scroll" data-scroll-key="duty-matrix">
-      <table class="matrix duty-matrix">
+      <table class="matrix duty-matrix ${ui.dutyFocusedEmployeeId ? 'has-focused-row' : ''}">
         <thead><tr>
           <th class="sticky-name">Працівник</th><th>Σ</th><th>Р</th>
           ${dates.map((date) => {
@@ -725,21 +744,23 @@ function renderDutyPage() {
               && (assignment.employeeIds?.length || 0) < dutyRequiredCount(date)
               && !assignment.singleApproved;
             const locked = dutyWeekLocked(date);
-            return `<th class="${date === localDateKey() ? 'is-today ' : ''}${day === 0 || day === 6 ? 'weekend ' : ''}${incomplete ? 'duty-day-incomplete ' : ''}${locked ? 'duty-day-locked' : ''}"><button data-duty-day="${date}" title="${locked ? 'Тиждень заблоковано · ' : ''}Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${locked ? '🔒' : WEEKDAY_SHORT[day]}</small></button></th>`;
+            return `<th class="${date === localDateKey() ? 'is-today ' : ''}${day === 0 || day === 6 ? 'weekend ' : ''}${day === 1 ? 'duty-week-start ' : ''}${date >= selectedWeek.startDate && date <= selectedWeek.endDate ? 'duty-week-selected ' : ''}${incomplete ? 'duty-day-incomplete ' : ''}${locked ? 'duty-day-locked' : ''}"><button data-duty-day="${date}" title="${locked ? 'Тиждень заблоковано · ' : ''}Налаштувати склад на ${h(formatDate(date))}"><strong>${Number(date.slice(-2))}</strong><small>${locked ? '🔒' : WEEKDAY_SHORT[day]}</small></button></th>`;
           }).join('')}<th class="duty-scroll-tail" aria-hidden="true"></th>
         </tr></thead>
         <tbody>${participants.map((employee, employeeIndex) => {
           const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
           const rowColor = DUTY_ROW_COLORS[employeeIndex % DUTY_ROW_COLORS.length];
-          return `<tr style="--employee-row-rgb:${rowColor}">
-            <td class="sticky-name" title="${h(employee.name)}"><span class="employee-name-content"><i class="employee-row-marker" aria-hidden="true"></i>${h(shortName(employee.name))}</span></td>
+          const focused = ui.dutyFocusedEmployeeId === employee.id;
+          return `<tr class="${focused ? 'duty-row-focused' : ''}" style="--employee-row-rgb:${rowColor}">
+            <td class="sticky-name"><button class="duty-name-button" data-focus-duty-row="${h(employee.id)}" aria-pressed="${focused}" title="${h(employee.name)} · ${focused ? 'зняти виділення' : 'виділити рядок'}"><span class="employee-name-content"><i class="employee-row-marker" aria-hidden="true"></i>${h(shortName(employee.name))}</span></button></td>
             <td class="duty-total">${rowStats.total}</td><td class="duty-total duty-realized-total">${rowStats.realized}</td>
             ${dates.map((date) => {
               const cell = dutyCell(employee, date);
               const incompleteClass = incompleteDateSet.has(date) ? ' duty-column-incomplete' : '';
               const lockedClass = dutyWeekLocked(date) ? ' duty-cell-locked' : '';
               const todayClass = date === localDateKey() ? ' is-today' : '';
-              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}${todayClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
+              const weekStartClass = dateFromKey(date).getDay() === 1 ? ' duty-week-start' : '';
+              return `<td class="matrix-cell ${cell.className}${incompleteClass}${lockedClass}${todayClass}${weekStartClass}" data-duty-cell data-employee-id="${h(employee.id)}" data-date="${date}" title="${h(employee.name)} · ${h(formatDate(date))} · ${h(cell.title)}${dutyWeekLocked(date) ? ' · тиждень заблоковано' : ''}">${cell.symbol}</td>`;
             }).join('')}<td class="duty-scroll-tail" aria-hidden="true"></td>
           </tr>`;
         }).join('')}</tbody>
@@ -1358,7 +1379,12 @@ function showToast(message, { error = false, undo = false } = {}) {
 }
 
 async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab === 'duties' } = {}) {
+  const previousScheduleId = snapshot?.activeDutyScheduleId;
   snapshot = await window.counter.getSnapshot();
+  if (previousScheduleId && previousScheduleId !== snapshot.activeDutyScheduleId) {
+    ui.dutySelectedWeek = '';
+    ui.dutyFocusedEmployeeId = '';
+  }
   if (analytics) {
     ui.analytics = await window.counter.getAnalytics({
       employeeId: ui.analyticsEmployee || null,
@@ -1592,6 +1618,14 @@ appRoot.addEventListener('click', async (event) => {
   const dutyDayButton = event.target.closest('[data-duty-day]');
   if (dutyDayButton) return openDutyDayModal(dutyDayButton.dataset.dutyDay);
 
+  const focusDutyRowButton = event.target.closest('[data-focus-duty-row]');
+  if (focusDutyRowButton) {
+    ui.dutyFocusedEmployeeId = ui.dutyFocusedEmployeeId === focusDutyRowButton.dataset.focusDutyRow
+      ? '' : focusDutyRowButton.dataset.focusDutyRow;
+    renderShell();
+    return;
+  }
+
   const dutyCellButton = event.target.closest('[data-duty-cell]');
   if (dutyCellButton) {
     const date = dutyCellButton.dataset.date;
@@ -1612,9 +1646,30 @@ appRoot.addEventListener('click', async (event) => {
 
   const generateDutiesButton = event.target.closest('[data-generate-duties]');
   if (generateDutiesButton) {
-    const { startDate, endDate } = nextWeekRange();
+    const { startDate, endDate } = selectedDutyWeek();
     ui.dutyMonth = startDate.slice(0, 7);
     await openDutyPreviewModal(startDate, endDate);
+    return;
+  }
+
+  if (event.target.closest('[data-find-duty-week]')) {
+    ui.dutySelectedWeek = nextWeekRange().startDate;
+    ui.dutyMonth = ui.dutySelectedWeek.slice(0, 7);
+    await refresh({ analytics: false, duties: true });
+    return;
+  }
+
+  if (event.target.closest('[data-clear-duty-week]')) {
+    const { startDate, endDate } = selectedDutyWeek();
+    const days = Array.from({ length: 7 }, (_, offset) => shiftDate(startDate, offset));
+    const affected = days.filter((date) => snapshot.duties.assignments[date]);
+    const realized = affected.reduce((sum, date) => (
+      sum + (snapshot.duties.assignments[date].realizedEmployeeIds?.length || 0)
+    ), 0);
+    if (!affected.length) return;
+    if (!confirmAction(`Очистити призначення чергових за ${formatDate(startDate)} — ${formatDate(endDate)}? Буде очищено ${affected.length} дн. і ${realized} реалізованих чергувань. Позначки відсутності, «А», заборони та правила залишаться. Дію можна скасувати.`, true)) return;
+    const result = await run(() => window.counter.clearDutyWeek(startDate), null);
+    if (result) showToast(`Очищено ${result.removedDays} дн. графіка.`, { undo: true });
     return;
   }
 
@@ -1792,9 +1847,18 @@ appRoot.addEventListener('change', async (event) => {
       { undo: false },
     );
     if (result) {
+      ui.dutySelectedWeek = '';
+      ui.dutyFocusedEmployeeId = '';
       ui.dutyStats = null;
       await refresh({ duties: true });
     }
+    return;
+  }
+  if (event.target.matches('[data-duty-week-select]')) {
+    if (!event.target.value) return;
+    ui.dutySelectedWeek = dutyWeekStart(event.target.value);
+    ui.dutyMonth = ui.dutySelectedWeek.slice(0, 7);
+    await refresh({ analytics: false, duties: true });
     return;
   }
   if (event.target.id === 'always-on-top') {

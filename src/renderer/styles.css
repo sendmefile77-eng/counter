@@ -2448,6 +2448,80 @@ select option {
   box-shadow: inset 4px 0 0 rgb(var(--employee-row-rgb));
 }
 
+.duty-planner-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 16px;
+}
+
+.duty-week-field {
+  min-width: 170px;
+  margin: 0;
+}
+
+.duty-week-field input {
+  width: 100%;
+}
+
+.duty-week-summary {
+  flex: 1 1 170px;
+  padding-bottom: 8px;
+  color: #d5e4f5;
+  font-size: 12px;
+}
+
+.duty-week-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Keep the employee's colour visible across the entire horizontal scroll. */
+.duty-matrix tbody tr td,
+.duty-matrix tbody tr:last-child td {
+  border-bottom: var(--duty-line-width) solid rgba(var(--employee-row-rgb), 0.9);
+}
+
+.duty-matrix tbody tr:hover td,
+.duty-matrix tbody tr.duty-row-focused td {
+  border-bottom-width: max(2px, var(--duty-line-width));
+  border-bottom-color: rgb(var(--employee-row-rgb));
+  border-top: 1px solid rgba(var(--employee-row-rgb), 0.6);
+}
+
+.duty-matrix.has-focused-row tbody tr:not(.duty-row-focused):not(:hover) {
+  opacity: 0.72;
+}
+
+.duty-name-button {
+  width: 100%;
+  padding: 5px 3px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.duty-name-button:hover,
+.duty-name-button:focus-visible,
+.duty-row-focused .duty-name-button {
+  background: rgba(var(--employee-row-rgb), 0.18);
+  outline: 1px solid rgba(var(--employee-row-rgb), 0.6);
+}
+
+.duty-matrix th.duty-week-start,
+.duty-matrix td.duty-week-start {
+  border-left: 2px solid rgba(165, 193, 229, 0.65);
+}
+
+.duty-matrix th.duty-week-selected:not(.duty-day-incomplete) {
+  box-shadow: inset 0 2px 0 #8cb4e3;
+}
+
 .employee-row-marker {
   width: 8px;
   height: 8px;

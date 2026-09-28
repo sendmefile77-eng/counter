@@ -670,6 +670,34 @@ function setDutyWeekLocked(state, date, locked, now = new Date()) {
   return { weekStart, locked: Boolean(locked) };
 }
 
+function clearDutyWeek(state, date, now = new Date()) {
+  assertDateKey(date);
+  const weekStart = dutyWeekStart(date);
+  assertDutyDateUnlocked(state, weekStart);
+  let removedDays = 0;
+  let removedDuties = 0;
+  let removedRealized = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    const day = addDays(weekStart, offset);
+    const assignment = state.duties.assignments[day];
+    if (!assignment) continue;
+    removedDays += 1;
+    removedDuties += assignment.employeeIds?.length || 0;
+    removedRealized += assignment.realizedEmployeeIds?.length || 0;
+    delete state.duties.assignments[day];
+  }
+  if (removedDays) {
+    appendAudit(state, 'duty_week_cleared', {
+      scheduleId: state.activeDutyScheduleId,
+      weekStart,
+      removedDays,
+      removedDuties,
+      removedRealized,
+    }, now);
+  }
+  return { weekStart, endDate: addDays(weekStart, 6), removedDays, removedDuties, removedRealized };
+}
+
 function setDutyDayException(state, date, input = {}, now = new Date()) {
   assertDateKey(date);
   assertDutyDateUnlocked(state, date);
@@ -2355,6 +2383,7 @@ module.exports = {
   calculateDutyFairness,
   calculateDutyStatistics,
   calculateStatistics,
+  clearDutyWeek,
   clearDutyRestriction,
   clearWorkdayOverride,
   clearManualRecord,
