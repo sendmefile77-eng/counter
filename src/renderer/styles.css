@@ -1750,6 +1750,27 @@ body.mode-widget #app {
 .preview-day small { color: var(--muted); margin-top: 3px; }
 .preview-day.shortage { border-color: rgba(239, 94, 100, 0.62); background: rgba(223, 85, 93, 0.1); }
 
+.preview-day-content { min-width: 0; }
+.preview-day-content > strong { display: block; overflow-wrap: anywhere; }
+.preview-pin-fields { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.preview-pin-fields label { flex: 1 1 150px; min-width: 0; font-size: 11px; color: var(--muted); }
+.preview-pin-fields label span { display: block; margin-bottom: 4px; }
+.preview-pin-fields select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #111d2e;
+  color: var(--text);
+}
+.preview-shortage-details { margin-top: 10px; color: #f2c6c8; font-size: 11px; }
+.preview-shortage-details summary { cursor: pointer; }
+.preview-shortage-details ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.5; }
+
+@media (max-width: 600px) {
+  .preview-day { grid-template-columns: 1fr; gap: 7px; }
+}
+
 .duty-fairness-panel { margin-top: 16px; }
 .duty-fairness-panel h3 { margin-top: 16px; }
 .time-off-filter-form .form-actions { margin-top: 12px; }

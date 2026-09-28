@@ -103,6 +103,7 @@ let ui = {
   dutyMonth: localDateKey().slice(0, 7),
   dutySelectedWeek: '',
   dutyFocusedEmployeeId: '',
+  dutyPreview: null,
   dutyStats: null,
   dutyFairness: null,
   timeOffMonth: localDateKey().slice(0, 7),
@@ -197,6 +198,15 @@ function dutyWeekStart(date) {
 function selectedDutyWeek() {
   const startDate = dutyWeekStart(ui.dutySelectedWeek || nextWeekRange().startDate);
   return { startDate, endDate: shiftDate(startDate, 6) };
+}
+
+function hasClearableGeneratedDuty(assignment) {
+  if (!String(assignment?.source || '').startsWith('generated')) return false;
+  const preserved = new Set([
+    ...(assignment.manualEmployeeIds || []),
+    ...(assignment.realizedEmployeeIds || []),
+  ]);
+  return !(assignment.employeeIds?.length) || assignment.employeeIds.some((id) => !preserved.has(id));
 }
 
 function dutyWeekLocked(date) {
@@ -726,7 +736,8 @@ function renderDutyPage() {
       <div class="duty-week-actions">
         <button class="button small" data-find-duty-week>Перший незаповнений</button>
         <button class="button primary small" data-generate-duties ${selectedWeekLocked ? 'disabled' : ''}>Переглянути й сформувати</button>
-        <button class="button danger small" data-clear-duty-week ${selectedWeekLocked || !selectedWeekAssignments.length ? 'disabled' : ''}>Очистити тиждень</button>
+        <button class="button small" data-clear-duty-week="generated" ${selectedWeekLocked || !selectedWeekAssignments.some((date) => hasClearableGeneratedDuty(snapshot.duties.assignments[date])) ? 'disabled' : ''}>Очистити авто</button>
+        <button class="button danger small" data-clear-duty-week="all" ${selectedWeekLocked || !selectedWeekAssignments.length ? 'disabled' : ''}>Очистити весь тиждень</button>
       </div>
     </div>
     <p class="duty-help">Натисніть ім’я, щоб виділити рядок. Лівий клік по клітинці: порожньо → чергування → реалізоване → порожньо. Правий клік — «А», відсутність або заборона планування. Червона колонка означає нестачу чергового.</p>
@@ -1075,6 +1086,7 @@ function openModal(content, wide = false) {
 
 function closeModal() {
   modalRoot.innerHTML = '';
+  ui.dutyPreview = null;
   if (widgetDialogExpanded) {
     widgetDialogExpanded = false;
     queueWidgetWindowMode('widget');
@@ -1147,20 +1159,50 @@ function renderDutyExplanation(explanation) {
   `;
 }
 
-async function openDutyPreviewModal(startDate, endDate) {
+async function openDutyPreviewModal(startDate, endDate, pinnedAssignments = []) {
   try {
-    const preview = await window.counter.previewDuties({ startDate, endDate });
+    const preview = await window.counter.previewDuties({ startDate, endDate, pinnedAssignments });
+    ui.dutyPreview = {
+      scheduleId: snapshot.activeDutyScheduleId,
+      startDate,
+      endDate,
+      pinnedAssignments,
+    };
+    const shortageDetails = new Map((preview.shortageDetails || []).map((item) => [item.date, item]));
     openModal(`
       <header class="modal-head"><div><h2>Попередній перегляд графіка</h2><p>${h(formatDate(startDate))} — ${h(formatDate(endDate))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body">
         <div class="preview-summary"><span>Різниця навантаження: <strong>${preview.fairness.spread}</strong></span><span>Повторених пар: <strong>${preview.fairness.repeatedPairCount}</strong></span><span>Дефіцитних днів: <strong>${preview.shortages.length}</strong></span></div>
-        <div class="preview-days">${preview.assignments.map((assignment) => `<article class="preview-day ${assignment.employeeIds.length < assignment.requiredCount && !assignment.singleApproved ? 'shortage' : ''}"><div><strong>${h(formatDate(assignment.date, { weekday: 'short', day: 'numeric', month: 'short' }))}</strong><small>Потрібно: ${assignment.requiredCount}</small></div><span>${h(assignment.employeeIds.map((id) => employeeById(id)?.name || '—').join(' + ') || 'Не призначено')}</span></article>`).join('')}</div>
-        <div class="confirm-box">Це лише розрахунок. Поточна база ще не змінена. Після застосування вже заповнені вручну дні залишаться без змін.</div>
+        <div class="confirm-box">Закріплення нижче існують лише в цьому перегляді. Оберіть працівників і натисніть «Перерахувати», потім застосуйте перевірений графік. Готові дні не змінюються.</div>
+        <div class="preview-days">${preview.assignments.map((assignment) => {
+          const existing = snapshot.duties.assignments[assignment.date];
+          const fixedIds = existing?.source === 'generated_shortage'
+            ? (existing.employeeIds || []).filter((id) => existing.manualEmployeeIds?.includes(id)
+              || existing.realizedEmployeeIds?.includes(id))
+            : (existing?.employeeIds || []);
+          const complete = existing?.singleApproved || fixedIds.length >= assignment.requiredCount;
+          const available = dutyParticipants().filter((employee) => (
+            !fixedIds.includes(employee.id) && !dutyRestrictionText(employee.id, assignment.date)
+          ));
+          const selectedPins = pinnedAssignments.find((entry) => entry.date === assignment.date)?.employeeIds || [];
+          const slots = complete ? 0 : Math.max(0, assignment.requiredCount - fixedIds.length);
+          const shortage = shortageDetails.get(assignment.date);
+          return `<article class="preview-day ${shortage ? 'shortage' : ''}">
+            <div class="preview-day-head"><strong>${h(formatDate(assignment.date, { weekday: 'short', day: 'numeric', month: 'short' }))}</strong><small>Потрібно: ${assignment.requiredCount}</small></div>
+            <div class="preview-day-content"><strong>${h(assignment.employeeIds.map((id) => employeeById(id)?.name || '—').join(' + ') || 'Не призначено')}</strong>
+              ${slots ? `<div class="preview-pin-fields">${Array.from({ length: slots }, (_, index) => `<label><span>Закріпити ${index + 1}</span><select data-duty-pin="${assignment.date}" data-pin-slot="${index}"><option value="">Автоматично</option>${available.map((employee) => `<option value="${h(employee.id)}" ${selectedPins[index] === employee.id ? 'selected' : ''}>${h(employee.name)}</option>`).join('')}</select></label>`).join('')}</div>` : '<small>Склад дня вже зафіксовано.</small>'}
+              ${shortage ? `<details class="preview-shortage-details"><summary>Бракує ${shortage.missing}: показати причини</summary><ul>${shortage.blocked.map((item) => `<li><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong> — ${h(item.reasons.join('; '))}</li>`).join('')}${shortage.available.length ? `<li>Формально доступні: ${h(shortage.available.map((id) => employeeById(id)?.name || '—').join(', '))}. Сумісний розподіл на весь тиждень не знайдено.</li>` : ''}</ul></details>` : ''}
+            </div>
+          </article>`;
+        }).join('')}</div>
+        <div class="muted" data-duty-preview-pending>Ручні закріплення зберігаються лише після застосування графіка.</div>
       </div>
-      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" data-apply-duty-preview data-start-date="${startDate}" data-end-date="${endDate}">Застосувати графік</button></footer>
+      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-recalculate-duty-preview>Перерахувати</button><button class="button primary" data-apply-duty-preview data-start-date="${startDate}" data-end-date="${endDate}">Застосувати графік</button></footer>
     `, true);
+    return true;
   } catch (error) {
     showToast(error.message || String(error), { error: true });
+    return false;
   }
 }
 
@@ -1659,17 +1701,25 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
 
-  if (event.target.closest('[data-clear-duty-week]')) {
+  const clearWeekButton = event.target.closest('[data-clear-duty-week]');
+  if (clearWeekButton) {
+    const mode = clearWeekButton.dataset.clearDutyWeek;
     const { startDate, endDate } = selectedDutyWeek();
     const days = Array.from({ length: 7 }, (_, offset) => shiftDate(startDate, offset));
-    const affected = days.filter((date) => snapshot.duties.assignments[date]);
-    const realized = affected.reduce((sum, date) => (
+    const affected = days.filter((date) => {
+      const assignment = snapshot.duties.assignments[date];
+      return assignment && (mode === 'all' || hasClearableGeneratedDuty(assignment));
+    });
+    const realized = mode === 'generated' ? 0 : affected.reduce((sum, date) => (
       sum + (snapshot.duties.assignments[date].realizedEmployeeIds?.length || 0)
     ), 0);
     if (!affected.length) return;
-    if (!confirmAction(`Очистити призначення чергових за ${formatDate(startDate)} — ${formatDate(endDate)}? Буде очищено ${affected.length} дн. і ${realized} реалізованих чергувань. Позначки відсутності, «А», заборони та правила залишаться. Дію можна скасувати.`, true)) return;
-    const result = await run(() => window.counter.clearDutyWeek(startDate), null);
-    if (result) showToast(`Очищено ${result.removedDays} дн. графіка.`, { undo: true });
+    const scope = mode === 'generated'
+      ? 'лише автоматичні призначення (ручні та реалізовані залишаться)'
+      : 'усі призначення';
+    if (!confirmAction(`Очистити ${scope} за ${formatDate(startDate)} — ${formatDate(endDate)}? Зачеплено до ${affected.length} дн. і ${realized} реалізованих чергувань. Позначки відсутності, «А», заборони та правила залишаться. Дію можна скасувати.`, true)) return;
+    const result = await run(() => window.counter.clearDutyWeek(startDate, mode), null);
+    if (result) showToast(`Очищено ${result.removedDays} дн. графіка.`, { undo: result.removedDays > 0 });
     return;
   }
 
@@ -1872,6 +1922,14 @@ appRoot.addEventListener('change', async (event) => {
   }
 });
 
+modalRoot.addEventListener('change', (event) => {
+  if (!event.target.matches('[data-duty-pin]')) return;
+  const apply = modalRoot.querySelector('[data-apply-duty-preview]');
+  if (apply) apply.disabled = true;
+  const notice = modalRoot.querySelector('[data-duty-preview-pending]');
+  if (notice) notice.textContent = 'Закріплення змінено. Натисніть «Перерахувати», щоб побачити результат перед застосуванням.';
+});
+
 modalRoot.addEventListener('click', async (event) => {
   if (event.target.matches('[data-modal-close]') || event.target.closest('[data-close-modal]')) {
     closeModal();
@@ -1880,10 +1938,15 @@ modalRoot.addEventListener('click', async (event) => {
 
   const applyPreviewButton = event.target.closest('[data-apply-duty-preview]');
   if (applyPreviewButton) {
+    const draft = ui.dutyPreview;
+    if (!draft || draft.scheduleId !== snapshot.activeDutyScheduleId
+      || draft.startDate !== applyPreviewButton.dataset.startDate
+      || draft.endDate !== applyPreviewButton.dataset.endDate) return;
     const result = await run(
       () => window.counter.generateDuties({
-        startDate: applyPreviewButton.dataset.startDate,
-        endDate: applyPreviewButton.dataset.endDate,
+        startDate: draft.startDate,
+        endDate: draft.endDate,
+        pinnedAssignments: draft.pinnedAssignments,
       }),
       null,
     );
@@ -1892,6 +1955,24 @@ modalRoot.addEventListener('click', async (event) => {
       showToast(result.shortages?.length
         ? `Графік застосовано частково: дефіцитних днів — ${result.shortages.length}.`
         : 'Перевірений графік застосовано.', { error: Boolean(result.shortages?.length), undo: true });
+    }
+    return;
+  }
+
+  if (event.target.closest('[data-recalculate-duty-preview]')) {
+    const draft = ui.dutyPreview;
+    if (!draft) return;
+    const byDate = new Map();
+    for (const select of modalRoot.querySelectorAll('[data-duty-pin]')) {
+      if (!select.value) continue;
+      const ids = byDate.get(select.dataset.dutyPin) || [];
+      ids.push(select.value);
+      byDate.set(select.dataset.dutyPin, ids);
+    }
+    const pinnedAssignments = [...byDate].map(([date, employeeIds]) => ({ date, employeeIds }));
+    const scrollTop = modalRoot.querySelector('.modal')?.scrollTop || 0;
+    if (await openDutyPreviewModal(draft.startDate, draft.endDate, pinnedAssignments)) {
+      modalRoot.querySelector('.modal').scrollTop = scrollTop;
     }
     return;
   }

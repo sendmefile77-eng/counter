@@ -399,8 +399,8 @@ function registerIpc() {
   ipcMain.handle('duties:week-lock', (_event, { date, locked }) => (
     mutate('duties:week-lock', (state) => setDutyWeekLocked(state, date, locked))
   ));
-  ipcMain.handle('duties:week-clear', (_event, { date }) => (
-    mutate('duties:week-clear', (state) => clearDutyWeek(state, date))
+  ipcMain.handle('duties:week-clear', (_event, { date, mode }) => (
+    mutate('duties:week-clear', (state) => clearDutyWeek(state, date, new Date(), mode))
   ));
   ipcMain.handle('duties:day-exception', (_event, { date, exception }) => (
     mutate('duties:day-exception', (state) => setDutyDayException(state, date, exception))
