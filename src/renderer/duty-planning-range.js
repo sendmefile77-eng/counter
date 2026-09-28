@@ -73,10 +73,16 @@
       .sort();
   }
 
-  function weekHasPlanningRecord(assignments, startDate) {
+  function weekHasPlanningRecord(assignments, startDate, rules) {
     for (let offset = 0; offset < 7; offset += 1) {
       const date = shiftDate(startDate, offset);
-      if (!Object.prototype.hasOwnProperty.call(assignments, date)) return false;
+      const assignment = assignments[date];
+      const weekday = dateFromKey(date).getDay();
+      const required = Number((weekday === 0 || weekday === 6)
+        ? rules?.weekendDutyCount
+        : rules?.weekdayDutyCount) === 1 ? 1 : 2;
+      const assigned = new Set(assignment?.employeeIds || []).size;
+      if (assigned < required && !(assigned === 1 && assignment?.singleApproved)) return false;
     }
     return true;
   }
@@ -113,7 +119,7 @@
     // endless scan. Locked weeks are treated as intentionally frozen.
     for (let index = 0; index < 5200; index += 1) {
       const locked = Boolean(lockedWeeks[startDate]);
-      const fullyPlanned = weekHasPlanningRecord(assignments, startDate);
+      const fullyPlanned = weekHasPlanningRecord(assignments, startDate, duties.rules);
       if (!locked && !fullyPlanned) {
         return { startDate, endDate: shiftDate(startDate, 6) };
       }

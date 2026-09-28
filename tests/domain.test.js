@@ -316,6 +316,60 @@ test('якщо другого чергового без повтору наст�
   assert.equal(state.duties.assignments['2026-08-29'].source, 'generated_shortage');
 });
 
+test('повторне формування може замінити тимчасовий вибір, але береже ручний склад наступного дня', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const [first, second, third, fourth] = ['Анна', 'Богдан', 'Віра', 'Ганна']
+    .map((name) => createEmployee(state, name, now));
+  initializeDutyHistory(state, [first, second, third, fourth].map((employee) => ({
+    employeeId: employee.id, total: 0, realized: 0,
+  })), null, now);
+  setDutyAssignment(state, {
+    date: '2026-08-28', employeeIds: [first.id, second.id],
+  }, now);
+  setDutyRestriction(state, {
+    employeeId: fourth.id, date: '2026-08-29', type: 'planning_block',
+  }, now);
+  generateDutySchedule(state, { startDate: '2026-08-29', endDate: '2026-08-29' }, now);
+  assert.deepEqual(state.duties.assignments['2026-08-29'].employeeIds, [third.id]);
+  assert.deepEqual(state.duties.assignments['2026-08-29'].manualEmployeeIds, []);
+
+  setDutyAssignment(state, {
+    date: '2026-08-30', employeeIds: [third.id, first.id],
+  }, now);
+  clearDutyRestriction(state, fourth.id, '2026-08-29', now);
+  const result = generateDutySchedule(state, {
+    startDate: '2026-08-29', endDate: '2026-08-29',
+  }, now);
+  assert.deepEqual(result.shortages, [{ date: '2026-08-29', missing: 1 }]);
+  assert.deepEqual(state.duties.assignments['2026-08-29'].employeeIds, [fourth.id]);
+  assert.deepEqual(state.duties.assignments['2026-08-30'].employeeIds, [third.id, first.id]);
+});
+
+test('учасник з одним доступним днем не випадає з тижневого розподілу', () => {
+  const now = localDate(2026, 7, 20, 9, 0);
+  const state = defaultState(now);
+  const employees = Array.from({ length: 8 }, (_, index) => (
+    createEmployee(state, `Учасник ${index + 1}`, now)
+  ));
+  initializeDutyHistory(state, employees.map((employee) => ({
+    employeeId: employee.id, total: 0, realized: 0,
+  })), null, now);
+  for (let date = '2026-08-25'; date <= '2026-08-30'; date = addDays(date, 1)) {
+    setDutyRestriction(state, {
+      employeeId: employees[7].id, date, type: 'planning_block',
+    }, now);
+  }
+  const result = generateDutySchedule(state, {
+    startDate: '2026-08-24', endDate: '2026-08-30',
+  }, now);
+  assert.deepEqual(result.shortages, []);
+  assert.equal(state.duties.assignments['2026-08-24'].employeeIds.includes(employees[7].id), true);
+  const counts = employees.map((employee) => Object.values(state.duties.assignments)
+    .filter((assignment) => assignment.employeeIds.includes(employee.id)).length);
+  assert.deepEqual([...counts].sort((a, b) => a - b), [1, 1, 2, 2, 2, 2, 2, 2]);
+});
+
 test('після «А» чергування дозволене, але «А» після чергування заборонена', () => {
   const state = defaultState(localDate(2026, 7, 20, 9, 0));
   const first = createEmployee(state, 'Данило', localDate(2026, 7, 20, 9, 0));

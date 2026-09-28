@@ -70,6 +70,40 @@ test('fills a partially planned week without overwriting its existing days', () 
   );
 });
 
+test('returns to a week containing an automatic shortage instead of silently skipping people', () => {
+  const assignments = assignmentsForRange('2026-08-24', '2026-09-06');
+  assignments['2026-08-27'] = {
+    date: '2026-08-27', employeeIds: ['a'], source: 'generated_shortage',
+  };
+  const snapshot = {
+    duties: { baselineThroughDate: '2026-08-23', assignments, lockedWeeks: {} },
+  };
+  assert.deepEqual(
+    nextDutyPlanningRange(snapshot, new Date(2026, 8, 14, 12)),
+    { startDate: '2026-08-24', endDate: '2026-08-30' },
+  );
+});
+
+test('a confirmed single duty or a one-person rule counts as complete', () => {
+  const assignments = assignmentsForRange('2026-08-24', '2026-08-30');
+  assignments['2026-08-27'] = {
+    date: '2026-08-27', employeeIds: ['a'], singleApproved: true, source: 'manual',
+  };
+  assignments['2026-08-29'] = {
+    date: '2026-08-29', employeeIds: ['b'], source: 'generated',
+  };
+  const snapshot = {
+    duties: {
+      baselineThroughDate: '2026-08-23', assignments, lockedWeeks: {},
+      rules: { weekdayDutyCount: 2, weekendDutyCount: 1 },
+    },
+  };
+  assert.deepEqual(
+    nextDutyPlanningRange(snapshot, new Date(2026, 8, 14, 12)),
+    { startDate: '2026-08-31', endDate: '2026-09-06' },
+  );
+});
+
 test('skips an intentionally locked incomplete week', () => {
   const snapshot = {
     duties: {
