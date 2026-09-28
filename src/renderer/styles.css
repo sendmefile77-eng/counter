@@ -1634,6 +1634,20 @@ body.mode-widget #app {
   margin: 12px 0;
 }
 
+.duty-rules-form h3 {
+  margin: 18px 0 10px;
+  font-size: 15px;
+}
+
+.duty-rules-form h3:first-child { margin-top: 0; }
+
+.duty-weekday-rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
 .settings-number-grid,
 .time-off-filter-form .form-grid {
   margin-top: 14px;
@@ -1841,6 +1855,15 @@ body.mode-dashboard {
 
 body.mode-dashboard #app {
   padding: 8px;
+}
+
+body.mode-fullscreen #app {
+  padding: 0;
+}
+
+.window-shell.fullscreen {
+  border: 0;
+  border-radius: 0;
 }
 
 ::selection {

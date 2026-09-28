@@ -174,9 +174,12 @@ function dutyRules() {
   return snapshot.duties?.rules || {
     weekdayDutyCount: 2,
     weekendDutyCount: 2,
+    requiredByWeekday: {},
     preventConsecutiveDays: true,
     preventConsecutiveWeekends: true,
     minimumRestDays: 2,
+    minimumRestMode: 'prefer',
+    planningPriority: 'balanced',
     maximumDutiesPerWeek: 0,
     compensateNextWeek: true,
     avoidRepeatedPairs: true,
@@ -186,6 +189,7 @@ function dutyRules() {
 
 function dutyRequiredCount(date) {
   const day = dateFromKey(date).getDay();
+  if (dutyRules().requiredByWeekday?.[day]) return Number(dutyRules().requiredByWeekday[day]);
   return day === 0 || day === 6
     ? Number(dutyRules().weekendDutyCount || 2)
     : Number(dutyRules().weekdayDutyCount || 2);
@@ -337,7 +341,7 @@ function renderShell() {
   document.documentElement.style.setProperty('--duty-line-width', `${settings.dutyLineStrength || 2}px`);
   appRoot.innerHTML = `
     <section class="window-shell ${ui.mode}">
-      ${ui.mode === 'dashboard' ? `<header class="titlebar">
+      ${ui.mode !== 'widget' ? `<header class="titlebar">
         <div class="brand-mark">Щ</div>
         <div class="title-copy">
           <strong>Щоденний облік</strong>
@@ -345,6 +349,7 @@ function renderShell() {
         </div>
         <div class="title-spacer"></div>
         <div class="window-actions">
+          <button class="icon-button" data-action="toggle-fullscreen" title="${ui.mode === 'fullscreen' ? 'Вийти з повного екрана (F11)' : 'На весь екран (F11)'}" aria-label="${ui.mode === 'fullscreen' ? 'Вийти з повного екрана' : 'На весь екран'}">${ui.mode === 'fullscreen' ? '❐' : '⛶'}</button>
           <button class="icon-button" data-action="toggle-mode" title="${ui.mode === 'widget' ? 'Відкрити журнал' : 'Повернутися до віджета'}">${ui.mode === 'widget' ? '▦' : '◉'}</button>
           <button class="icon-button" data-action="minimize" title="Згорнути">—</button>
           <button class="icon-button danger" data-action="close" title="Закрити">×</button>
@@ -720,7 +725,7 @@ function renderDutyPage() {
     <div class="page-header">
       <div>
         <h1>Графік «${h(activeDutySchedule().name)}»</h1>
-        <p>Будні — ${dutyRules().weekdayDutyCount}, вихідні — ${dutyRules().weekendDutyCount} чергових. Решта обмежень задається окремо для цього графіка.</p>
+        <p>Будні — ${dutyRules().weekdayDutyCount}, вихідні — ${dutyRules().weekendDutyCount} чергових${Object.keys(dutyRules().requiredByWeekday || {}).length ? '; є налаштування для окремих днів' : ''}. Правила діють для нових розрахунків.</p>
       </div>
       <button class="button" data-duty-history>Учасники й підсумки</button>
     </div>
@@ -1141,12 +1146,22 @@ function openDutyRulesModal() {
     <form id="duty-rules-form" data-schedule-id="${h(schedule.id)}">
       <header class="modal-head"><div><h2>Правила графіка</h2><p>${h(schedule.name)} · зміни не перераховують старі тижні</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
       <div class="modal-body duty-rules-form">
+        <h3>Кількість людей</h3>
         <div class="form-grid">
           <label class="field"><span>Чергових у будні</span><select name="weekdayDutyCount"><option value="2" ${rules.weekdayDutyCount === 2 ? 'selected' : ''}>2</option><option value="1" ${rules.weekdayDutyCount === 1 ? 'selected' : ''}>1</option></select></label>
           <label class="field"><span>Чергових у вихідні</span><select name="weekendDutyCount"><option value="2" ${rules.weekendDutyCount === 2 ? 'selected' : ''}>2</option><option value="1" ${rules.weekendDutyCount === 1 ? 'selected' : ''}>1</option></select></label>
-          <label class="field"><span>Мінімум повних днів відпочинку</span><input name="minimumRestDays" type="number" min="0" max="6" value="${rules.minimumRestDays}" required></label>
+        </div>
+        <p class="muted">Для окремих днів можна замінити загальне правило. «За замовчуванням» успадковує кількість для буднів або вихідних.</p>
+        <div class="duty-weekday-rules">
+          ${[['Пн', 1], ['Вт', 2], ['Ср', 3], ['Чт', 4], ['Пт', 5], ['Сб', 6], ['Нд', 0]].map(([label, day]) => `<label class="field"><span>${label}</span><select name="required-day-${day}"><option value="" ${!rules.requiredByWeekday?.[day] ? 'selected' : ''}>За замовчуванням</option><option value="1" ${rules.requiredByWeekday?.[day] === 1 ? 'selected' : ''}>1 людина</option><option value="2" ${rules.requiredByWeekday?.[day] === 2 ? 'selected' : ''}>2 людини</option></select></label>`).join('')}
+        </div>
+        <h3>Обмеження й розподіл</h3>
+        <div class="form-grid">
+          <label class="field"><span>Інтервал між чергуваннями, днів</span><input name="minimumRestDays" type="number" min="0" max="6" value="${rules.minimumRestDays}" required></label>
+          <label class="field"><span>Інтервал відпочинку</span><select name="minimumRestMode"><option value="prefer" ${rules.minimumRestMode !== 'require' ? 'selected' : ''}>Бажаний: можна порушити для заповнення</option><option value="require" ${rules.minimumRestMode === 'require' ? 'selected' : ''}>Обов’язковий: залишити прогалину</option></select></label>
           <label class="field"><span>Максимум чергувань за тиждень</span><select name="maximumDutiesPerWeek"><option value="0" ${rules.maximumDutiesPerWeek === 0 ? 'selected' : ''}>Автоматично</option>${[1, 2, 3, 4, 5, 6, 7].map((value) => `<option value="${value}" ${rules.maximumDutiesPerWeek === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
           <label class="field"><span>Історія пар</span><select name="pairHistoryPeriod"><option value="month" ${rules.pairHistoryPeriod === 'month' ? 'selected' : ''}>Поточний місяць</option><option value="quarter" ${rules.pairHistoryPeriod === 'quarter' ? 'selected' : ''}>Поточний квартал</option><option value="year" ${rules.pairHistoryPeriod === 'year' ? 'selected' : ''}>Поточний рік</option></select></label>
+          <label class="field"><span>Що важливіше за рівної кількості призначень</span><select name="planningPriority"><option value="balanced" ${rules.planningPriority === 'balanced' ? 'selected' : ''}>Рівномірне навантаження</option><option value="rest" ${rules.planningPriority === 'rest' ? 'selected' : ''}>Більше відпочинку</option><option value="rotation" ${rules.planningPriority === 'rotation' ? 'selected' : ''}>Черга за порядком</option><option value="pairs" ${rules.planningPriority === 'pairs' ? 'selected' : ''}>Різні пари</option></select></label>
         </div>
         <div class="settings-grid">
           <label class="check-row"><input name="preventConsecutiveDays" type="checkbox" ${rules.preventConsecutiveDays ? 'checked' : ''}><span><strong>Заборонити два дні поспіль</strong><span>Жорстке правило, крім разового винятку.</span></span></label>
@@ -1154,7 +1169,7 @@ function openDutyRulesModal() {
           <label class="check-row"><input name="compensateNextWeek" type="checkbox" ${rules.compensateNextWeek ? 'checked' : ''}><span><strong>Компенсувати наступного тижня</strong><span>Одне чергування дає пріоритет на два наступного тижня.</span></span></label>
           <label class="check-row"><input name="avoidRepeatedPairs" type="checkbox" ${rules.avoidRepeatedPairs ? 'checked' : ''}><span><strong>Уникати повторення пар</strong><span>Однакові поєднання використовуються в останню чергу.</span></span></label>
         </div>
-        <div class="confirm-box">Якщо жорсткі правила не дозволяють знайти потрібну кількість людей, місце залишається порожнім, а колонка дня стає червоною.</div>
+        <div class="confirm-box">Спершу заповнюються всі можливі місця. Пріоритет визначає вибір між допустимими варіантами. Обов’язкові обмеження можуть залишити місце порожнім; тоді день буде позначено червоним.</div>
       </div>
       <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти правила</button></footer>
     </form>
@@ -1588,6 +1603,14 @@ appRoot.addEventListener('click', async (event) => {
       ui.mode = ui.mode === 'widget' ? 'dashboard' : 'widget';
       await window.counter.setWindowMode(ui.mode);
       renderShell();
+      return;
+    }
+    if (action === 'toggle-fullscreen') {
+      const nextMode = ui.mode === 'fullscreen' ? 'dashboard' : 'fullscreen';
+      if (await window.counter.setWindowMode(nextMode)) {
+        ui.mode = nextMode;
+        renderShell();
+      }
       return;
     }
     if (action === 'open-employees') {
@@ -2416,7 +2439,11 @@ modalRoot.addEventListener('submit', async (event) => {
       () => window.counter.updateDutyScheduleRules(event.target.dataset.scheduleId, {
         weekdayDutyCount: Number(form.get('weekdayDutyCount')),
         weekendDutyCount: Number(form.get('weekendDutyCount')),
+        requiredByWeekday: Object.fromEntries(Array.from({ length: 7 }, (_, day) => [day, form.get(`required-day-${day}`)])
+          .filter(([, value]) => value === '1' || value === '2').map(([day, value]) => [day, Number(value)])),
         minimumRestDays: Number(form.get('minimumRestDays')),
+        minimumRestMode: String(form.get('minimumRestMode')),
+        planningPriority: String(form.get('planningPriority')),
         maximumDutiesPerWeek: Number(form.get('maximumDutiesPerWeek')),
         pairHistoryPeriod: String(form.get('pairHistoryPeriod') || 'year'),
         preventConsecutiveDays: form.get('preventConsecutiveDays') === 'on',
@@ -2515,6 +2542,23 @@ window.counter.onChanged(async (nextSnapshot) => {
 });
 
 window.addEventListener('resize', updateDutyScrollExtent);
+
+window.addEventListener('keydown', async (event) => {
+  if (event.key !== 'F11' || ui.mode === 'widget') return;
+  event.preventDefault();
+  const nextMode = ui.mode === 'fullscreen' ? 'dashboard' : 'fullscreen';
+  if (await window.counter.setWindowMode(nextMode)) {
+    ui.mode = nextMode;
+    renderShell();
+  }
+});
+
+window.counter.onWindowModeChanged((mode) => {
+  if (mode === 'dashboard' && ui.mode === 'fullscreen') {
+    ui.mode = 'dashboard';
+    renderShell();
+  }
+});
 
 refresh({ analytics: false }).catch((error) => {
   appRoot.innerHTML = `<section class="window-shell"><div class="empty-widget"><h2>Не вдалося запустити програму</h2><p>${h(error.message || String(error))}</p></div></section>`;

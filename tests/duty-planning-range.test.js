@@ -104,6 +104,18 @@ test('a confirmed single duty or a one-person rule counts as complete', () => {
   );
 });
 
+test('weekday staffing overrides affect whether a week needs planning', () => {
+  const assignments = assignmentsForRange('2026-08-24', '2026-08-30');
+  assignments['2026-08-26'].employeeIds = ['a'];
+  const snapshot = { duties: {
+    baselineThroughDate: '2026-08-23', assignments, lockedWeeks: {},
+    rules: { weekdayDutyCount: 2, requiredByWeekday: { 3: 1 } },
+  } };
+  assert.deepEqual(nextDutyPlanningRange(snapshot, new Date(2026, 8, 1, 12)), {
+    startDate: '2026-08-31', endDate: '2026-09-06',
+  });
+});
+
 test('skips an intentionally locked incomplete week', () => {
   const snapshot = {
     duties: {

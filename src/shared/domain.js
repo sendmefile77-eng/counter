@@ -19,9 +19,12 @@ const DEFAULT_STATUS_COLORS = Object.freeze({
 const DEFAULT_DUTY_RULES = Object.freeze({
   weekdayDutyCount: 2,
   weekendDutyCount: 2,
+  requiredByWeekday: {},
   preventConsecutiveDays: true,
   preventConsecutiveWeekends: true,
   minimumRestDays: 2,
+  minimumRestMode: 'prefer',
+  planningPriority: 'balanced',
   maximumDutiesPerWeek: 0,
   compensateNextWeek: true,
   avoidRepeatedPairs: true,
@@ -162,12 +165,21 @@ function normalizeHexColor(value, fallback) {
 
 function normalizeDutyRules(input = {}) {
   const source = input && typeof input === 'object' ? input : {};
+  const overrides = source.requiredByWeekday && typeof source.requiredByWeekday === 'object'
+    ? source.requiredByWeekday : {};
   return {
     weekdayDutyCount: clampInteger(source.weekdayDutyCount, 1, 2, 2),
     weekendDutyCount: clampInteger(source.weekendDutyCount, 1, 2, 2),
+    requiredByWeekday: Object.fromEntries(
+      Array.from({ length: 7 }, (_, weekday) => [weekday, Number(overrides[weekday])])
+        .filter(([, count]) => count === 1 || count === 2),
+    ),
     preventConsecutiveDays: source.preventConsecutiveDays !== false,
     preventConsecutiveWeekends: source.preventConsecutiveWeekends !== false,
     minimumRestDays: clampInteger(source.minimumRestDays, 0, 6, 2),
+    minimumRestMode: source.minimumRestMode === 'require' ? 'require' : 'prefer',
+    planningPriority: ['balanced', 'rest', 'rotation', 'pairs'].includes(source.planningPriority)
+      ? source.planningPriority : 'balanced',
     maximumDutiesPerWeek: clampInteger(source.maximumDutiesPerWeek, 0, 7, 0),
     compensateNextWeek: source.compensateNextWeek !== false,
     avoidRepeatedPairs: source.avoidRepeatedPairs !== false,
@@ -1668,6 +1680,16 @@ function applyDutyPins(state, pinnedAssignments, startDate, endDate, now) {
     ))) {
       throw new Error(`Закріплення на ${date} створює чергування два дні поспіль. Змініть склад або задайте разовий виняток.`);
     }
+    if (rules.minimumRestMode === 'require' && !exception.allowRestGap
+      && newIds.some((id) => {
+        for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
+          if (fixedOn(addDays(date, -offset)).includes(id)
+            || fixedOn(addDays(date, offset)).includes(id)) return true;
+        }
+        return false;
+      })) {
+      throw new Error(`Закріплення на ${date} порушує обов’язковий інтервал відпочинку.`);
+    }
     if (rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
       && [0, 6].includes(dayOfWeek(date))) {
       const saturday = dayOfWeek(date) === 6 ? date : addDays(date, -1);
@@ -1755,6 +1777,7 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
 function dutyRequiredCount(state, date) {
   const rules = normalizeDutyRules(state.duties.rules);
   const weekday = dayOfWeek(date);
+  if (rules.requiredByWeekday[weekday]) return rules.requiredByWeekday[weekday];
   return weekday === 0 || weekday === 6
     ? rules.weekendDutyCount
     : rules.weekdayDutyCount;
@@ -1765,6 +1788,28 @@ function compareDutyScores(left, right) {
     if (left[index] !== right[index]) return left[index] - right[index];
   }
   return 0;
+}
+
+function dutyPreferenceScore(rules, metrics) {
+  const { spread, compensationDeficit, cooldownViolations, weekendReservePenalty,
+    repeatedPairPenalty, squares, queueCost } = metrics;
+  if (rules.planningPriority === 'rest') return [cooldownViolations, spread, compensationDeficit, weekendReservePenalty, repeatedPairPenalty, squares, queueCost];
+  if (rules.planningPriority === 'rotation') return [queueCost, spread, compensationDeficit, cooldownViolations, weekendReservePenalty, repeatedPairPenalty, squares];
+  if (rules.planningPriority === 'pairs') return [repeatedPairPenalty, spread, compensationDeficit, cooldownViolations, weekendReservePenalty, squares, queueCost];
+  return [spread, compensationDeficit, cooldownViolations, weekendReservePenalty, repeatedPairPenalty, squares, queueCost];
+}
+
+function dutyRestConflict(state, date, employeeId, rules, selectedOptions) {
+  if (rules.minimumRestDays < 1 || state.duties.dayExceptions?.[date]?.allowRestGap) return false;
+  for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
+    const previous = addDays(date, -offset);
+    const next = addDays(date, offset);
+    if ((selectedOptions?.get(previous)?.employeeIds
+      || state.duties.assignments[previous]?.employeeIds || []).includes(employeeId)) return true;
+    if ((selectedOptions?.get(next)?.employeeIds
+      || dutyFixedEmployeeIds(state.duties.assignments[next])).includes(employeeId)) return true;
+  }
+  return false;
 }
 
 function dutyPairKey(employeeIds) {
@@ -1874,7 +1919,11 @@ function exactDutyBlockPlan(
     weekendReservePenalty: 0,
     repeatedPairPenalty: 0,
     queueCost: 0,
-    score: [0, 0, dutyCompensationDeficit(rangeCounts, compensationTargets), 0, 0, 0, 0, 0],
+    score: [0, ...dutyPreferenceScore(rules, {
+      spread: 0, compensationDeficit: dutyCompensationDeficit(rangeCounts, compensationTargets),
+      cooldownViolations: 0, weekendReservePenalty: 0, repeatedPairPenalty: 0,
+      squares: 0, queueCost: 0,
+    })],
     signature: '',
   }];
 
@@ -1898,6 +1947,8 @@ function exactDutyBlockPlan(
           && option.addedIds.some((employeeId) => (
             (partial.counts[employeeId] || 0) >= rules.maximumDutiesPerWeek
           ))) continue;
+        if (rules.minimumRestMode === 'require'
+          && option.addedIds.some((id) => dutyRestConflict(state, date, id, rules, partial.selectedOptions))) continue;
 
         const nextCounts = { ...partial.counts };
         let addedCooldownViolations = 0;
@@ -1942,16 +1993,10 @@ function exactDutyBlockPlan(
         const compensationDeficit = rules.compensateNextWeek
           ? dutyCompensationDeficit(nextCounts, compensationTargets)
           : 0;
-        const score = [
-          missingSlots,
-          balance.spread,
-          compensationDeficit,
-          cooldownViolations,
-          weekendReservePenalty,
-          repeatedPairPenalty,
-          balance.squares,
-          queueCost,
-        ];
+        const score = [missingSlots, ...dutyPreferenceScore(rules, {
+          spread: balance.spread, compensationDeficit, cooldownViolations,
+          weekendReservePenalty, repeatedPairPenalty, squares: balance.squares, queueCost,
+        })];
         expanded.push({
           selectedOptions: nextSelectedOptions,
           counts: nextCounts,
@@ -2000,7 +2045,12 @@ function exactDutyBlockPlan(
       const date = dates[index];
       const previousIds = selected.get(addDays(date, -1))?.employeeIds
         || state.duties.assignments[addDays(date, -1)]?.employeeIds || [];
-      const key = `${index}|${[...previousIds].sort().join(',')}|${rules.maximumDutiesPerWeek
+      const restHistory = rules.minimumRestMode === 'require'
+        ? Array.from({ length: Math.max(0, rules.minimumRestDays - 1) }, (_, i) => (
+          selected.get(addDays(date, -i - 2))?.employeeIds
+          || state.duties.assignments[addDays(date, -i - 2)]?.employeeIds || []
+        ).join(',')).join(';') : '';
+      const key = `${index}|${[...previousIds].sort().join(',')}|${restHistory}|${rules.maximumDutiesPerWeek
         ? balanceEmployeeIds.map((id) => counts[id] || 0).join(',') : ''}`;
       if (visited.has(key)) return false;
       const exception = state.duties.dayExceptions?.[date] || {};
@@ -2022,6 +2072,8 @@ function exactDutyBlockPlan(
           && option.addedIds.some((id) => previousWeekendIds.has(id))) continue;
         if (rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit
           && option.addedIds.some((id) => (counts[id] || 0) >= rules.maximumDutiesPerWeek)) continue;
+        if (rules.minimumRestMode === 'require'
+          && option.addedIds.some((id) => dutyRestConflict(state, date, id, rules, selected))) continue;
         const nextCounts = { ...counts };
         for (const id of option.addedIds) nextCounts[id] = (nextCounts[id] || 0) + 1;
         selected.set(date, option);
@@ -2246,12 +2298,23 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       state.duties.assignments[addDays(cursor, -1)]?.employeeIds || [],
     );
     const exception = state.duties.dayExceptions?.[cursor] || {};
+    const weekCounts = rules.maximumDutiesPerWeek > 0
+      ? dutyCountsBetween(state, dutyWeekStart(cursor), addDays(dutyWeekStart(cursor), 6)) : {};
+    const saturday = dayOfWeek(cursor) === 6 ? cursor : addDays(cursor, -1);
+    const previousWeekendIds = new Set([addDays(saturday, -7), addDays(saturday, -6)]
+      .flatMap((date) => state.duties.assignments[date]?.employeeIds || []));
     const options = dutyAssignmentOptions(state, cursor, dutyQueue, employeesById)
       .filter((option) => (
         !rules.preventConsecutiveDays
         || exception.allowConsecutiveDay
         || option.addedIds.every((employeeId) => !previousDayIds.has(employeeId))
-      ));
+      )).filter((option) => rules.minimumRestMode !== 'require'
+        || option.addedIds.every((id) => !dutyRestConflict(state, cursor, id, rules)))
+      .filter((option) => rules.maximumDutiesPerWeek === 0 || exception.allowWeeklyLimit
+        || option.addedIds.every((id) => (weekCounts[id] || 0) < rules.maximumDutiesPerWeek))
+      .filter((option) => !rules.preventConsecutiveWeekends || exception.allowConsecutiveWeekend
+        || ![0, 6].includes(dayOfWeek(cursor))
+        || option.addedIds.every((id) => !previousWeekendIds.has(id)));
     let best = null;
     for (const option of options) {
       const nextDate = addDays(cursor, 1);
@@ -2299,16 +2362,10 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       const repeatedPairPenalty = rules.avoidRepeatedPairs && pairKey
         ? pairCounts.get(pairKey) || 0
         : 0;
-      const score = [
-        option.missing,
-        nextDayMissing,
-        cooldownViolations,
-        balance.spread,
-        compensationDeficit,
-        repeatedPairPenalty,
-        balance.squares,
-        queueCost,
-      ];
+      const score = [option.missing, nextDayMissing, ...dutyPreferenceScore(rules, {
+        spread: balance.spread, compensationDeficit, cooldownViolations,
+        weekendReservePenalty: 0, repeatedPairPenalty, squares: balance.squares, queueCost,
+      })];
       const signature = option.employeeIds.join(',');
       if (!best
         || compareDutyScores(score, best.score) < 0
@@ -2529,6 +2586,10 @@ function explainDutyShortage(state, date) {
       if (!restriction && rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit
         && (weekCounts[employeeId] || 0) >= rules.maximumDutiesPerWeek) {
         reasons.push('досяг тижневого ліміту');
+      }
+      if (!restriction && rules.minimumRestMode === 'require'
+        && dutyRestConflict(state, date, employeeId, rules)) {
+        reasons.push('обов’язковий інтервал відпочинку');
       }
       return { employeeId, reasons };
     });

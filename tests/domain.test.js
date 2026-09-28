@@ -1273,6 +1273,61 @@ test('кожен графік має власні правила, а копія 
   assert.equal(state.dutySchedules.find((item) => item.id === primaryId).data.rules.minimumRestDays, 3);
 });
 
+test('кількість чергових за днями тижня змінює розрахунок і зберігається в копії', () => {
+  const now = localDate(2026, 7, 24);
+  const state = defaultState(now);
+  const people = ['А', 'Б', 'В', 'Г'].map((name) => createEmployee(state, `Працівник ${name}`, now));
+  initializeDutyHistory(state, people.map(({ id }) => ({ employeeId: id, total: 0, realized: 0 })), null, now);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 2, weekendDutyCount: 2,
+    requiredByWeekday: { 1: 1, 3: 1, 6: 1, 9: 2 },
+    planningPriority: 'pairs',
+  }, now);
+  const copy = duplicateDutySchedule(state, state.activeDutyScheduleId, 'Копія', now);
+  assert.deepEqual(copy.data.rules.requiredByWeekday, { 1: 1, 3: 1, 6: 1 });
+  assert.equal(copy.data.rules.planningPriority, 'pairs');
+  const preview = previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30' }, now);
+  assert.deepEqual(preview.assignments.map((day) => day.requiredCount), [1, 2, 1, 2, 2, 1, 2]);
+});
+
+test('обов’язковий інтервал відпочинку лишає прогалини, а бажаний дозволяє їх заповнити', () => {
+  const now = localDate(2026, 7, 24);
+  const state = defaultState(now);
+  const person = createEmployee(state, 'Один черговий', now);
+  initializeDutyHistory(state, [{ employeeId: person.id, total: 0, realized: 0 }], null, now);
+  const rules = {
+    weekdayDutyCount: 1, weekendDutyCount: 1, preventConsecutiveDays: false,
+    preventConsecutiveWeekends: false, minimumRestDays: 2, minimumRestMode: 'prefer',
+  };
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, rules, now);
+  const period = { startDate: '2026-08-24', endDate: '2026-08-26' };
+  assert.equal(previewDutySchedule(state, period, now).shortages.length, 0);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, { ...rules, minimumRestMode: 'require' }, now);
+  const preview = previewDutySchedule(state, period, now);
+  assert.equal(preview.assignments.filter((day) => day.employeeIds.includes(person.id)).length, 1);
+  assert.equal(preview.shortages.length, 2);
+});
+
+test('довгий діапазон дотримується тижневого максимуму', () => {
+  const now = localDate(2026, 7, 24);
+  const state = defaultState(now);
+  const people = ['А', 'Б'].map((name) => createEmployee(state, `Працівник ${name}`, now));
+  initializeDutyHistory(state, people.map(({ id }) => ({ employeeId: id, total: 0, realized: 0 })), null, now);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 1, weekendDutyCount: 1, maximumDutiesPerWeek: 1,
+    preventConsecutiveDays: false, preventConsecutiveWeekends: false,
+    minimumRestDays: 0,
+  }, now);
+  const result = generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-09-06' }, now);
+  assert.equal(result.shortages.length, 10);
+  for (const start of ['2026-08-24', '2026-08-31']) {
+    const counts = people.map(({ id }) => Array.from({ length: 7 }, (_, index) => (
+      state.duties.assignments[addDays(start, index)]?.employeeIds.includes(id) ? 1 : 0
+    )).reduce((sum, count) => sum + count, 0));
+    assert.deepEqual(counts, [1, 1]);
+  }
+});
+
 test('попередній перегляд графіка не змінює базу до підтвердження', () => {
   const now = localDate(2026, 7, 24, 9, 0);
   const state = defaultState(now);

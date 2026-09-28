@@ -88,4 +88,9 @@ contextBridge.exposeInMainWorld('counter', {
     ipcRenderer.on('counter:changed', listener);
     return () => ipcRenderer.removeListener('counter:changed', listener);
   },
+  onWindowModeChanged: (callback) => {
+    const listener = (_event, mode) => callback(mode);
+    ipcRenderer.on('window:mode-changed', listener);
+    return () => ipcRenderer.removeListener('window:mode-changed', listener);
+  },
 });

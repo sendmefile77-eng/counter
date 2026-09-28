@@ -179,6 +179,12 @@ function createMainWindow() {
     clearTimeout(positionSaveTimer);
     positionSaveTimer = setTimeout(saveWidgetBounds, 300);
   });
+  mainWindow.on('leave-full-screen', () => {
+    if (windowMode === 'fullscreen') {
+      windowMode = 'dashboard';
+      mainWindow.webContents.send('window:mode-changed', 'dashboard');
+    }
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -525,8 +531,11 @@ function registerIpc() {
 
   ipcMain.handle('window:set-mode', async (_event, { mode }) => {
     if (!mainWindow) return false;
+    if (!['dialog', 'dashboard', 'fullscreen', 'widget'].includes(mode)) return false;
     const display = screen.getDisplayMatching(mainWindow.getBounds());
+    if (mainWindow.isFullScreen() && mode !== 'fullscreen') mainWindow.setFullScreen(false);
     mainWindow.hide();
+    mainWindow.setResizable(mode === 'dashboard' || mode === 'fullscreen');
     if (mode === 'dialog') {
       if (windowMode === 'widget') saveWidgetBounds();
       windowMode = 'dialog';
@@ -537,9 +546,9 @@ function registerIpc() {
       const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
       const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
       await setWindowBoundsAndWait({ x, y, width, height });
-    } else if (mode === 'dashboard') {
-      saveWidgetBounds();
-      windowMode = 'dashboard';
+    } else if (mode === 'dashboard' || mode === 'fullscreen') {
+      if (windowMode === 'widget') saveWidgetBounds();
+      windowMode = mode;
       if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
       mainWindow.setSkipTaskbar(false);
       const width = Math.min(1240, display.workArea.width);
@@ -547,6 +556,7 @@ function registerIpc() {
       const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
       const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
       await setWindowBoundsAndWait({ x, y, width, height });
+      if (mode === 'fullscreen') mainWindow.setFullScreen(true);
     } else {
       windowMode = 'widget';
       const size = clampWidgetSize(store.state.settings.widgetSize);

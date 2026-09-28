@@ -78,9 +78,9 @@
       const date = shiftDate(startDate, offset);
       const assignment = assignments[date];
       const weekday = dateFromKey(date).getDay();
-      const required = Number((weekday === 0 || weekday === 6)
-        ? rules?.weekendDutyCount
-        : rules?.weekdayDutyCount) === 1 ? 1 : 2;
+      const required = Number(rules?.requiredByWeekday?.[weekday]
+        || ((weekday === 0 || weekday === 6)
+          ? rules?.weekendDutyCount : rules?.weekdayDutyCount)) === 1 ? 1 : 2;
       const assigned = new Set(assignment?.employeeIds || []).size;
       if (assigned < required && !(assigned === 1 && assignment?.singleApproved)) return false;
     }
