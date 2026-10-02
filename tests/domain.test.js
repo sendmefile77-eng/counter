@@ -1754,6 +1754,37 @@ test('налаштування часу справді керують автом
   assert.equal(state.records[recordKey(employee.id, '2026-08-24')].status, STATUS.MISSED);
 });
 
+test('вигляд ЛАД зберігається після повторного читання бази без зміни облікових даних', () => {
+  const now = localDate(2026, 9, 2, 12, 0);
+  const state = defaultState(now);
+  const employee = createEmployee(state, 'Тестовий працівник', now);
+  recordSubmission(state, { employeeId: employee.id, requestCount: 1, documentRef: 'ЛАД-1' }, now);
+  const facts = clone({ employees: state.employees, records: state.records, receipts: state.receipts, dutySchedules: state.dutySchedules });
+  updateSettings(state, { interfaceTheme: 'light', interfaceDensity: 'compact', interfaceTextSize: 'large' }, now);
+  const restored = normalizeState(clone(state), now);
+  assert.equal(restored.settings.interfaceTheme, 'light');
+  assert.equal(restored.settings.interfaceDensity, 'compact');
+  assert.equal(restored.settings.interfaceTextSize, 'large');
+  assert.deepEqual({ employees: restored.employees, records: restored.records, receipts: restored.receipts, dutySchedules: restored.dutySchedules }, facts);
+});
+
+test('стара база та невідомі параметри вигляду отримують безпечний стандартний інтерфейс', () => {
+  const now = localDate(2026, 9, 2, 12, 0);
+  const legacy = defaultState(now);
+  const employee = createEmployee(legacy, 'Зі старої бази', now);
+  setManualStatus(legacy, { employeeId: employee.id, date: '2026-10-02', status: STATUS.OTHER_TASKS }, now);
+  for (const key of ['interfaceTheme', 'interfaceDensity', 'interfaceTextSize']) delete legacy.settings[key];
+  const restored = normalizeState(legacy, now);
+  assert.equal(restored.settings.interfaceTheme, 'navy');
+  assert.equal(restored.settings.interfaceDensity, 'comfortable');
+  assert.equal(restored.settings.interfaceTextSize, 'standard');
+  assert.deepEqual(restored.records, legacy.records);
+  updateSettings(restored, { interfaceTheme: '<script>', interfaceDensity: null, interfaceTextSize: 'unknown' }, now);
+  assert.equal(restored.settings.interfaceTheme, 'navy');
+  assert.equal(restored.settings.interfaceDensity, 'comfortable');
+  assert.equal(restored.settings.interfaceTextSize, 'standard');
+});
+
 test('аналітика справедливості показує навантаження, відпочинок і повтори пар', () => {
   const now = localDate(2026, 7, 24, 9, 0);
   const state = defaultState(now);

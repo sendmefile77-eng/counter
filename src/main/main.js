@@ -164,7 +164,7 @@ function createMainWindow() {
     roundedCorners: false,
     skipTaskbar: true,
     show: false,
-    title: 'Щоденний облік',
+    title: 'ЛАД — Люди. Аналітика. Документи.',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

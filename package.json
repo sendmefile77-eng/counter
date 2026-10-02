@@ -1,7 +1,7 @@
 {
   "name": "counter-widget",
-  "version": "0.9.0",
-  "description": "Локальний Windows-віджет щоденного обліку запитів працівників",
+  "version": "0.10.0",
+  "description": "ЛАД — Люди. Аналітика. Документи. Локальний облік і планування чергувань",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",
   "license": "UNLICENSED",
@@ -17,7 +17,7 @@
   },
   "build": {
     "appId": "ua.local.counterwidget",
-    "productName": "Щоденний облік",
+    "productName": "ЛАД",
     "asar": true,
     "directories": {
       "output": "dist"

@@ -229,6 +229,9 @@ function normalizeGlobalSettings(input = {}) {
       ? source.dateStyle
       : 'long',
     backupRetention: clampInteger(source.backupRetention, 1, 30, 7),
+    interfaceTheme: ['navy', 'light'].includes(source.interfaceTheme) ? source.interfaceTheme : 'navy',
+    interfaceDensity: source.interfaceDensity === 'compact' ? 'compact' : 'comfortable',
+    interfaceTextSize: source.interfaceTextSize === 'large' ? 'large' : 'standard',
     statusColors,
   };
 }
