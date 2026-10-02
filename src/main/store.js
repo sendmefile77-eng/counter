@@ -76,8 +76,8 @@ class DataStore {
   }
 
   readBackup(backupPath) {
-    const data = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-    if (!Array.isArray(data.employees) || !data.records || typeof data.records !== 'object') {
+    const data = JSON.parse(fs.readFileSync(backupPath, 'utf8').replace(/^\uFEFF/, ''));
+    if (!data || !Array.isArray(data.employees) || !data.records || typeof data.records !== 'object' || Array.isArray(data.records)) {
       throw new Error('Резервна копія не містить необхідних розділів бази.');
     }
     return normalizeState(data);

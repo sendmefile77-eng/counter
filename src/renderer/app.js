@@ -2158,9 +2158,29 @@ appRoot.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'import-data') {
-      if (!confirmAction('Імпорт замінить поточну базу даних. Продовжити?')) return;
-      const result = await run(() => window.counter.importData(), null, { undo: true });
-      if (result && !result.canceled) showToast('Резервну копію імпортовано.', { undo: true });
+      if (actionButton.disabled) return;
+      actionButton.disabled = true;
+      const label = actionButton.textContent;
+      actionButton.textContent = 'Вибираємо копію…';
+      try {
+        const result = await run(() => window.counter.importData(), null, { undo: true });
+        if (result && !result.canceled) {
+          Object.assign(ui, { settingsDraft:null, todayQuery:'', todayFilter:'all',
+            analytics:null, analyticsEmployeeIds:null, analyticsDraft:null, analyticsDetail:null,
+            analyticsError:'', analyticsLoading:false, dutyStats:null, dutyFairness:null, dutyPreview:null,
+            dutyFocusedEmployeeId:'', dutySelectedWeek:'', journalFocusedEmployeeId:'', journalQuery:'',
+            plannerEmployee:'', plannerQuery:'', plannerFocus:'', timeOffEmployee:'',
+            weekly:null, weeklyError:'', weeklyLoading:false, profile:null });
+          ui.analyticsRevision += 1; ui.analyticsDetailRevision += 1;
+          ui.weeklyRevision += 1; ui.profileRevision += 1;
+          clearJournalSelection();
+          renderShell();
+          showToast('Резервну копію імпортовано.', { undo: true });
+        }
+      } finally {
+        actionButton.disabled = false;
+        actionButton.textContent = label;
+      }
       return;
     }
     if (action === 'reset-all-data') {

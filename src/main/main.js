@@ -69,6 +69,7 @@ let positionSaveTimer = null;
 let windowMode = 'widget';
 let lastBroadcastDate = null;
 let reminders = null;
+let dataImportPending = false;
 const undoStack = [];
 
 function clampWidgetSize(value) {
@@ -588,20 +589,46 @@ function registerIpc() {
   });
 
   ipcMain.handle('data:import', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Відкрити резервну копію',
-      properties: ['openFile'],
-      filters: [{ name: 'Резервна копія JSON', extensions: ['json'] }],
-    });
-    if (result.canceled || !result.filePaths[0]) return { canceled: true };
-    const parsed = JSON.parse(fs.readFileSync(result.filePaths[0], 'utf8'));
-    const normalized = normalizeState(parsed);
-    const before = store.snapshot();
-    store.replace(normalized);
-    reminders?.reconcile();
-    undoStack.push({ action: 'data:import', before });
-    broadcast();
-    return { canceled: false, filePath: result.filePaths[0] };
+    if (dataImportPending) return { canceled: true, busy: true };
+    dataImportPending = true;
+    try {
+      const owner = mainWindow;
+      if (!owner || owner.isDestroyed()) throw new Error('Вікно застосунку закрито. Відкрийте ЛАД і повторіть імпорт.');
+      if (owner.isMinimized()) owner.restore();
+      owner.show();
+      owner.focus();
+      const result = await dialog.showOpenDialog(owner, {
+        title: 'Відкрити резервну копію ЛАД',
+        buttonLabel: 'Вибрати копію',
+        properties: ['openFile'],
+        filters: [{ name: 'Резервна копія JSON', extensions: ['json'] }],
+      });
+      if (result.canceled || !result.filePaths[0]) return { canceled: true };
+      const filePath = result.filePaths[0];
+      const normalized = store.readBackup(filePath);
+      if (store.state.settings.confirmDestructiveActions !== false) {
+        const answer = await dialog.showMessageBox(owner, {
+          type: 'question',
+          title: 'Імпорт резервної копії ЛАД',
+          message: `Імпортувати «${path.basename(filePath)}»?`,
+          detail: `Працівників: ${normalized.employees.length}; документів: ${normalized.receipts.length}; завдань: ${normalized.tasks.length}; графіків: ${normalized.dutySchedules.length}.\n\nПоточну базу буде замінено. Попередня база залишиться в локальній резервній копії; імпорт також можна скасувати кнопкою «Скасувати останню дію».`,
+          buttons: ['Імпортувати', 'Скасувати'],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        });
+        if (answer.response !== 0) return { canceled: true };
+      }
+      const before = store.snapshot();
+      store.replace(normalized);
+      reminders?.reconcile();
+      undoStack.push({ action: 'data:import', before });
+      if (undoStack.length > 30) undoStack.shift();
+      broadcast();
+      return { canceled: false, filePath };
+    } finally {
+      dataImportPending = false;
+    }
   });
 
   ipcMain.handle('data:backups', () => store.listBackups());
