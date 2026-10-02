@@ -291,3 +291,5 @@ body.mode-dashboard #app, body.mode-fullscreen #app { padding: 8px; }
 @media (max-height: 800px) { .today-hero { display: none; } .today-context { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); } .today-summary button { padding: 12px 14px; } .today-summary strong { font-size: 27px; margin: 4px 0; } }
 @media (max-width: 720px) and (max-height: 800px) { .today-context { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+
+.field input:focus, .field select:focus, .field textarea:focus { background: var(--field-bg); color: var(--text); border-color: var(--accent); }

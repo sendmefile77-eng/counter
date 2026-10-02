@@ -1,7 +1,8 @@
 const crypto = require('node:crypto');
 const journal = require('./journal');
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
+const { normalizeTasks } = require('./tasks');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
   pending: '#586b85',
@@ -232,6 +233,9 @@ function normalizeGlobalSettings(input = {}) {
     interfaceTheme: ['navy', 'light'].includes(source.interfaceTheme) ? source.interfaceTheme : 'navy',
     interfaceDensity: source.interfaceDensity === 'compact' ? 'compact' : 'comfortable',
     interfaceTextSize: source.interfaceTextSize === 'large' ? 'large' : 'standard',
+    taskRemindersEnabled: source.taskRemindersEnabled !== false,
+    taskAttentionDays: clampInteger(source.taskAttentionDays, 1, 14, 3),
+    operatorName: String(source.operatorName || 'Керівник').trim().slice(0, 80) || 'Керівник',
     statusColors,
   };
 }
@@ -335,6 +339,7 @@ function defaultState(now = new Date()) {
     }],
     activeDutyScheduleId: 'primary',
     duties,
+    tasks: [],
     timeOffEntries: [],
     settings: normalizeGlobalSettings(),
     audit: [{
@@ -463,6 +468,7 @@ function normalizeState(input, now = new Date()) {
     }];
   });
 
+  state.tasks = normalizeTasks(input.tasks, state, now);
   return state;
 }
 

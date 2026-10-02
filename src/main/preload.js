@@ -2,6 +2,20 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
+  createTask: input => ipcRenderer.invoke('tasks:create', input),
+  updateTask: (id, input) => ipcRenderer.invoke('tasks:update', { id, input }),
+  setTaskStatus: (id, input) => ipcRenderer.invoke('tasks:status', { id, input }),
+  archiveTask: (id, archived) => ipcRenderer.invoke('tasks:archive', { id, archived }),
+  snoozeTask: (id, minutes) => ipcRenderer.invoke('tasks:snooze', { id, minutes }),
+  testTaskReminder: () => ipcRenderer.invoke('tasks:test-reminder'),
+  getEmployeeOverview: input => ipcRenderer.invoke('employee:overview', input),
+  getWeeklySummary: anchor => ipcRenderer.invoke('management:week', { anchor }),
+  exportWeeklySummary: (anchor, format) => ipcRenderer.invoke('management:export-week', { anchor, format }),
+  onOpenTask: callback => {
+    const listener = (_event, id) => callback(id);
+    ipcRenderer.on('tasks:open', listener);
+    return () => ipcRenderer.removeListener('tasks:open', listener);
+  },
   addEmployee: (name) => ipcRenderer.invoke('employee:add', { name }),
   archiveEmployee: (employeeId) => ipcRenderer.invoke('employee:archive', { employeeId }),
   restoreEmployee: (employeeId) => ipcRenderer.invoke('employee:restore', { employeeId }),
@@ -35,7 +49,7 @@ contextBridge.exposeInMainWorld('counter', {
   initializeDuties: (entries, participantIds) => ipcRenderer.invoke('duties:initialize', { entries, participantIds }),
   generateDuties: (filter) => ipcRenderer.invoke('duties:generate', filter),
   previewDuties: (filter) => ipcRenderer.invoke('duties:preview', filter),
-  getDutyExplanation: (date) => ipcRenderer.invoke('duties:explanation', { date }),
+  getDutyExplanation: (date, scheduleId) => ipcRenderer.invoke('duties:explanation', { date, scheduleId }),
   setDutyAssignment: (payload) => ipcRenderer.invoke('duties:set-assignment', payload),
   toggleDutyAssignment: (employeeId, date) => (
     ipcRenderer.invoke('duties:toggle-assignment', { employeeId, date })

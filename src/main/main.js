@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, screen } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, screen, Notification, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
@@ -56,6 +56,10 @@ const {
   updateTimeOffEntry,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
+const tasks = require('../shared/tasks');
+const planner = require('../shared/planner');
+const { employeeOverview, weeklySummary, buildWeeklyCsv, buildWeeklyHtml } = require('../shared/management');
+const { createReminderService, setupWindowsNotifications } = require('./task-reminders');
 const { calculateAnalyticsReport, getAnalyticsDetails, buildAnalyticsCsv } = require('../shared/analytics');
 
 let mainWindow = null;
@@ -64,6 +68,7 @@ let closeTimer = null;
 let positionSaveTimer = null;
 let windowMode = 'widget';
 let lastBroadcastDate = null;
+let reminders = null;
 const undoStack = [];
 
 function clampWidgetSize(value) {
@@ -178,6 +183,7 @@ function createMainWindow() {
     applyWidgetShape(widgetSize);
     if (!restoreWidgetPosition(widgetSize)) mainWindow.center();
     mainWindow.show();
+    reminders?.check();
   });
   mainWindow.on('moved', () => {
     if (windowMode !== 'widget') return;
@@ -205,6 +211,7 @@ function currentSnapshot() {
     generatedAt: now.toISOString(),
     appVersion: app.getVersion(),
     dataFilePath: store.filePath,
+    reminderStatus: reminders?.status() || { supported: false, lastError: '' },
   };
 }
 
@@ -219,6 +226,7 @@ function mutate(action, callback) {
   try {
     const result = callback(store.state);
     store.save();
+    reminders?.reconcile();
     undoStack.push({ action, before });
     if (undoStack.length > 30) undoStack.shift();
     broadcast();
@@ -231,7 +239,8 @@ function mutate(action, callback) {
 
 function csvEscape(value) {
   const text = String(value ?? '');
-  return `"${text.replaceAll('"', '""')}"`;
+  const safe = typeof value === 'string' && /^[=+@-]/.test(text.trimStart()) ? `'${text}` : text;
+  return `"${safe.replaceAll('"', '""')}"`;
 }
 
 function buildCsv(state) {
@@ -326,7 +335,14 @@ function buildCsv(state) {
       entry.note || '',
     ];
   });
+  const taskRows = (state.tasks || []).map(task => [
+    `Завдання · ${task.title}${task.archived ? ' · архів' : ''}`, task.dueDate,
+    task.assigneeIds.map(id => state.employees.find(person => person.id === id)?.name || id).join(', ') || 'Керівник',
+    planner.STATUS_LABELS[task.status], task.dueTime || 'До кінця дня',
+    task.documentRef || '', task.recurrence === 'none' ? '' : planner.RECURRENCE_LABELS[task.recurrence], task.description || '',
+  ]);
   const rows = [
+    ...taskRows,
     ...requestRows,
     ...dutyRows,
     ...dutyRestrictionRows,
@@ -338,6 +354,36 @@ function buildCsv(state) {
 
 function registerIpc() {
   ipcMain.handle('snapshot:get', () => currentSnapshot());
+
+  ipcMain.handle('tasks:create', (_event, input) => mutate('tasks:create', state => tasks.createTask(state, input)));
+  ipcMain.handle('tasks:update', (_event, { id, input }) => mutate('tasks:update', state => tasks.updateTask(state, id, input)));
+  ipcMain.handle('tasks:status', (_event, { id, input }) => mutate('tasks:status', state => tasks.setTaskStatus(state, id, input)));
+  ipcMain.handle('tasks:archive', (_event, { id, archived }) => mutate('tasks:archive', state => tasks.archiveTask(state, id, archived)));
+  ipcMain.handle('tasks:snooze', (_event, { id, minutes }) => mutate('tasks:snooze', state => tasks.snoozeTask(state, id, minutes)));
+  ipcMain.handle('tasks:test-reminder', () => {
+    const setup = setupWindowsNotifications({ app, shell });
+    if (!setup.supported) throw new Error(setup.error);
+    reminders.enable(); return reminders.test();
+  });
+  ipcMain.handle('employee:overview', (_event, input) => employeeOverview(store.state, input));
+  ipcMain.handle('management:week', (_event, { anchor }) => weeklySummary(store.state, anchor));
+  ipcMain.handle('management:export-week', async (_event, { anchor, format }) => {
+    if (!['csv', 'pdf'].includes(format)) throw new Error('Невідомий формат звіту.');
+    const report = weeklySummary(store.state, anchor);
+    const result = await dialog.showSaveDialog(mainWindow, { title: 'Зберегти тижневе зведення',
+      defaultPath: `LAD-week-${report.startDate}.${format}`, filters: [{ name: format === 'pdf' ? 'Документ PDF' : 'Таблиця CSV', extensions: [format] }] });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    if (format === 'csv') fs.writeFileSync(result.filePath, buildWeeklyCsv(report), 'utf8');
+    else {
+      const printWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false } });
+      try {
+        await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildWeeklyHtml(report))}`);
+        const bytes = await printWindow.webContents.printToPDF({ pageSize: 'A4', printBackground: true, preferCSSPageSize: true });
+        fs.writeFileSync(result.filePath, bytes);
+      } finally { printWindow.destroy(); }
+    }
+    return { canceled: false, filePath: result.filePath };
+  });
 
   ipcMain.handle('employee:add', (_event, { name }) => (
     mutate('employee:add', (state) => createEmployee(state, name))
@@ -481,7 +527,11 @@ function registerIpc() {
   ipcMain.handle('duties:schedule-rules', (_event, { scheduleId, rules }) => (
     mutate('duties:schedule-rules', (state) => updateDutyScheduleRules(state, scheduleId, rules))
   ));
-  ipcMain.handle('duties:explanation', (_event, { date }) => getDutyExplanation(store.state, date));
+  ipcMain.handle('duties:explanation', (_event, { date, scheduleId }) => {
+    const schedule = scheduleId && store.state.dutySchedules.find(item => item.id === scheduleId);
+    if (scheduleId && !schedule) throw new Error('Графік більше не існує.');
+    return getDutyExplanation(schedule ? { ...store.state, duties: schedule.data, activeDutyScheduleId: schedule.id } : store.state, date);
+  });
   ipcMain.handle('duties:week-lock', (_event, { date, locked }) => (
     mutate('duties:week-lock', (state) => setDutyWeekLocked(state, date, locked))
   ));
@@ -503,6 +553,10 @@ function registerIpc() {
   ipcMain.handle('settings:update', (_event, settings) => {
     const result = mutate('settings:update', (state) => updateSettings(state, settings));
     mainWindow?.setAlwaysOnTop(result.alwaysOnTop);
+    if (result.taskRemindersEnabled) {
+      const setup = setupWindowsNotifications({ app, shell });
+      if (setup.supported) reminders.enable(); else reminders.disable(setup.error);
+    }
     return result;
   });
 
@@ -510,6 +564,7 @@ function registerIpc() {
     const last = undoStack.at(-1);
     if (!last) throw new Error('Немає дії, яку можна скасувати.');
     store.replace(last.before);
+    reminders?.reconcile();
     undoStack.pop();
     broadcast();
     return { undone: last.action };
@@ -543,6 +598,7 @@ function registerIpc() {
     const normalized = normalizeState(parsed);
     const before = store.snapshot();
     store.replace(normalized);
+    reminders?.reconcile();
     undoStack.push({ action: 'data:import', before });
     broadcast();
     return { canceled: false, filePath: result.filePaths[0] };
@@ -552,6 +608,7 @@ function registerIpc() {
   ipcMain.handle('data:restore-backup', (_event, { id }) => {
     const before = store.snapshot();
     store.restoreBackup(id);
+    reminders?.reconcile();
     undoStack.push({ action: 'data:restore-backup', before });
     if (undoStack.length > 30) undoStack.shift();
     broadcast();
@@ -560,6 +617,7 @@ function registerIpc() {
 
   ipcMain.handle('data:reset-all', () => {
     store.reset();
+    reminders?.reconcile();
     undoStack.length = 0;
     broadcast();
     return { reset: true };
@@ -643,7 +701,7 @@ function registerIpc() {
     broadcast();
     return enabled;
   });
-  ipcMain.handle('window:minimize', () => mainWindow?.minimize());
+  ipcMain.handle('window:minimize', () => { mainWindow?.setSkipTaskbar(false); mainWindow?.minimize(); });
   ipcMain.handle('window:close', () => mainWindow?.close());
 }
 
@@ -653,6 +711,18 @@ app.whenReady().then(() => {
   store.load();
   ensureAutomaticMisses(store.state, new Date());
   store.save();
+  const notificationSetup = store.state.settings.taskRemindersEnabled ? setupWindowsNotifications({ app, shell }) : { supported: true };
+  reminders = createReminderService({ Notification, store, broadcast,
+    openTask: id => {
+      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show(); mainWindow.focus();
+      mainWindow.webContents.send('tasks:open', id);
+    },
+    act: (id, action) => mutate(`tasks:${action}`, state => action === 'done'
+      ? tasks.setTaskStatus(state, id, { status: 'done' }) : tasks.snoozeTask(state, id, 60)),
+  });
+  if (!notificationSetup.supported) reminders.disable(notificationSetup.error);
   registerIpc();
   createMainWindow();
 
@@ -661,6 +731,7 @@ app.whenReady().then(() => {
     const changed = ensureAutomaticMisses(store.state, now);
     const currentDate = dateKeyFromDate(now);
     if (changed) store.save();
+    reminders.check();
     if (changed || currentDate !== lastBroadcastDate) broadcast();
   }, 30_000);
 

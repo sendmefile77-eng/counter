@@ -99,6 +99,10 @@ let ui = {
   widgetList: false,
   tab: 'today',
   todayQuery: '', todayFilter: 'all', settingsDraft: null,
+  plannerAnchor: localDateKey(), plannerView: 'month', plannerStatus: 'active', plannerEmployee: '', plannerQuery: '', plannerPriority: '',
+  plannerArchived: false, plannerPeriodOnly: false, plannerShowDuties: true, plannerFocus: '',
+  weeklyAnchor: localDateKey(), weekly: null, weeklyLoading: false, weeklyError: '', weeklyRevision: 0,
+  profile: null, profileView: 'overview', profileRevision: 0,
   month: localDateKey().slice(0, 7),
   journalView: 'month', journalAnchor: localDateKey(),
   journalFrom: `${localDateKey().slice(0, 7)}-01`, journalTo: localDateKey(),
@@ -373,7 +377,7 @@ function renderShell() {
           <span>Люди. Аналітика. Документи.</span>
         </div>
         <div class="title-spacer"></div>
-        <button class="quick-search-button" data-action="quick-search" aria-label="Знайти розділ або працівника (Ctrl+K)">${NAV_ICONS.search}<span>Знайти або перейти</span><kbd>Ctrl K</kbd></button>
+        <button class="quick-search-button" data-action="quick-search" aria-label="Знайти розділ, працівника або завдання (Ctrl+K)">${NAV_ICONS.search}<span>Знайти або перейти</span><kbd>Ctrl K</kbd></button>
         <div class="window-actions">
           <button class="icon-button" data-action="undo" title="Скасувати останню дію" aria-label="Скасувати останню дію">↶</button>
           <button class="icon-button" data-action="toggle-fullscreen" title="${ui.mode === 'fullscreen' ? 'Вийти з повного екрана (F11)' : 'На весь екран (F11)'}" aria-label="${ui.mode === 'fullscreen' ? 'Вийти з повного екрана' : 'На весь екран'}">${ui.mode === 'fullscreen' ? NAV_ICONS.restore : NAV_ICONS.fullscreen}</button>
@@ -443,6 +447,7 @@ function renderWidget() {
   const employees = activeEmployees();
   const statuses = employees.map((employee) => statusFor(employee.id));
   const submitted = statuses.filter((status) => SUBMITTED_STATUSES.has(status)).length;
+  const attentionCount = LadPlanner.attention(snapshot).tasks.length;
   return `
     <section class="widget-view">
       <div class="widget-circle">
@@ -463,6 +468,7 @@ function renderWidget() {
             <small>подали запит</small>
           </div>
         ` : ''}
+        ${attentionCount ? `<button class="widget-task-alert" data-planner-attention title="Завдання, що потребують уваги" aria-label="Потребує уваги: ${attentionCount} завдань">! ${attentionCount}</button>` : ''}
         <div class="widget-controls">
           <button data-action="toggle-widget-list" title="${ui.widgetList ? 'Показати сектори' : 'Показати список'}" aria-label="${ui.widgetList ? 'Показати сектори' : 'Показати список'}">${ui.widgetList ? '◉' : '☷'}</button>
           <button data-action="resize-decrease" title="Зменшити">−</button>
@@ -480,6 +486,8 @@ function renderWidget() {
 const NAV_ICONS = {
   fullscreen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4"></path></svg>',
   restore: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="11" height="11" rx="1"></rect><path d="M9 8V5h10v10h-3"></path></svg>',
+  planner: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h3M15 13v5M13 15.5h4"></path></svg>',
+  weekly: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM15 3v4h3M9 11h6M9 15h6M9 18h4"></path></svg>',
   search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>',
   today: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><path d="m9.4 12 1.7 1.8 3.8-4"></path></svg>',
   journal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"></rect><path d="M8 3.5v4M16 3.5v4M4 9.5h16M8 13h3M13 13h3M8 16h3"></path></svg>',
@@ -500,27 +508,30 @@ const NAV_ITEMS = [
   ['employees', 'Працівники', 'Склад команди, порядок та архів'],
   ['data', 'Налаштування', 'Вигляд, робочі дні та резервні копії'],
   ['help', 'Довідка', 'Позначення й пояснення роботи'],
+  ['planner', 'Планувальник', 'Завдання, календар, строки й нагадування'],
+  ['weekly', 'Тижневе зведення', 'Виконане, затримки й рішення для керівника'],
 ];
 
 async function navigateToTab(tab) {
   if (!NAV_ITEMS.some(([id]) => id === tab)) return;
   if (ui.mode === 'widget') { ui.mode = 'dashboard'; await queueWidgetWindowMode('dashboard'); }
   ui.tab = tab;
-  if (ui.tab === 'analytics' && !ui.analytics) await refresh({ analytics: true });
+  if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
+  else if (ui.tab === 'analytics' && !ui.analytics) await refresh({ analytics: true });
   else if (ui.tab === 'duties' && !ui.dutyStats && snapshot.duties?.initialized) await refresh({ duties: true });
   else if (ui.tab === 'data') await refresh({ analytics: false, duties: false });
   else renderShell();
 }
 
 function renderDashboard() {
-  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label} (Ctrl+${index + 1})" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}</span></button>`;
+  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label} (Ctrl+${index === 9 ? 0 : index + 1})" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}</span></button>`;
   return `
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
-        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${NAV_ITEMS.slice(0, 4).map(navButton).join('')}<div class="sidebar-caption">Команда й дані</div>${NAV_ITEMS.slice(4, 6).map((item, i) => navButton(item, i + 4)).join('')}</nav>
+        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','planner','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
-        <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6).map((item, i) => navButton(item, i + 6)).join('')}</nav>
+        <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6,8).map((item, i) => navButton(item, i + 6)).join('')}</nav>
         <div class="sidebar-note">
           <strong><i></i> Локальний режим</strong>
           <span>Дані на цьому комп’ютері</span>
@@ -535,6 +546,8 @@ function renderDashboard() {
 }
 
 function renderActivePage() {
+  if (ui.tab === 'planner') return renderPlannerPage();
+  if (ui.tab === 'weekly') return renderWeeklyPage();
   if (ui.tab === 'journal') return renderJournalPage();
   if (ui.tab === 'duties') return renderDutyPage();
   if (ui.tab === 'timeoff') return renderTimeOffPage();
@@ -567,6 +580,7 @@ function renderTodayPage() {
     <section class="today-hero" aria-label="Стан роботи сьогодні"><div><span class="page-eyebrow">Люди. Аналітика. Документи.</span><h2>День під контролем</h2><p>${snapshot.settings.automaticClose ? `Робочі дні без позначки закриваються о ${closeTimeText()}.` : 'Автоматичне закриття вимкнено. Статуси можна змінити вручну.'}</p><div class="button-row"><button class="button primary" data-tab="duties">Графік чергувань</button><button class="button" data-tab="analytics">Перевірити показники</button></div></div><img src="lad-mark.svg" alt="" class="today-hero-mark"></section>
     <div class="today-summary" aria-label="Підсумки сьогодні"><button data-today-filter="all" aria-pressed="${ui.todayFilter === 'all'}"><span>У команді</span><strong>${employees.length}</strong><small>активних працівників</small></button><button data-today-filter="submitted" aria-pressed="${ui.todayFilter === 'submitted'}"><span>День зараховано</span><strong>${submitted}</strong><small>працівників, зокрема наперед</small></button><button data-today-filter="pending" aria-pressed="${ui.todayFilter === 'pending'}"><span>Без позначки</span><strong>${pending}</strong><small>лише робочі дні</small></button><button data-today-filter="missed" aria-pressed="${ui.todayFilter === 'missed'}"><span>Пропуски</span><strong>${missed}</strong><small>робочі дні без запиту</small></button></div>
     <div class="today-context"><section class="today-duty"><span class="nav-icon">${NAV_ICONS.duties}</span><div><small>Чергування сьогодні · ${h(activeDutySchedule().name)}</small><strong>${dutyNames.length ? h(dutyNames.join(' · ')) : 'Призначень на сьогодні немає'}</strong></div>${dutyNames.length ? `<button class="button small" data-duty-day="${localDateKey()}">Чому цей склад?</button>` : '<button class="button small" data-tab="duties">Відкрити графік</button>'}</section><section class="today-received"><strong>${received}</strong><div>отриманих запитів сьогодні<small>За документами; це окремо від зарахованих днів.</small></div></section></div>
+    ${renderAttentionPanel()}
     ${employees.length ? `
       <div class="today-people-header"><div><h2>Команда сьогодні</h2><span>${visible.length} з ${employees.length} працівників</span></div><label class="today-search"><span class="sr-only">Знайти працівника</span>${NAV_ICONS.search}<input type="search" data-today-search value="${h(ui.todayQuery)}" placeholder="Знайти працівника"></label></div>
       <div class="today-filters button-row">${[['all', 'Усі'], ['pending', 'Без позначки'], ['submitted', 'Зараховано'], ['missed', 'Пропуски'], ['other', 'Інші статуси']].map(([key, label]) => `<button class="button small ${ui.todayFilter === key ? 'selected' : ''}" data-today-filter="${key}" aria-pressed="${ui.todayFilter === key}">${label}</button>`).join('')}</div>
@@ -576,7 +590,7 @@ function renderTodayPage() {
           return `
             <article class="employee-card">
               <div class="employee-card-head">
-                <h3>${h(employee.name)}</h3>
+                <h3><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></h3>
                 ${statusBadge(status)}
               </div>
               <button class="button success" data-submit-one="${h(employee.id)}">+ Зарахувати запит</button>
@@ -1184,14 +1198,14 @@ function renderEmployeesPage() {
     <section class="panel">
       <h2>Активні</h2>
       <div class="employee-list">
-        ${active.map((employee, index) => `<div class="employee-row"><div><strong>${h(employee.name)}</strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Ім’я</button><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
+        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Ім’я</button><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
       </div>
     </section>
     ${archived.length && snapshot.settings.showArchivedEmployees ? `
       <section class="panel">
         <h2>Архів</h2>
         <div class="employee-list">
-          ${archived.map((employee) => `<div class="employee-row"><div><strong>${h(employee.name)}</strong><small>Історію збережено</small></div><button class="button small" data-restore-employee="${h(employee.id)}">Повернути</button></div>`).join('')}
+          ${archived.map((employee) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>Історію збережено</small></div><button class="button small" data-restore-employee="${h(employee.id)}">Повернути</button></div>`).join('')}
         </div>
       </section>
     ` : ''}
@@ -1212,6 +1226,9 @@ function settingsFormInput(formElement) {
     interfaceTheme: String(form.get('interfaceTheme') || 'navy'),
     interfaceDensity: String(form.get('interfaceDensity') || 'comfortable'),
     interfaceTextSize: String(form.get('interfaceTextSize') || 'standard'),
+    operatorName: String(form.get('operatorName') || 'Керівник'),
+    taskRemindersEnabled: form.get('taskRemindersEnabled') === 'on',
+    taskAttentionDays: Number(form.get('taskAttentionDays') || 3),
     statusColors: Object.fromEntries(Object.keys(STATUS_COLORS).map((key) => [key, String(form.get(`color-${key}`) || STATUS_COLORS[key])])),
   };
 }
@@ -1240,12 +1257,13 @@ function renderDataPage() {
       <div><h1>Налаштування</h1><p>Налаштуйте ЛАД під свою роботу. Зміни застосовуються після збереження.</p></div>
       <span class="app-version" data-app-version>ЛАД · версія ${h(snapshot.appVersion || 'невідома')}</span>
     </div>
-    <nav class="settings-jumps" aria-label="Розділи налаштувань"><button class="button small" data-settings-jump="appearance">Вигляд</button><button class="button small" data-settings-jump="workdays">Робочий день</button><button class="button small" data-settings-jump="table">Віджет і таблиці</button><button class="button small" data-settings-jump="colors">Статуси</button><button class="button small" data-settings-jump="backups">Резервні копії</button></nav>
+    <nav class="settings-jumps" aria-label="Розділи налаштувань"><button class="button small" data-settings-jump="appearance">Вигляд</button><button class="button small" data-settings-jump="workdays">Робочий день</button><button class="button small" data-settings-jump="table">Віджет і таблиці</button><button class="button small" data-settings-jump="colors">Статуси</button><button class="button small" data-settings-jump="tasks">Завдання й нагадування</button><button class="button small" data-settings-jump="backups">Резервні копії</button></nav>
     <form id="settings-form">
       <section class="panel settings-appearance" id="settings-appearance"><h2>Ваш робочий простір</h2><p class="panel-copy">Зовнішній вигляд можна оцінити одразу. Збережіть налаштування, щоб використати їх наступного запуску.</p>
         <fieldset class="appearance-options"><legend>Тема</legend><div>${[['navy', 'Нічний ЛАД', 'Глибокий синій, сталь і золоті акценти'], ['light', 'Світла сталь', 'Світлі поверхні та контрастні таблиці']].map(([key, title, copy]) => `<label class="appearance-choice"><input type="radio" name="interfaceTheme" value="${key}" ${(settings.interfaceTheme || 'navy') === key ? 'checked' : ''}><span class="theme-swatch swatch-${key}" aria-hidden="true"><i></i><i></i><i></i></span><strong>${title}</strong><small>${copy}</small></label>`).join('')}</div></fieldset>
         <div class="appearance-row"><fieldset class="appearance-options"><legend>Щільність інтерфейсу</legend><div class="appearance-segments">${[['comfortable', 'Комфортна'], ['compact', 'Компактна']].map(([key, title]) => `<label><input type="radio" name="interfaceDensity" value="${key}" ${(settings.interfaceDensity || 'comfortable') === key ? 'checked' : ''}><span>${title}</span></label>`).join('')}</div></fieldset><fieldset class="appearance-options"><legend>Розмір тексту</legend><div class="appearance-segments">${[['standard', 'Звичайний'], ['large', 'Збільшений']].map(([key, title]) => `<label><input type="radio" name="interfaceTextSize" value="${key}" ${(settings.interfaceTextSize || 'standard') === key ? 'checked' : ''}><span>${title}</span></label>`).join('')}</div></fieldset></div>
       </section>
+      <section class="panel" id="settings-tasks"><h2>Завдання й нагадування</h2><div class="form-grid"><label class="field"><span>Ім’я керівника / автора змін</span><input name="operatorName" value="${h(settings.operatorName || 'Керівник')}" maxlength="80"><small>Локальна позначка в історії завдань; це не обліковий запис.</small></label><label class="field"><span>Показувати найближчі строки за N днів</span><input type="number" name="taskAttentionDays" min="1" max="14" value="${settings.taskAttentionDays || 3}" required></label></div><label class="check-row"><input type="checkbox" name="taskRemindersEnabled" ${settings.taskRemindersEnabled !== false ? 'checked' : ''}><span><strong>Системні сповіщення про завдання</strong><span>Працюють, поки ЛАД запущений, зокрема коли вікно згорнуте. У Windows буде створено ярлик «ЛАД» у меню «Пуск» для сповіщень; автозапуск не вмикається.</span></span></label><p class="panel-copy">Відкладення нагадування не змінює строк. Після повного закриття програми прострочені завдання буде перевірено при наступному запуску. Блок «Потребує уваги» доступний навіть без системних сповіщень.</p>${snapshot.reminderStatus?.lastError ? `<p class="confirm-box">${h(snapshot.reminderStatus.lastError)}</p>` : ''}<button class="button small" type="button" data-test-reminder>Перевірити сповіщення</button></section>
       <section class="panel" id="settings-workdays">
         <h2>Час і робочі дні</h2>
         <div class="form-grid">
@@ -1284,7 +1302,7 @@ function renderDataPage() {
         <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
       </div>
       <div class="backup-list"><h3>Доступні локальні копії</h3>
-        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
+        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
       </div>
       <p class="panel-copy data-file-path"><strong>Локальний файл:</strong> ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
@@ -1303,7 +1321,7 @@ function renderHelpPage() {
   const closeTime = `${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}`;
   return `
     <div class="page-header"><div><h1>Довідка та позначення</h1><p>Пояснення роботи програми без зміни її параметрів.</p></div></div>
-    <section class="panel help-navigation"><h2>Швидка робота з ЛАД</h2><p class="panel-copy">Почніть з огляду дня. У табелі змінюйте статуси, у чергуваннях — плануйте склад і перевіряйте пояснення. В аналітиці натискайте показник, щоб побачити дати й документи.</p><div class="help-shortcuts"><span><kbd>Ctrl K</kbd> Знайти розділ або працівника</span><span><kbd>Ctrl 1–8</kbd> Перейти до розділу</span><span><kbd>Esc</kbd> Закрити діалог</span><span><kbd>F11</kbd> Повний екран</span></div><p class="panel-copy">У діалозі можна пересуватися клавішею Tab. Теми, щільність і збільшений текст доступні в налаштуваннях.</p><button class="button small" data-tab="data">Налаштувати вигляд</button></section>
+    <section class="panel help-navigation"><h2>Швидка робота з ЛАД</h2><p class="panel-copy">Почніть з огляду дня. У планувальнику записуйте завдання, строки й нагадування; у тижневому зведенні перевіряйте виконане та потрібні рішення. У табелі змінюйте статуси, у чергуваннях — плануйте склад і перевіряйте пояснення. В аналітиці натискайте показник, щоб побачити дати й документи.</p><div class="help-shortcuts"><span><kbd>Ctrl K</kbd> Знайти розділ, працівника або завдання</span><span><kbd>Ctrl 1–9 / 0</kbd> Перейти до розділу</span><span><kbd>Esc</kbd> Закрити діалог</span><span><kbd>F11</kbd> Повний екран</span></div><p class="panel-copy">У діалозі можна пересуватися клавішею Tab. Теми, щільність і збільшений текст доступні в налаштуваннях.</p><button class="button small" data-tab="data">Налаштувати вигляд</button></section>
     <section class="panel rules-panel">
       <div class="rules-grid">
         <article class="rule-card"><div class="rule-time">00:00</div><div><strong>Новий день</strong><p>Віджет переходить до поточної дати; попередня історія зберігається.</p></div></article>
@@ -1336,6 +1354,7 @@ function queueWidgetWindowMode(mode) {
 }
 
 function openModal(content, wide = false) {
+  ui.profileRevision += 1;
   ui.analyticsDetailRevision += 1;
   toastRoot.querySelectorAll('.toast:not(.error)').forEach((toast) => toast.remove());
   if (!modalRoot.childElementCount) modalReturnFocus = document.activeElement;
@@ -1354,6 +1373,7 @@ function openModal(content, wide = false) {
 
 function closeModal() {
   ui.analyticsDetailRevision += 1;
+  ui.profileRevision += 1;
   modalRoot.innerHTML = '';
   appRoot.removeAttribute('inert');
   const identity = [...(modalReturnFocus?.attributes || [])].filter((attribute) => attribute.name.startsWith('data-'));
@@ -1372,8 +1392,9 @@ function closeModal() {
 function quickSearchItems(query = '') {
   const needle = query.trim().toLocaleLowerCase('uk-UA');
   const items = NAV_ITEMS.map(([id, label, description]) => ({ type: 'tab', id, label, description, icon: NAV_ICONS[id] }));
-  for (const employee of activeEmployees()) items.push({ type: 'employee', id: employee.id, label: employee.name, description: 'Відкрити статус на сьогодні', icon: NAV_ICONS.employees });
-  return items.filter((item) => `${item.label} ${item.description}`.toLocaleLowerCase('uk-UA').includes(needle));
+  for (const employee of activeEmployees()) items.push({ type: 'employee', id: employee.id, label: employee.name, description: 'Картка: завдання, чергування, документи й табель', icon: NAV_ICONS.employees });
+  for (const task of (snapshot.tasks || []).filter(LadPlanner.active)) items.push({ type:'task', id:task.id, label:task.title, description:`Завдання · ${taskDeadlineText(task)} · ${taskPeople(task)}`, searchText:`${task.title} ${task.description} ${task.documentRef} ${taskPeople(task)}`, icon:NAV_ICONS.planner });
+  return items.filter((item) => (item.searchText || (item.type === 'employee' ? item.label : `${item.label} ${item.description}`)).toLocaleLowerCase('uk-UA').includes(needle));
 }
 
 function renderQuickSearchResults(query = '') {
@@ -1381,7 +1402,7 @@ function renderQuickSearchResults(query = '') {
 }
 
 function openQuickSearch() {
-  openModal(`<header class="modal-head"><div><h2>Знайти або перейти</h2><p>Розділ програми чи працівник. Стрілки — вибір, Enter — відкрити.</p></div><button class="icon-button" data-close-modal>×</button></header><div class="quick-search-body"><label class="quick-search-input"><span class="sr-only">Назва розділу або ім’я</span>${NAV_ICONS.search}<input type="search" data-quick-query placeholder="Наприклад, чергування або Іваненко" autocomplete="off"></label><div class="quick-results" data-quick-results>${renderQuickSearchResults()}</div></div><footer class="modal-foot"><small>Esc — закрити</small></footer>`);
+  openModal(`<header class="modal-head"><div><h2>Знайти або перейти</h2><p>Розділ програми, працівник або завдання. Стрілки — вибір, Enter — відкрити.</p></div><button class="icon-button" data-close-modal>×</button></header><div class="quick-search-body"><label class="quick-search-input"><span class="sr-only">Назва розділу або ім’я</span>${NAV_ICONS.search}<input type="search" data-quick-query placeholder="Наприклад, чергування або Іваненко" autocomplete="off"></label><div class="quick-results" data-quick-results>${renderQuickSearchResults()}</div></div><footer class="modal-foot"><small>Esc — закрити</small></footer>`);
   modalRoot.querySelector('[data-quick-query]').focus();
 }
 
@@ -1969,6 +1990,7 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
       window.counter.getDutyFairness({ startDate: `${year}-01-01`, endDate: `${year}-12-31` }),
     ]);
   }
+  if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   if (ui.tab === 'data') ui.backups = await window.counter.listBackups();
   renderShell();
 }
@@ -2089,6 +2111,7 @@ function updateAnalyticsDraftNotice(form) {
 }
 
 appRoot.addEventListener('click', async (event) => {
+  if (isManagementClick(event) && await handleManagementClick(event)) return;
   if (handleAnalyticsClick(event)) return;
   const todayFilter = event.target.closest('[data-today-filter]');
   if (todayFilter) { ui.todayFilter = todayFilter.dataset.todayFilter; renderShell(); return; }
@@ -2142,7 +2165,7 @@ appRoot.addEventListener('click', async (event) => {
     }
     if (action === 'reset-all-data') {
       if (!confirmAction('Це назавжди видалить УСІ дані застосунку. Продовжити?', true)) return;
-      if (!confirmAction('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань і журнал «Відлучення» без можливості скасування?', true)) return;
+      if (!confirmAction('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань, завдання й журнал «Відлучення» без можливості скасування?', true)) return;
       const result = await run(
         () => window.counter.resetAllData(),
         null,
@@ -2152,6 +2175,8 @@ appRoot.addEventListener('click', async (event) => {
         ui.tab = 'today';
         ui.settingsDraft = null;
         ui.todayQuery = ''; ui.todayFilter = 'all';
+        ui.weekly = null; ui.weeklyRevision += 1; ui.weeklyError = ''; ui.profile = null; ui.profileRevision += 1;
+        ui.plannerQuery = ''; ui.plannerEmployee = ''; ui.plannerStatus = 'active'; ui.plannerPriority = ''; ui.plannerFocus = ''; ui.plannerArchived = false;
         ui.analytics = null;
         ui.dutyStats = null;
         renderShell();
@@ -2558,6 +2583,7 @@ appRoot.addEventListener('keydown', (event) => {
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'journal-range-form') {
     const data = new FormData(event.target);
     try {
@@ -2637,6 +2663,7 @@ appRoot.addEventListener('input', (event) => {
 });
 
 appRoot.addEventListener('change', async (event) => {
+  if (handleManagementChange(event)) return;
   const settingsForm = event.target.closest('#settings-form');
   if (settingsForm) { captureSettingsDraft(settingsForm); return; }
   if (event.target.matches('[data-journal-month]')) {
@@ -2711,6 +2738,7 @@ modalRoot.addEventListener('keydown', (event) => {
 });
 
 modalRoot.addEventListener('change', (event) => {
+  if (handleManagementChange(event)) return;
   const batchForm = event.target.closest('#journal-batch-form');
   if (batchForm) invalidateJournalPreview(batchForm);
   if (!event.target.matches('[data-duty-pin]')) return;
@@ -2732,11 +2760,13 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (isManagementClick(event) && await handleManagementClick(event)) return;
   const quick = event.target.closest('[data-quick-type]');
   if (quick) {
     const { quickType, quickId } = quick.dataset;
     closeModal();
-    if (quickType === 'employee') openStatusModal(quickId, localDateKey());
+    if (quickType === 'employee') await openEmployeeProfile(quickId);
+    else if (quickType === 'task') openTaskModal(quickId);
     else await navigateToTab(quickId);
     return;
   }
@@ -3022,6 +3052,7 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'employee-rename-form') {
     const result = await run(() => window.counter.renameEmployee(event.target.dataset.employeeId,
       new FormData(event.target).get('name')), 'Ім’я працівника виправлено.');
@@ -3140,6 +3171,7 @@ toastRoot.addEventListener('click', async (event) => {
 
 window.counter.onChanged(async (nextSnapshot) => {
   snapshot = nextSnapshot;
+  if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   if (ui.tab === 'analytics') await loadAnalytics(analyticsCurrentFilter(), { render: false });
   if (ui.tab === 'duties' && snapshot.duties?.initialized) {
     try {
@@ -3160,7 +3192,7 @@ window.addEventListener('resize', updateDutyScrollExtent);
 window.addEventListener('keydown', async (event) => {
   if ((event.ctrlKey || event.metaKey) && !event.altKey) {
     if (event.key.toLowerCase() === 'k') { event.preventDefault(); if (!modalRoot.childElementCount) openQuickSearch(); return; }
-    const index = Number(event.key) - 1;
+    const index = event.key === '0' ? 9 : Number(event.key) - 1;
     if (Number.isInteger(index) && index >= 0 && index < NAV_ITEMS.length && !modalRoot.childElementCount && !event.target.closest('input, textarea, select, [contenteditable="true"]')) { event.preventDefault(); await navigateToTab(NAV_ITEMS[index][0]); return; }
   }
   if (event.key !== 'F11' || ui.mode === 'widget') return;
@@ -3178,6 +3210,16 @@ window.counter.onWindowModeChanged((mode) => {
     renderShell();
   }
 });
+
+window.counter.onOpenTask?.(async id => { closeModal(); await navigateToTab('planner'); openTaskModal(id); });
+
+let lastPlannerMinute = Math.floor(Date.now() / 60000);
+setInterval(() => {
+  const minute = Math.floor(Date.now() / 60000);
+  if (!snapshot || minute === lastPlannerMinute) return;
+  lastPlannerMinute = minute;
+  if (!modalRoot.childElementCount && !document.activeElement?.closest('input, textarea, select') && (ui.mode === 'widget' || ['today', 'planner'].includes(ui.tab))) renderShell();
+}, 10000);
 
 refresh({ analytics: false }).catch((error) => {
   appRoot.innerHTML = `<section class="window-shell"><div class="empty-widget"><h2>Не вдалося запустити програму</h2><p>${h(error.message || String(error))}</p></div></section>`;
