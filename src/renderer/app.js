@@ -97,6 +97,10 @@ let ui = {
   widgetList: false,
   tab: 'today',
   month: localDateKey().slice(0, 7),
+  journalView: 'month', journalAnchor: localDateKey(),
+  journalFrom: `${localDateKey().slice(0, 7)}-01`, journalTo: localDateKey(),
+  journalQuery: '', journalFilter: 'all', journalArchived: false, journalCompact: false, journalHideWeekends: false,
+  journalSelecting: false, journalSelected: [], journalSelectionAnchor: null, journalFocusedEmployeeId: '', journalBatchCells: null,
   analyticsStart: `${localDateKey().slice(0, 7)}-01`,
   analyticsEnd: localDateKey(),
   analyticsEmployee: '',
@@ -548,60 +552,100 @@ function renderTodayPage() {
   `;
 }
 
+function journalRange() {
+  if (ui.journalView === 'week') {
+    const startDate = dutyWeekStart(ui.journalAnchor);
+    return { startDate, endDate: shiftDate(startDate, 6) };
+  }
+  if (ui.journalView === 'period') return { startDate: ui.journalFrom, endDate: ui.journalTo };
+  return { startDate: `${ui.month}-01`, endDate: `${ui.month}-${String(daysInMonth(ui.month)).padStart(2, '0')}` };
+}
+
+function journalVisibleReport() {
+  const employees = snapshot.employees.filter((employee) => ui.journalArchived || employee.active);
+  const report = CounterJournal.report(snapshot, { ...journalRange(), employeeIds: employees.map(({ id }) => id) }, localDateKey());
+  report.rows = report.rows.filter((row) => row.name.toLocaleLowerCase('uk-UA').includes(ui.journalQuery.toLocaleLowerCase('uk-UA'))
+    && (ui.journalFilter === 'all' || (ui.journalFilter === 'missed' && row.totals.missed > 0)
+      || (ui.journalFilter === 'pending' && row.totals.pending > 0) || (ui.journalFilter === 'absent' && row.totals.absent > 0)));
+  if (ui.journalHideWeekends) report.dates = report.dates.filter((date) => configuredWorkday(date)
+    || report.rows.some((row) => row.cells.find((cell) => cell.date === date)?.override));
+  report.totals = report.rows.reduce((totals, row) => {
+    for (const [key, value] of Object.entries(row.totals)) totals[key] = (totals[key] || 0) + value;
+    return totals;
+  }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0 });
+  return report;
+}
+
 function renderJournalPage() {
-  const count = daysInMonth(ui.month);
-  const dates = Array.from({ length: count }, (_, index) => `${ui.month}-${String(index + 1).padStart(2, '0')}`);
-  const employees = activeEmployees();
+  const report = journalVisibleReport();
+  const visibleIds = new Set(report.rows.map((row) => row.employeeId));
+  const visibleDates = new Set(report.dates);
+  ui.journalSelected = ui.journalSelected.filter((cell) => visibleIds.has(cell.employeeId) && visibleDates.has(cell.date));
+  const selected = new Set(ui.journalSelected.map((cell) => `${cell.employeeId}|${cell.date}`));
+  const range = journalRange();
+  const metricLabels = [['submitted', 'Подав'], ['missed', 'Пропуски'], ['other', 'ІЗ'], ['absent', 'Відсутність'], ['pending', 'Очікує']];
   return `
-    <div class="page-header">
-      <div>
-        <h1>Табель виконання</h1>
-        <p>Клікніть клітинку, щоб встановити або переглянути статус дня.</p>
-      </div>
+    <div class="page-header"><div><h1>Табель виконання</h1><p>Клік — статус дня. Ctrl + клік — вибір клітинок; Shift + клік — діапазон. Натисніть ім’я, щоб виділити рядок.</p></div><div class="button-row"><button class="button small" data-status-period>Масова зміна</button><button class="button small" data-export-journal ${!report.rows.length ? 'disabled' : ''}>Експорт CSV</button></div></div>
+    <div class="journal-view-bar">
+      <div class="button-row">${[['month', 'Місяць'], ['week', 'Тиждень'], ['period', 'Період']].map(([view, label]) => `<button class="button small ${ui.journalView === view ? 'primary' : ''}" data-journal-view="${view}" aria-pressed="${ui.journalView === view}">${label}</button>`).join('')}<button class="button small" data-journal-today>Сьогодні</button></div>
+      ${ui.journalView === 'month' ? `<label class="field journal-date-field"><span>Перейти до місяця</span><input type="month" data-journal-month value="${ui.month}"></label>` : ui.journalView === 'week' ? `<label class="field journal-date-field"><span>Тиждень за датою</span><input type="date" data-journal-anchor value="${ui.journalAnchor}"></label>` : `<form id="journal-range-form" class="journal-range-form"><label class="field"><span>Від</span><input name="startDate" type="date" value="${ui.journalFrom}" required></label><label class="field"><span>До</span><input name="endDate" type="date" value="${ui.journalTo}" required></label><button class="button small" type="submit">Показати</button></form>`}
     </div>
-    <div class="table-toolbar">
-      <button class="button small" data-month-shift="-1">← Попередній</button>
-      <div class="month-title">${h(formatMonth(ui.month))}</div>
-      <button class="button small" data-month-shift="1">Наступний →</button>
-      <button class="button small" data-status-period>Статус на період</button>
+    <div class="table-toolbar journal-period-toolbar"><button class="button small" data-month-shift="-1" ${ui.journalView === 'period' ? 'disabled' : ''}>← Попередній</button><div class="month-title">${ui.journalView === 'month' ? h(formatMonth(ui.month)) : `${h(formatDate(range.startDate))} — ${h(formatDate(range.endDate))}`}</div><button class="button small" data-month-shift="1" ${ui.journalView === 'period' ? 'disabled' : ''}>Наступний →</button></div>
+    <div class="journal-controls">
+      <label class="field journal-search"><span>Знайти працівника</span><input type="search" data-journal-search value="${h(ui.journalQuery)}" placeholder="Ім’я або прізвище"></label>
+      <div class="button-row journal-filters">${[['all', 'Усі'], ['missed', 'З пропусками'], ['pending', 'Очікують'], ['absent', 'Відсутні']].map(([value, label]) => `<button class="button small ${ui.journalFilter === value ? 'primary' : ''}" data-journal-filter="${value}" aria-pressed="${ui.journalFilter === value}">${label}</button>`).join('')}</div>
+      <details class="journal-display"><summary>Вигляд</summary><label><input type="checkbox" data-journal-setting="journalCompact" ${ui.journalCompact ? 'checked' : ''}>Компактні рядки</label><label><input type="checkbox" data-journal-setting="journalHideWeekends" ${ui.journalHideWeekends ? 'checked' : ''}>Сховати неробочі дні</label><label><input type="checkbox" data-journal-setting="journalArchived" ${ui.journalArchived ? 'checked' : ''}>Показати архів</label></details>
     </div>
-    <div class="table-scroll">
-      <table class="matrix">
-        <thead>
-          <tr>
-            <th class="sticky-name">Працівник</th>
-            ${dates.map((date) => {
-              const day = dateFromKey(date).getDay();
-              return `<th class="${date === localDateKey() ? 'is-today ' : ''}${!configuredWorkday(date) ? 'weekend' : ''}" title="${h(formatDate(date))}">${Number(date.slice(-2))}</th>`;
-            }).join('')}
-          </tr>
-        </thead>
-        <tbody>
-          ${employees.map((employee) => `
-            <tr>
-              <td class="sticky-name" title="${h(employee.name)}">${h(shortName(employee.name))}</td>
-              ${dates.map((date) => {
-                const day = dateFromKey(date).getDay();
-                const outsideEmployment = !employeeActiveOnDate(employee, date);
-                const weekend = !configuredWorkday(date);
-                const workdayOverride = hasWorkdayOverride(employee.id, date);
-                const todayClass = date === localDateKey() ? ' is-today' : '';
-                if (weekend && !workdayOverride) {
-                  return `<td class="matrix-cell cell-weekend${outsideEmployment ? ' cell-history' : ''}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" role="button" tabindex="${employee === employees[0] && date === dates[0] ? '0' : '-1'}" aria-label="${h(employee.name)} · ${h(formatDate(date))} · вихідний" title="${h(formatDate(date))} · календарний вихідний · клікніть, щоб зробити робочим">ВХ</td>`;
-                }
-                const status = statusFor(employee.id, date);
-                const record = recordFor(employee.id, date);
-                const tooltip = `${employee.name}\n${formatDate(date)}${outsideEmployment ? '\nІсторична дата — можна заповнити вручну' : ''}${workdayOverride ? '\nРобочий день замість вихідного' : ''}\n${STATUS_LABELS[status]}${record?.documentRef ? `\n${record.documentRef}` : ''}${record?.note ? `\n${record.note}` : ''}`;
-                const symbol = workdayOverride && status === 'pending' ? 'РД' : STATUS_SYMBOLS[status];
-                const overrideClass = `${workdayOverride && status === 'pending' ? ' cell-workday-override' : ''}${outsideEmployment ? ' cell-history' : ''}`;
-                return `<td class="matrix-cell cell-${status}${overrideClass}${todayClass}" data-cell-employee="${h(employee.id)}" data-date="${date}" role="button" tabindex="${employee === employees[0] && date === dates[0] ? '0' : '-1'}" aria-label="${h(employee.name)} · ${h(formatDate(date))} · ${h(STATUS_LABELS[status] || 'очікується')}" title="${h(tooltip)}">${symbol}</td>`;
-              }).join('')}
-            </tr>
-          `).join('')}
-        </tbody>
+    <div class="journal-summary">${metricLabels.map(([key, label]) => `<span>${label}: <strong>${report.totals[key]}</strong></span>`).join('')}<small>Підсумки у днях за період для показаних працівників. «Очікує» — лише до сьогодні.</small></div>
+    <div class="journal-selection-bar"><button class="button small ${ui.journalSelecting ? 'primary' : ''}" data-journal-select-mode aria-pressed="${ui.journalSelecting}">${ui.journalSelecting ? 'Вийти з виділення' : 'Виділення клітинок'}</button><button class="button small" data-journal-select-all ${!report.rows.length ? 'disabled' : ''}>Вибрати показані</button><span data-journal-selection-count aria-live="polite">Виділено: ${selected.size}</span><button class="button small" data-journal-batch="status" ${!selected.size ? 'disabled' : ''}>Змінити статус</button><button class="button small" data-journal-batch="clear" ${!selected.size ? 'disabled' : ''}>Очистити ручні</button><button class="button small" data-journal-batch="make_workday" ${!selected.size ? 'disabled' : ''}>Зробити робочими</button><button class="button small" data-journal-batch="restore_weekend" ${!selected.size ? 'disabled' : ''}>Повернути вихідні</button><button class="button small ghost" data-journal-clear-selection ${!selected.size ? 'disabled' : ''}>Зняти вибір</button></div>
+    <div class="table-scroll journal-scroll" data-scroll-key="journal-matrix">
+      <table class="matrix journal-matrix ${ui.journalCompact ? 'journal-compact' : ''} ${ui.journalFocusedEmployeeId ? 'has-focused-row' : ''}"><thead><tr><th class="sticky-name">Працівник</th>${report.dates.map((date) => `<th class="${date === localDateKey() ? 'is-today' : ''} ${!configuredWorkday(date) ? 'weekend' : ''} ${dateFromKey(date).getDay() === 1 ? 'journal-week-start' : ''}"><button data-journal-column="${date}" title="Вибрати цей день для всіх показаних працівників"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[dateFromKey(date).getDay()]}${ui.journalView !== 'month' ? ` · ${date.slice(5, 7)}` : ''}</small></button></th>`).join('')}${metricLabels.map(([, label]) => `<th class="journal-total">${label}</th>`).join('')}</tr></thead>
+        <tbody>${report.rows.map((row, rowIndex) => `<tr class="${ui.journalFocusedEmployeeId === row.employeeId ? 'journal-row-focused' : ''}"><td class="sticky-name"><button data-journal-row="${h(row.employeeId)}" title="${h(row.name)} · у режимі виділення вибирає всі показані дні">${h(row.name)}</button></td>${report.dates.map((date, colIndex) => {
+          const cell = row.cells.find((item) => item.date === date);
+          const chosen = selected.has(`${row.employeeId}|${date}`);
+          const tooltip = `${row.name}\n${formatDate(date)}\n${cell.status === 'outside' ? 'Поза періодом роботи' : STATUS_LABELS[cell.status] || 'Очікується'}${cell.override ? '\nОкремий робочий вихідний' : ''}${cell.protected ? '\nПов’язано з документом' : ''}${cell.documentRef ? `\n${cell.documentRef}` : ''}${cell.note ? `\n${cell.note}` : ''}`;
+          return `<td class="matrix-cell cell-${cell.status}${cell.override && cell.status === 'pending' ? ' cell-workday-override' : ''}${chosen ? ' journal-cell-selected' : ''}${cell.protected ? ' journal-cell-protected' : ''}${date === localDateKey() ? ' is-today' : ''}${dateFromKey(date).getDay() === 1 ? ' journal-week-start' : ''}" data-cell-employee="${h(row.employeeId)}" data-date="${date}" role="button" tabindex="${rowIndex === 0 && colIndex === 0 ? '0' : '-1'}" aria-pressed="${chosen}" aria-label="${h(tooltip.replaceAll('\n', ' · '))}" title="${h(tooltip)}">${cell.symbol}</td>`;
+        }).join('')}${metricLabels.map(([key]) => `<td class="journal-total" title="${h(row.name)} · за показаний період">${row.totals[key]}</td>`).join('')}</tr>`).join('')}</tbody>
       </table>
+      ${!report.rows.length ? '<div class="empty-state">За цими умовами працівників немає. Змініть пошук або фільтр.</div>' : ''}
     </div>
+    <details class="journal-legend"><summary>Позначення та керування</summary><div>${Object.entries(STATUS_SYMBOLS).map(([key, symbol]) => `<span><strong>${symbol}</strong> ${h(STATUS_LABELS[key])}</span>`).join('')}<span><strong>ВХ</strong> Вихідний</span><span><strong>РД</strong> Окремий робочий вихідний</span><span><strong>—</strong> Поза періодом роботи</span><span><strong>Крапка в кутку</strong> Запис за документом</span></div><p>У режимі виділення натискайте клітинки, імена та заголовки днів. Shift вибирає прямокутник. Звичайний клік поза цим режимом відкриває окремий день.</p></details>
   `;
+}
+
+function refreshJournalView() {
+  const input = appRoot.querySelector('[data-journal-search]');
+  const focused = document.activeElement === input;
+  const position = input?.selectionStart;
+  renderShell();
+  if (focused) { const next = appRoot.querySelector('[data-journal-search]'); next?.focus(); if (position != null) next?.setSelectionRange(position, position); }
+}
+
+function clearJournalSelection() { ui.journalSelected = []; ui.journalSelectionAnchor = null; }
+
+function selectJournalCell(employeeId, date, event = {}) {
+  const target = { employeeId, date };
+  let targets = [target];
+  if (event.shiftKey && ui.journalSelectionAnchor) {
+    const report = journalVisibleReport();
+    targets = CounterJournal.rectangle(report.rows.map((row) => row.employeeId), report.dates, ui.journalSelectionAnchor, target);
+  }
+  const selection = new Map(ui.journalSelected.map((cell) => [`${cell.employeeId}|${cell.date}`, cell]));
+  const key = `${employeeId}|${date}`;
+  if (targets.length === 1 && selection.has(key) && !event.shiftKey) selection.delete(key);
+  else for (const cell of targets) selection.set(`${cell.employeeId}|${cell.date}`, cell);
+  ui.journalSelected = [...selection.values()];
+  if (!event.shiftKey) ui.journalSelectionAnchor = target;
+  // Keep the clicked cell and keyboard focus in place during selection.
+  const keys = new Set(selection.keys());
+  appRoot.querySelectorAll('[data-cell-employee]').forEach((cell) => {
+    const selected = keys.has(`${cell.dataset.cellEmployee}|${cell.dataset.date}`);
+    cell.classList.toggle('journal-cell-selected', selected);
+    cell.setAttribute('aria-pressed', String(selected));
+  });
+  const counter = appRoot.querySelector('[data-journal-selection-count]');
+  if (counter) counter.textContent = `Виділено: ${keys.size}`;
+  appRoot.querySelectorAll('[data-journal-batch], [data-journal-clear-selection]').forEach((button) => { button.disabled = !keys.size; });
 }
 
 function dutyCell(employee, date) {
@@ -1010,6 +1054,7 @@ function renderDataPage() {
   return `
     <div class="page-header">
       <div><h1>Налаштування</h1><p>Параметри програми. Позначення та пояснення винесено в окрему «Довідку».</p></div>
+      <span class="app-version" data-app-version>Counter · версія ${h(snapshot.appVersion || 'невідома')}</span>
     </div>
     <form id="settings-form">
       <section class="panel">
@@ -1540,32 +1585,67 @@ function openReceiptCorrectionModal(receiptId) {
   `, true);
 }
 
-function openStatusPeriodModal() {
+function openStatusPeriodModal() { openJournalBatchModal(); }
+
+function openJournalBatchModal(cells = null, action = 'status') {
+  ui.journalBatchCells = cells ? cells.map((cell) => ({ ...cell })) : null;
+  const range = journalRange();
+  const workers = journalVisibleReport().rows;
+  const defaultId = workers.some((row) => row.employeeId === ui.journalFocusedEmployeeId)
+    ? ui.journalFocusedEmployeeId : workers[0]?.employeeId;
+  const actions = [['status', 'Змінити статус'], ['clear', 'Очистити ручні'], ['make_workday', 'Зробити робочими'], ['restore_weekend', 'Повернути вихідні']];
+  const statuses = ['vacation', 'sick', 'day_off', 'other_tasks', 'personal_permission', 'holiday', 'missed', 'submitted'];
   openModal(`
-    <form id="status-period-form">
-      <header class="modal-head"><div><h2>Статус на період</h2><p>Лише робочі дні вибраного працівника</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
-      <div class="modal-body form-grid">
-        <label class="field"><span>Працівник</span><select name="employeeId" required>${activeEmployees().map((employee) => `<option value="${h(employee.id)}">${h(employee.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Від</span><input name="startDate" type="date" value="${ui.month}-01" required></label>
-        <label class="field"><span>До</span><input name="endDate" type="date" value="${ui.month}-${String(daysInMonth(ui.month)).padStart(2, '0')}" required></label>
-        <label class="field"><span>Статус</span><select name="status"><option value="vacation">Відпустка</option><option value="sick">Лікарняний</option><option value="day_off">Відгул</option><option value="other_tasks">Інші завдання</option><option value="personal_permission">Особисті справи</option><option value="holiday">Свято</option><option value="missed">Не подав</option></select></label>
-        <label class="field"><span>Примітка</span><input name="note" maxlength="500"></label>
-        <p class="confirm-box" data-period-preview>Дні, зараховані документами, не змінюються. Натисніть «Перевірити дні», щоб побачити кількість змін.</p>
+    <form id="journal-batch-form">
+      <header class="modal-head"><div><h2>Масова зміна табеля</h2><p>${cells ? `${cells.length} вибраних клітинок · ${new Set(cells.map((cell) => cell.employeeId)).size} працівників` : 'Працівники, період та дні тижня'}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
+      <div class="modal-body">
+        ${cells ? `<details class="journal-batch-scope"><summary>Перевірити вибрані клітинки (${cells.length})</summary><p>${h([...new Set(cells.map((cell) => employeeById(cell.employeeId)?.name))].join(', '))}</p><p>${h([...new Set(cells.map((cell) => cell.date))].sort().map(formatDate).join(', '))}</p></details>` : `
+          <fieldset class="journal-worker-picker"><legend>Працівники з відкритого табеля</legend><button class="button small" type="button" data-journal-pick-workers>Вибрати / зняти всіх</button><div>${workers.map((row) => `<label class="check-row"><input name="employeeIds" type="checkbox" value="${h(row.employeeId)}" ${row.employeeId === defaultId ? 'checked' : ''}><span>${h(row.name)}</span></label>`).join('') || '<p>Немає працівників. Змініть фільтри табеля.</p>'}</div></fieldset>
+          <div class="form-grid"><label class="field"><span>Від</span><input name="startDate" type="date" value="${range.startDate}" required></label><label class="field"><span>До</span><input name="endDate" type="date" value="${range.endDate}" required></label></div>
+          <fieldset class="journal-weekdays"><legend>Дні тижня</legend>${[1, 2, 3, 4, 5, 6, 0].map((day) => `<label><input name="weekdays" type="checkbox" value="${day}" checked>${WEEKDAY_SHORT[day]}</label>`).join('')}</fieldset>`}
+        <fieldset class="journal-choice-group"><legend>Дія</legend>${actions.map(([value, label]) => `<label><input name="action" type="radio" value="${value}" ${action === value ? 'checked' : ''}>${label}</label>`).join('')}</fieldset>
+        <div data-journal-status-options ${action !== 'status' ? 'hidden' : ''}>
+          <fieldset class="journal-choice-group"><legend>Новий статус</legend>${statuses.map((status) => `<label><input name="status" type="radio" value="${status}" ${status === 'vacation' ? 'checked' : ''}>${h(STATUS_LABELS[status])}</label>`).join('')}</fieldset>
+          <label class="check-row"><input name="includeWeekends" type="checkbox"><span>Включити неробочі дні та зробити їх робочими для цих працівників</span></label>
+          <label class="check-row"><input name="replaceExisting" type="checkbox" checked><span>Замінювати наявні позначки, крім записів за документами</span></label>
+        </div>
+        <label class="field"><span>Примітка до зміни</span><textarea name="note" maxlength="500" placeholder="Причина або підстава"></textarea></label>
+        <label class="check-row"><input name="skipBlocked" type="checkbox"><span><strong>Пропустити заблоковані клітинки</strong><span>За замовчуванням будь-який конфлікт зупиняє всю операцію. Причини буде показано до збереження.</span></span></label>
+        <p class="confirm-box">Документи захищені. Очищення прибирає ручні позначки; автоматичні пропуски виправляйте новим статусом. Минулі незакриті робочі дні після очищення можуть знову стати пропусками. Повернення вихідного прибирає його окремий робочий режим і позначку дня. Усі зміни зберігаються одним кроком скасування.</p>
+        <div data-journal-batch-preview aria-live="polite">Перевірте клітинки перед застосуванням.</div>
       </div>
-      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-period>Перевірити дні</button><button class="button primary" type="submit" disabled>Застосувати</button></footer>
+      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-journal-batch>Перевірити клітинки</button><button class="button primary" type="submit" disabled>Застосувати</button></footer>
     </form>
   `, true);
+  modalRoot.querySelector('.modal').classList.add('journal-batch-modal');
 }
 
-function statusPeriodInput(formElement) {
-  const form = new FormData(formElement);
+function journalBatchInput(form) {
+  const data = new FormData(form);
   return {
-    employeeId: String(form.get('employeeId')),
-    startDate: String(form.get('startDate')),
-    endDate: String(form.get('endDate')),
-    status: String(form.get('status')),
-    note: String(form.get('note') || ''),
+    ...(ui.journalBatchCells ? { cells: ui.journalBatchCells } : {
+      employeeIds: data.getAll('employeeIds').map(String), startDate: String(data.get('startDate') || ''),
+      endDate: String(data.get('endDate') || ''), weekdays: data.getAll('weekdays').map(Number),
+    }),
+    action: String(data.get('action') || 'status'), status: String(data.get('status') || 'vacation'),
+    note: String(data.get('note') || ''), includeWeekends: data.get('includeWeekends') === 'on',
+    replaceExisting: data.get('replaceExisting') === 'on', skipBlocked: data.get('skipBlocked') === 'on',
   };
+}
+
+function invalidateJournalPreview(form) {
+  delete form.dataset.previewToken;
+  // Also discards a late reply from a preview started before this edit.
+  form.dataset.previewRevision = String(Number(form.dataset.previewRevision || 0) + 1);
+  form.querySelector('[type="submit"]').disabled = true;
+  form.querySelector('[data-journal-status-options]').hidden = new FormData(form).get('action') !== 'status';
+  form.querySelector('[data-journal-batch-preview]').textContent = 'Дані змінено. Перевірте клітинки ще раз.';
+}
+
+function renderJournalBatchPreview(result) {
+  const labels = { ...STATUS_LABELS, workday: 'Робочий день', weekend: 'Вихідний', pending: 'Очікується' };
+  const section = (title, items, changed) => `<details ${items.length && !changed ? 'open' : ''}><summary>${title}: ${items.length}</summary><div class="table-scroll"><table class="data-table"><thead><tr><th>Працівник</th><th>Дата</th><th>${changed ? 'Зміна' : 'Причина'}</th></tr></thead><tbody>${items.slice(0, 250).map((item) => `<tr><td>${h(item.name)}</td><td>${h(formatDate(item.date))}</td><td>${changed ? `${h(labels[item.from] || item.from)} → ${h(labels[item.to] || item.to)}${item.madeWorkday ? ' · стане робочим днем' : ''}` : h(item.reason)}</td></tr>`).join('')}</tbody></table></div>${items.length > 250 ? '<p>Показано перші 250 клітинок; кількість враховує всі.</p>' : ''}</details>`;
+  return `<div class="confirm-box ${result.canApply ? 'success-box' : ''}"><strong>Буде змінено: ${result.count}. Заблоковано: ${result.blocked.length}. Пропущено: ${result.skipped.length}.</strong><p>${result.canApply ? 'Можна застосувати перевірені зміни.' : result.blocked.length ? 'Операція зупинена. Усуньте конфлікти або явно дозволіть пропуск заблокованих клітинок.' : 'Немає клітинок для зміни.'}</p></div>${section('Зміни', result.changes, true)}${section('Конфлікти', result.blocked, false)}${section('Пропуски', result.skipped, false)}`;
 }
 
 function openEmployeeRenameModal(employeeId) {
@@ -1824,6 +1904,58 @@ appRoot.addEventListener('click', async (event) => {
   if (statusModal) return openStatusModal(statusModal.dataset.statusModal, statusModal.dataset.date);
 
   if (event.target.closest('[data-status-period]')) return openStatusPeriodModal();
+  const journalView = event.target.closest('[data-journal-view]');
+  if (journalView) {
+    ui.journalView = journalView.dataset.journalView;
+    clearJournalSelection(); renderShell(); return;
+  }
+  if (event.target.closest('[data-journal-today]')) {
+    ui.month = localDateKey().slice(0, 7); ui.journalAnchor = localDateKey();
+    ui.journalFrom = `${ui.month}-01`; ui.journalTo = localDateKey();
+    clearJournalSelection(); renderShell();
+    appRoot.querySelector('.journal-matrix .is-today')?.scrollIntoView?.({ block: 'nearest', inline: 'center' });
+    return;
+  }
+  const journalFilter = event.target.closest('[data-journal-filter]');
+  if (journalFilter) {
+    ui.journalFilter = journalFilter.dataset.journalFilter;
+    clearJournalSelection(); refreshJournalView(); return;
+  }
+  if (event.target.closest('[data-journal-select-mode]')) {
+    ui.journalSelecting = !ui.journalSelecting; renderShell(); return;
+  }
+  if (event.target.closest('[data-journal-clear-selection]')) {
+    clearJournalSelection(); renderShell(); return;
+  }
+  const journalColumn = event.target.closest('[data-journal-column]');
+  const journalRow = event.target.closest('[data-journal-row]');
+  if (event.target.closest('[data-journal-select-all]') || journalColumn || (journalRow && ui.journalSelecting)) {
+    const report = journalVisibleReport();
+    const rows = journalRow ? report.rows.filter((row) => row.employeeId === journalRow.dataset.journalRow) : report.rows;
+    const dates = journalColumn ? [journalColumn.dataset.journalColumn] : report.dates;
+    const cells = rows.flatMap((row) => dates.map((date) => ({ employeeId: row.employeeId, date })));
+    const chosen = new Map(ui.journalSelected.map((cell) => [`${cell.employeeId}|${cell.date}`, cell]));
+    const allChosen = cells.length > 0 && cells.every((cell) => chosen.has(`${cell.employeeId}|${cell.date}`));
+    for (const cell of cells) {
+      const key = `${cell.employeeId}|${cell.date}`;
+      if (allChosen) chosen.delete(key); else chosen.set(key, cell);
+    }
+    ui.journalSelected = [...chosen.values()]; ui.journalSelecting = true;
+    ui.journalSelectionAnchor = cells[0] || null;
+    renderShell(); return;
+  }
+  if (journalRow) {
+    ui.journalFocusedEmployeeId = ui.journalFocusedEmployeeId === journalRow.dataset.journalRow ? '' : journalRow.dataset.journalRow;
+    renderShell(); return;
+  }
+  const journalBatch = event.target.closest('[data-journal-batch]');
+  if (journalBatch && ui.journalSelected.length) return openJournalBatchModal(ui.journalSelected, journalBatch.dataset.journalBatch);
+  if (event.target.closest('[data-export-journal]')) {
+    const report = journalVisibleReport();
+    const result = await run(() => window.counter.exportJournal({ ...journalRange(), employeeIds: report.rows.map((row) => row.employeeId) }), null, { undo: false });
+    if (result && !result.canceled) showToast('Табель за відкритий період експортовано.');
+    return;
+  }
   const renameEmployeeButton = event.target.closest('[data-rename-employee]');
   if (renameEmployeeButton) return openEmployeeRenameModal(renameEmployeeButton.dataset.renameEmployee);
   const moveEmployeeButton = event.target.closest('[data-move-employee]');
@@ -1836,11 +1968,16 @@ appRoot.addEventListener('click', async (event) => {
   if (correctReceiptButton) return openReceiptCorrectionModal(correctReceiptButton.dataset.correctReceipt);
 
   const cell = event.target.closest('[data-cell-employee]');
-  if (cell) return openStatusModal(cell.dataset.cellEmployee, cell.dataset.date);
+  if (cell) {
+    if (ui.journalSelecting || event.ctrlKey || event.metaKey || event.shiftKey) return selectJournalCell(cell.dataset.cellEmployee, cell.dataset.date, event);
+    return openStatusModal(cell.dataset.cellEmployee, cell.dataset.date);
+  }
 
   const monthButton = event.target.closest('[data-month-shift]');
   if (monthButton) {
-    ui.month = monthShift(ui.month, Number(monthButton.dataset.monthShift));
+    if (ui.journalView === 'week') ui.journalAnchor = shiftDate(ui.journalAnchor, 7 * Number(monthButton.dataset.monthShift));
+    else ui.month = monthShift(ui.month, Number(monthButton.dataset.monthShift));
+    clearJournalSelection();
     renderShell();
     return;
   }
@@ -2087,6 +2224,12 @@ window.addEventListener('pointerup', async (event) => {
 });
 
 appRoot.addEventListener('contextmenu', (event) => {
+  const journalCell = event.target.closest('[data-cell-employee]');
+  if (journalCell) {
+    event.preventDefault();
+    openStatusModal(journalCell.dataset.cellEmployee, journalCell.dataset.date);
+    return;
+  }
   const dutyCell = event.target.closest('[data-duty-cell]');
   if (dutyCell) {
     event.preventDefault();
@@ -2100,6 +2243,9 @@ appRoot.addEventListener('contextmenu', (event) => {
 });
 
 appRoot.addEventListener('keydown', (event) => {
+  if (ui.tab === 'journal' && event.key === 'Escape' && ui.journalSelected.length) {
+    clearJournalSelection(); renderShell(); return;
+  }
   const sector = event.target.closest('.sector[data-employee-id]');
   if (sector && (event.key === 'Enter' || event.key === ' ')) {
     event.preventDefault();
@@ -2111,6 +2257,7 @@ appRoot.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
     if (cell.dataset.dutyCell !== undefined) openDutyEmployeeModal(cell.dataset.employeeId, cell.dataset.date);
+    else if (ui.journalSelecting || event.ctrlKey || event.metaKey || event.shiftKey) selectJournalCell(cell.dataset.cellEmployee, cell.dataset.date, event);
     else openStatusModal(cell.dataset.cellEmployee, cell.dataset.date);
     return;
   }
@@ -2124,14 +2271,28 @@ appRoot.addEventListener('keydown', (event) => {
   const next = [...(rows[row + dr]?.querySelectorAll('[data-cell-employee], [data-duty-cell]') || [])][column + dc];
   if (!next) return;
   event.preventDefault();
+  if (event.shiftKey && next.dataset.cellEmployee) {
+    if (!ui.journalSelectionAnchor) ui.journalSelectionAnchor = { employeeId: cell.dataset.cellEmployee, date: cell.dataset.date };
+    selectJournalCell(next.dataset.cellEmployee, next.dataset.date, event);
+  }
   cell.tabIndex = -1;
   next.tabIndex = 0;
   next.focus();
-  next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  next.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
 });
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (event.target.id === 'journal-range-form') {
+    const data = new FormData(event.target);
+    try {
+      const startDate = String(data.get('startDate') || ''); const endDate = String(data.get('endDate') || '');
+      CounterJournal.datesBetween(startDate, endDate);
+      ui.journalFrom = startDate; ui.journalTo = endDate;
+      clearJournalSelection(); renderShell();
+    } catch (error) { showToast(error.message, { error: true }); }
+    return;
+  }
   if (event.target.id === 'settings-form') {
     const form = new FormData(event.target);
     const [closeHour, closeMinute] = String(form.get('closeTime') || '18:00').split(':').map(Number);
@@ -2209,7 +2370,27 @@ appRoot.addEventListener('submit', async (event) => {
   }
 });
 
+appRoot.addEventListener('input', (event) => {
+  if (!event.target.matches('[data-journal-search]')) return;
+  ui.journalQuery = event.target.value; clearJournalSelection(); refreshJournalView();
+});
+
 appRoot.addEventListener('change', async (event) => {
+  if (event.target.matches('[data-journal-month]')) {
+    if (/^\d{4}-\d{2}$/.test(event.target.value)) { ui.month = event.target.value; clearJournalSelection(); renderShell(); }
+    return;
+  }
+  if (event.target.matches('[data-journal-anchor]')) {
+    if (event.target.value) { ui.journalAnchor = event.target.value; clearJournalSelection(); renderShell(); }
+    return;
+  }
+  if (event.target.matches('[data-journal-setting]')) {
+    const key = event.target.dataset.journalSetting;
+    if (!['journalCompact', 'journalHideWeekends', 'journalArchived'].includes(key)) return;
+    ui[key] = event.target.checked;
+    if (key !== 'journalCompact') clearJournalSelection();
+    renderShell(); return;
+  }
   if (event.target.matches('[data-duty-schedule-select]')) {
     const result = await run(
       () => window.counter.switchDutySchedule(event.target.value),
@@ -2243,6 +2424,8 @@ appRoot.addEventListener('change', async (event) => {
 });
 
 modalRoot.addEventListener('change', (event) => {
+  const batchForm = event.target.closest('#journal-batch-form');
+  if (batchForm) invalidateJournalPreview(batchForm);
   if (!event.target.matches('[data-duty-pin]')) return;
   const apply = modalRoot.querySelector('[data-apply-duty-preview]');
   if (apply) apply.disabled = true;
@@ -2251,8 +2434,10 @@ modalRoot.addEventListener('change', (event) => {
 });
 
 modalRoot.addEventListener('input', (event) => {
+  const batchForm = event.target.closest('#journal-batch-form');
+  if (batchForm) invalidateJournalPreview(batchForm);
   if (event.target.closest('#duty-rules-form')) updateDutyRulesSummary();
-  const form = event.target.closest('#submission-form, #receipt-correction-form, #status-period-form');
+  const form = event.target.closest('#submission-form, #receipt-correction-form');
   if (!form) return;
   form.querySelector('[type="submit"]').disabled = true;
   const notice = form.querySelector('[data-submission-preview], [data-period-preview]');
@@ -2300,18 +2485,28 @@ modalRoot.addEventListener('click', async (event) => {
     return;
   }
 
-  const previewPeriodButton = event.target.closest('[data-preview-period]');
-  if (previewPeriodButton) {
-    const form = previewPeriodButton.closest('form');
+  if (event.target.closest('[data-journal-pick-workers]')) {
+    const form = event.target.closest('form');
+    const boxes = [...form.querySelectorAll('[name="employeeIds"]')];
+    const checked = !boxes.every((box) => box.checked);
+    boxes.forEach((box) => { box.checked = checked; });
+    invalidateJournalPreview(form); return;
+  }
+  const previewJournalButton = event.target.closest('[data-preview-journal-batch]');
+  if (previewJournalButton) {
+    const form = previewJournalButton.closest('form');
     if (!form.reportValidity()) return;
+    invalidateJournalPreview(form);
+    const revision = form.dataset.previewRevision;
+    previewJournalButton.disabled = true;
     try {
-      const result = await window.counter.previewStatusPeriod(statusPeriodInput(form));
-      form.querySelector('[data-period-preview]').textContent = `Буде оновлено ${result.count} робочих дн.: ${result.dates.map((date) => formatDate(date)).join(', ')}. Усе зберігається одним кроком скасування.`;
-      form.querySelector('[type="submit"]').disabled = false;
-    } catch (error) {
-      form.querySelector('[type="submit"]').disabled = true;
-      showToast(error.message || String(error), { error: true });
-    }
+      const result = await window.counter.previewJournalBatch(journalBatchInput(form));
+      if (!form.isConnected || form.dataset.previewRevision !== revision) return;
+      form.querySelector('[data-journal-batch-preview]').innerHTML = renderJournalBatchPreview(result);
+      form.dataset.previewToken = result.token;
+      form.querySelector('[type="submit"]').disabled = !result.canApply;
+    } catch (error) { showToast(error.message || String(error), { error: true }); }
+    finally { previewJournalButton.disabled = false; }
     return;
   }
 
@@ -2553,10 +2748,16 @@ modalRoot.addEventListener('submit', async (event) => {
     }
     return;
   }
-  if (event.target.id === 'status-period-form') {
-    const payload = statusPeriodInput(event.target);
-    const result = await run(() => window.counter.setStatusPeriod(payload), null);
-    if (result) { closeModal(); showToast(`Оновлено ${result.count} робочих дн.`, { undo: true }); }
+  if (event.target.id === 'journal-batch-form') {
+    const form = event.target;
+    if (!form.dataset.previewToken || form.querySelector('[type="submit"]').disabled) return;
+    const payload = { ...journalBatchInput(form), expectedToken: form.dataset.previewToken };
+    form.querySelector('[type="submit"]').disabled = true;
+    const result = await run(() => window.counter.applyJournalBatch(payload), null);
+    if (result) {
+      clearJournalSelection(); closeModal(); renderShell();
+      showToast(`Оновлено ${result.count} клітинок. Пропущено: ${result.skipped.length + result.blocked.length}.`, { undo: true });
+    } else if (form.isConnected) invalidateJournalPreview(form);
     return;
   }
   if (event.target.id === 'receipt-correction-form') {

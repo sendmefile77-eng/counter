@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('counter', {
   setStatus: (payload) => ipcRenderer.invoke('record:set-status', payload),
   setStatusPeriod: (payload) => ipcRenderer.invoke('record:set-period', payload),
   previewStatusPeriod: (payload) => ipcRenderer.invoke('record:preview-period', payload),
+  previewJournalBatch: (payload) => ipcRenderer.invoke('journal:preview-batch', payload),
+  applyJournalBatch: (payload) => ipcRenderer.invoke('journal:apply-batch', payload),
+  exportJournal: (filter) => ipcRenderer.invoke('journal:export', filter),
   clearStatus: (employeeId, date) => ipcRenderer.invoke('record:clear', { employeeId, date }),
   setWorkdayOverride: (employeeId, date, note = '') => (
     ipcRenderer.invoke('workday-override:set', { employeeId, date, note })

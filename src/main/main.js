@@ -5,9 +5,11 @@ const {
   STATUS_LABELS,
   allocateReceiptBackward,
   allocateReceiptForward,
+  applyJournalBatch,
   archiveEmployee,
   calculateDutyFairness,
   calculateDutyStatistics,
+  calculateJournalReport,
   calculateStatistics,
   calculateAnalyticsTrend,
   clearDutyWeek,
@@ -32,6 +34,7 @@ const {
   previewDutySchedule,
   previewReceiptCorrection,
   previewManualStatuses,
+  previewJournalBatch,
   previewSubmission,
   removeDutyAssignment,
   recordSubmission,
@@ -199,6 +202,7 @@ function currentSnapshot() {
   return {
     ...store.snapshot(),
     generatedAt: now.toISOString(),
+    appVersion: app.getVersion(),
     dataFilePath: store.filePath,
   };
 }
@@ -372,6 +376,22 @@ function registerIpc() {
     mutate('record:set-period', (state) => setManualStatuses(state, payload))
   ));
   ipcMain.handle('record:preview-period', (_event, payload) => previewManualStatuses(store.state, payload));
+  ipcMain.handle('journal:preview-batch', (_event, payload) => previewJournalBatch(store.state, payload));
+  ipcMain.handle('journal:apply-batch', (_event, payload) => mutate('journal:apply-batch', (state) => applyJournalBatch(state, payload)));
+  ipcMain.handle('journal:export', async (_event, filter) => {
+    const report = calculateJournalReport(store.state, filter);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Експортувати відкритий табель', defaultPath: `counter-journal-${filter.startDate}-${filter.endDate}.csv`,
+      filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    const header = ['Працівник', ...report.dates, 'Подав', 'Пропуски', 'Інші завдання', 'Відсутність', 'Очікує до сьогодні'];
+    const rows = report.rows.map((row) => [row.name, ...row.cells.map((cell) => cell.symbol), row.totals.submitted,
+      row.totals.missed, row.totals.other, row.totals.absent, row.totals.pending]);
+    const safeCsv = (value) => csvEscape(typeof value === 'string' && /^[=+@-]/.test(value) ? `'${value}` : value);
+    fs.writeFileSync(result.filePath, `\uFEFF${[header, ...rows].map((row) => row.map(safeCsv).join(';')).join('\r\n')}\r\n`, 'utf8');
+    return { canceled: false, filePath: result.filePath };
+  });
   ipcMain.handle('record:clear', (_event, { employeeId, date }) => (
     mutate('record:clear', (state) => clearManualRecord(state, employeeId, date))
   ));

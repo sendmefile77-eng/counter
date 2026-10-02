@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const journal = require('./journal');
 
 const SCHEMA_VERSION = 7;
 
@@ -1049,6 +1050,134 @@ function clearManualRecord(state, employeeId, date, now = new Date()) {
   delete state.records[key];
   appendAudit(state, 'status_cleared', { employeeId, date }, now);
   return true;
+}
+
+function journalBatchTargets(state, input) {
+  let cells;
+  if (Array.isArray(input.cells)) cells = input.cells;
+  else {
+    if (!Array.isArray(input.employeeIds) || !input.employeeIds.length) throw new Error('Оберіть працівників.');
+    const dates = journal.datesBetween(input.startDate, input.endDate);
+    const weekdays = Array.isArray(input.weekdays) ? new Set(input.weekdays.map(Number)) : null;
+    cells = input.employeeIds.flatMap((employeeId) => dates
+      .filter((date) => !weekdays || weekdays.has(dayOfWeek(date))).map((date) => ({ employeeId, date })));
+  }
+  if (!cells.length || cells.length > 5490) throw new Error('Оберіть від 1 до 5490 клітинок.');
+  const unique = new Map();
+  for (const item of cells) {
+    getEmployee(state, item?.employeeId);
+    assertDateKey(item?.date);
+    unique.set(recordKey(item.employeeId, item.date), { employeeId: item.employeeId, date: item.date });
+  }
+  return [...unique.values()].sort((a, b) => a.date.localeCompare(b.date) || a.employeeId.localeCompare(b.employeeId));
+}
+
+function journalBatchPlan(state, input, now = new Date()) {
+  const action = input.action || 'status';
+  if (!['status', 'clear', 'make_workday', 'restore_weekend'].includes(action)) throw new Error('Невідома дія табеля.');
+  if (action === 'status' && !MANUAL_STATUSES.has(input.status)) throw new Error('Оберіть допустимий статус.');
+  const cells = journalBatchTargets(state, input);
+  const note = String(input.note || '').trim().slice(0, 500);
+  const draft = clone(state);
+  draft.audit = [];
+  const changes = [];
+  const blocked = [];
+  const skipped = [];
+  for (const { employeeId, date } of cells) {
+    const employee = getEmployee(state, employeeId);
+    const key = recordKey(employeeId, date);
+    const previous = state.records[key];
+    const item = { employeeId, name: employee.name, date,
+      from: isEmployeeWorkday(state, employeeId, date) ? previous?.status || 'pending' : 'weekend' };
+    if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) {
+      skipped.push({ ...item, reason: 'Поза періодом роботи працівника.' });
+      continue;
+    }
+    if (action === 'status' && !isEmployeeWorkday(state, employeeId, date) && !input.includeWeekends) {
+      skipped.push({ ...item, reason: 'Вихідний — включення вихідних вимкнене.' });
+      continue;
+    }
+    if (action === 'status' && input.replaceExisting === false && previous && previous.status !== 'pending') {
+      skipped.push({ ...item, reason: 'Уже має статус; заміну наявних позначок вимкнено.' });
+      continue;
+    }
+    if (action === 'clear' && (!previous || previous.source === 'automatic_close')) {
+      skipped.push({ ...item, reason: previous ? 'Автоматичний пропуск: змініть статус, щоб виправити його.' : 'Ручної позначки немає.' });
+      continue;
+    }
+    if (action === 'make_workday' && isEmployeeWorkday(state, employeeId, date)) {
+      skipped.push({ ...item, reason: 'Уже робочий день.' });
+      continue;
+    }
+    if (action === 'restore_weekend' && !state.workdayOverrides[key]) {
+      skipped.push({ ...item, reason: 'Окремого робочого вихідного немає.' });
+      continue;
+    }
+    if (action === 'restore_weekend' && isWorkday(state, date)) {
+      skipped.push({ ...item, reason: 'Дата є загальним робочим днем за поточними налаштуваннями календаря.' });
+      continue;
+    }
+    if (previous?.receiptId) {
+      blocked.push({ ...item, reason: 'Пов’язано з документом; виправляйте сам документ.' });
+      continue;
+    }
+    // setManualStatus validates first. A blocked status must not leave a
+    // workday override behind when the user skips blocked cells.
+    try {
+      if (action === 'status') {
+        setManualStatus(draft, { employeeId, date, status: input.status, note }, now);
+        if (!isEmployeeWorkday(draft, employeeId, date)) setWorkdayOverride(draft, employeeId, date, note, now);
+      } else if (action === 'clear') clearManualRecord(draft, employeeId, date, now);
+      else if (action === 'make_workday') setWorkdayOverride(draft, employeeId, date, note, now);
+      else clearWorkdayOverride(draft, employeeId, date, now);
+      draft.audit = [];
+      let to = action === 'status' ? input.status : action === 'make_workday' ? 'workday' : action === 'restore_weekend' ? 'weekend' : 'pending';
+      if (action === 'clear' && state.settings.automaticClose !== false && employeeExistsOnDate(employee, date)
+        && isEmployeeWorkday(state, employeeId, date)
+        && (date < dateKeyFromDate(now) || (date === dateKeyFromDate(now) && isPastCloseTime(state, now)))) to = 'missed';
+      changes.push({ ...item, to,
+        madeWorkday: action === 'status' && !isEmployeeWorkday(state, employeeId, date) });
+    } catch (error) {
+      blocked.push({ ...item, reason: error.message });
+    }
+  }
+  const token = crypto.createHash('sha256').update(JSON.stringify({ input: { ...input, expectedToken: undefined },
+    cells: cells.map(({ employeeId, date }) => ({ employeeId, date,
+      employee: getEmployee(state, employeeId), record: state.records[recordKey(employeeId, date)] || null,
+      override: state.workdayOverrides[recordKey(employeeId, date)] || null,
+      duties: dutySchedules(state).map((schedule) => ({ id: schedule.id, ids: schedule.data.assignments[date]?.employeeIds || [] })),
+    })), workdays: state.settings.workdays,
+    closeSettings: action === 'clear' ? { automaticClose: state.settings.automaticClose,
+      closeHour: state.settings.closeHour, closeMinute: state.settings.closeMinute, due: isPastCloseTime(state, now) } : null,
+    today: dateKeyFromDate(now) })).digest('hex');
+  return { draft, action, note, cells, result: { token, count: changes.length, changes, blocked, skipped,
+    canApply: changes.length > 0 && (input.skipBlocked === true || blocked.length === 0) } };
+}
+
+function previewJournalBatch(state, input, now = new Date()) {
+  return journalBatchPlan(state, input, now).result;
+}
+
+function applyJournalBatch(state, input, now = new Date()) {
+  const plan = journalBatchPlan(state, input, now);
+  if (input.expectedToken && input.expectedToken !== plan.result.token) throw new Error('Дані змінилися після перевірки. Перевірте клітинки ще раз.');
+  if (!plan.result.canApply) {
+    if (plan.result.blocked.length) throw new Error(`Дію заблоковано: ${plan.result.blocked[0].reason} Нічого не змінено.`);
+    throw new Error('Немає клітинок, які можна змінити.');
+  }
+  state.records = plan.draft.records;
+  state.workdayOverrides = plan.draft.workdayOverrides;
+  appendAudit(state, 'journal_batch_applied', { action: plan.action, status: input.status || null, note: plan.note,
+    count: plan.result.count, cells: plan.result.changes.map(({ employeeId, date }) => ({ employeeId, date })),
+    blocked: plan.result.blocked.length, skipped: plan.result.skipped.length }, now);
+  return plan.result;
+}
+
+function calculateJournalReport(state, filter, now = new Date()) {
+  if (filter.employeeIds && (!Array.isArray(filter.employeeIds) || filter.employeeIds.some((id) => !state.employees.some((employee) => employee.id === id)))) {
+    throw new Error('Некоректний список працівників.');
+  }
+  return journal.report(state, filter, dateKeyFromDate(now));
 }
 
 function recordSubmission(state, input, now = new Date(), { allowArchived = false } = {}) {
@@ -2996,9 +3125,11 @@ module.exports = {
   addDays,
   allocateReceiptBackward,
   allocateReceiptForward,
+  applyJournalBatch,
   archiveEmployee,
   calculateDutyFairness,
   calculateDutyStatistics,
+  calculateJournalReport,
   calculateStatistics,
   calculateAnalyticsTrend,
   clearDutyWeek,
@@ -3028,6 +3159,7 @@ module.exports = {
   moveEmployee,
   previewReceiptCorrection,
   previewManualStatuses,
+  previewJournalBatch,
   previewSubmission,
   previewDutySchedule,
   removeDutyAssignment,
