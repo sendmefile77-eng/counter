@@ -22,6 +22,7 @@ const {
   duplicateDutySchedule,
   ensureAutomaticMisses,
   generateDutySchedule,
+  getDutyExplanation,
   initializeDutyHistory,
   normalizeState,
   moveEmployee,
@@ -54,6 +55,245 @@ const {
 function localDate(year, monthIndex, day, hour = 9, minute = 0) {
   return new Date(year, monthIndex, day, hour, minute, 0, 0);
 }
+
+function flexibleDutyState(size = 4) {
+  const now = localDate(2026, 7, 1);
+  const state = defaultState(now);
+  const people = Array.from({ length: size }, (_, i) => createEmployee(state, `Гнучкий ${i + 1}`, now));
+  initializeDutyHistory(state, people.map(({ id }) => ({ employeeId: id, total: 0, realized: 0 })), null, now);
+  return { state, people, now };
+}
+
+test('розширені правила зберігаються без прихованого скидання і незалежно для кожного графіка', () => {
+  const { state, now } = flexibleDutyState();
+  const primaryId = state.activeDutyScheduleId;
+  const rules = updateDutyScheduleRules(state, primaryId, {
+    weekdayDutyCount: 15, weekendDutyCount: 0, requiredByWeekday: { 1: 0, 2: 3, 3: '', 4: null },
+    minimumRestDays: 30, minimumRestMode: 'require', maximumDutiesPerWeek: 7,
+    weekendRestWeeks: 8, compensationFrom: 0, compensationTarget: 7,
+    pairHistoryPeriod: 'rolling', pairHistoryDays: 366, shortageBehavior: 'require_full_day',
+    preventConsecutiveDays: false, preventConsecutiveWeekends: false,
+    compensateNextWeek: false, avoidRepeatedPairs: false, planningPriority: 'rotation',
+  }, now);
+  assert.equal(rules.weekdayDutyCount, 15);
+  assert.equal(rules.weekendDutyCount, 0);
+  assert.deepEqual(rules.requiredByWeekday, { 1: 0, 2: 3 });
+  const restored = normalizeState(clone(state), now);
+  assert.deepEqual(restored.duties.rules, rules);
+  const copy = duplicateDutySchedule(restored, primaryId, 'Гнучка копія', now);
+  assert.deepEqual(copy.data.rules, rules);
+  updateDutyScheduleRules(restored, copy.id, { ...rules, minimumRestDays: 0 }, now);
+  assert.equal(restored.dutySchedules.find(({ id }) => id === primaryId).data.rules.minimumRestDays, 30);
+});
+
+test('нуль вимикає день, а порожнє перевизначення успадковує правило; довгий діапазон працює', () => {
+  const { state, people, now } = flexibleDutyState(2);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 1, weekendDutyCount: 0, requiredByWeekday: { 1: 0, 2: '' },
+    preventConsecutiveDays: false, preventConsecutiveWeekends: false, minimumRestDays: 0,
+  }, now);
+  const preview = previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-09-06' }, now);
+  assert.equal(preview.shortages.length, 0);
+  assert.deepEqual(preview.assignments.slice(0, 7).map(({ requiredCount }) => requiredCount), [0, 1, 1, 1, 1, 0, 0]);
+  assert.ok(preview.assignments.every((day) => day.employeeIds.length === day.requiredCount));
+  assert.throws(() => setDutyAssignment(state, { date: '2026-08-24', employeeIds: [people[0].id] }, now), /правилами/);
+  assert.throws(() => previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-30',
+    pinnedAssignments: [{ date: '2026-08-24', employeeIds: [people[0].id] }] }, now), /готовий/);
+});
+
+test('три чергових працюють у ручному складі, закріпленні, генерації та статистиці всіх пар', () => {
+  const { state, people, now } = flexibleDutyState(4);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 3, weekendDutyCount: 3, preventConsecutiveDays: false,
+    preventConsecutiveWeekends: false, minimumRestDays: 0,
+  }, now);
+  const ids = people.slice(0, 3).map(({ id }) => id);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: ids }, now);
+  const preview = previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-26',
+    pinnedAssignments: [{ date: '2026-08-25', employeeIds: ids }] }, now);
+  assert.equal(preview.shortages.length, 0);
+  assert.ok(preview.assignments.every(({ employeeIds }) => employeeIds.length === 3));
+  assert.deepEqual(preview.assignments[1].employeeIds, ids);
+  assert.equal(calculateDutyFairness(state, { startDate: '2026-08-24', endDate: '2026-08-24' }).pairs.length, 3);
+  toggleDutyAssignment(state, people[0].id, '2026-08-27', now);
+  toggleDutyAssignment(state, people[1].id, '2026-08-27', now);
+  toggleDutyAssignment(state, people[2].id, '2026-08-27', now);
+  assert.equal(state.duties.assignments['2026-08-27'].employeeIds.length, 3);
+});
+
+test('15 чергових можна сформувати одним складом без старого ліміту двох людей', () => {
+  const { state, now } = flexibleDutyState(15);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 15, weekendDutyCount: 0, preventConsecutiveDays: false,
+    preventConsecutiveWeekends: false, minimumRestDays: 0,
+  }, now);
+  const preview = previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' }, now);
+  assert.equal(preview.assignments[0].employeeIds.length, 15);
+  assert.equal(preview.shortages.length, 0);
+  assert.equal(preview.fairness.pairs.length, 105);
+});
+
+test('вимкнені заборони і нуль відпочинку справді дозволяють щоденні чергування', () => {
+  const { state, people, now } = flexibleDutyState(1);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 1, weekendDutyCount: 1, preventConsecutiveDays: false,
+    preventConsecutiveWeekends: false, minimumRestDays: 0, maximumDutiesPerWeek: 0,
+  }, now);
+  const preview = previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-09-06' }, now);
+  assert.equal(preview.shortages.length, 0);
+  assert.ok(preview.assignments.every(({ employeeIds }) => employeeIds[0] === people[0].id));
+});
+
+test('30 днів обов’язкового відпочинку враховують історію за межами тижня', () => {
+  const { state, people, now } = flexibleDutyState(1);
+  setDutyAssignment(state, { date: '2026-08-01', employeeIds: [people[0].id], singleApproved: true }, now);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 1, weekendDutyCount: 1, preventConsecutiveDays: false,
+    minimumRestDays: 30, minimumRestMode: 'require', preventConsecutiveWeekends: false,
+  }, now);
+  const filter = { startDate: '2026-08-24', endDate: '2026-08-24' };
+  assert.equal(previewDutySchedule(state, filter, now).shortages.length, 1);
+  assert.throws(() => previewDutySchedule(state, { ...filter,
+    pinnedAssignments: [{ date: filter.startDate, employeeIds: [people[0].id] }] }, now), /відпочинку/);
+  assert.equal(previewDutySchedule(state, { startDate: '2026-09-01', endDate: '2026-09-01' }, now).shortages.length, 0);
+});
+
+test('перерва між уікендами налаштовується і враховує майбутнє ручне чергування', () => {
+  const { state, people, now } = flexibleDutyState(1);
+  setDutyAssignment(state, { date: '2026-08-15', employeeIds: [people[0].id], singleApproved: true }, now);
+  const rules = { weekdayDutyCount: 0, weekendDutyCount: 1, minimumRestDays: 0,
+    preventConsecutiveDays: false, preventConsecutiveWeekends: true, weekendRestWeeks: 2 };
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, rules, now);
+  const filter = { startDate: '2026-08-29', endDate: '2026-08-29' };
+  assert.equal(previewDutySchedule(state, filter, now).shortages.length, 1);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, { ...rules, weekendRestWeeks: 1 }, now);
+  assert.equal(previewDutySchedule(state, filter, now).shortages.length, 0);
+  setDutyAssignment(state, { date: '2026-09-12', employeeIds: [people[0].id] }, now);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, rules, now);
+  assert.equal(previewDutySchedule(state, filter, now).shortages.length, 1);
+  setDutyDayException(state, '2026-08-29', { allowConsecutiveWeekend: true }, now);
+  assert.equal(previewDutySchedule(state, filter, now).shortages.length, 1, 'майбутній день має власний виняток');
+  setDutyDayException(state, '2026-09-12', { allowConsecutiveWeekend: true }, now);
+  assert.equal(previewDutySchedule(state, filter, now).shortages.length, 0);
+});
+
+test('компенсація підтримує нуль минулого тижня і ціль три чергування', () => {
+  const { state, people, now } = flexibleDutyState(4);
+  setDutyAssignment(state, { date: '2026-08-17', employeeIds: [people[1].id, people[2].id] }, now);
+  setDutyAssignment(state, { date: '2026-08-18', employeeIds: [people[3].id], singleApproved: true }, now);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 3, weekendDutyCount: 0, minimumRestDays: 0,
+    preventConsecutiveDays: false, preventConsecutiveWeekends: false,
+    compensateNextWeek: true, compensationFrom: 0, compensationTarget: 3,
+  }, now);
+  const preview = previewDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-26' }, now);
+  assert.equal(preview.assignments.filter(({ employeeIds }) => employeeIds.includes(people[0].id)).length, 3);
+  assert.ok(preview.assignments[0].explanation.selected.find(({ employeeId }) => employeeId === people[0].id)
+    .reasons.some((reason) => reason.includes('було 0') && reason.includes('до 3')));
+});
+
+test('режим повного складу не додає частину людей, але зберігає ручні закріплення', () => {
+  const { state, people, now } = flexibleDutyState(2);
+  const rules = { weekdayDutyCount: 3, weekendDutyCount: 3, minimumRestDays: 0,
+    preventConsecutiveDays: false, preventConsecutiveWeekends: false };
+  const filter = { startDate: '2026-08-24', endDate: '2026-08-24' };
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, rules, now);
+  assert.equal(previewDutySchedule(state, filter, now).assignments[0].employeeIds.length, 2);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, { ...rules, shortageBehavior: 'require_full_day' }, now);
+  assert.equal(previewDutySchedule(state, filter, now).assignments[0].employeeIds.length, 0);
+  toggleDutyAssignment(state, people[0].id, filter.startDate, now);
+  const preview = previewDutySchedule(state, filter, now);
+  assert.deepEqual(preview.assignments[0].employeeIds, [people[0].id]);
+  assert.equal(preview.shortages[0].missing, 2);
+});
+
+test('кожне автоматичне призначення має збережені факти й перевірку замін за повним періодом', () => {
+  const { state, people, now } = flexibleDutyState(4);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, {
+    weekdayDutyCount: 2, weekendDutyCount: 0, minimumRestDays: 0,
+    preventConsecutiveDays: false, preventConsecutiveWeekends: false,
+  }, now);
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-26' }, now);
+  for (const assignment of Object.values(state.duties.assignments)) {
+    const explanation = getDutyExplanation(state, assignment.date, now);
+    assert.equal(explanation.version, 2);
+    assert.equal(explanation.createdAt, now.toISOString());
+    assert.equal(explanation.reconstructed, false);
+    assert.deepEqual(explanation.selected.map(({ employeeId }) => employeeId), assignment.employeeIds);
+    assert.equal(explanation.decision.score.length, explanation.decision.labels.length);
+    for (const item of explanation.selected) {
+      const actual = Object.values(state.duties.assignments).filter(({ employeeIds }) => employeeIds.includes(item.employeeId)).length;
+      assert.equal(item.evidence.weekTotal, actual);
+      assert.equal(item.alternatives.length, people.length - assignment.employeeIds.length);
+      assert.ok(item.alternatives.every(({ outcome }) => outcome !== 'better'));
+      assert.ok(item.alternatives.some(({ outcome }) => ['worse', 'equal', 'blocked'].includes(outcome)));
+    }
+  }
+});
+
+test('пояснення лишається доказом моменту призначення після зміни правил, імені й відновлення бази', () => {
+  const { state, people, now } = flexibleDutyState(2);
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24' }, now);
+  const saved = getDutyExplanation(state, '2026-08-24', now);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, { weekdayDutyCount: 0, minimumRestDays: 30 }, now);
+  renameEmployee(state, people[0].id, 'Нове ім’я', now);
+  const restored = normalizeState(clone(state), now);
+  assert.deepEqual(getDutyExplanation(restored, '2026-08-24', now), saved);
+});
+
+test('ручне призначення має власну причину і не видається за вибір генератора', () => {
+  const { state, people, now } = flexibleDutyState(3);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: [people[0].id, people[1].id], note: 'Підміна на прохання працівника' }, now);
+  let explanation = getDutyExplanation(state, '2026-08-24', now);
+  assert.equal(explanation.provenance, 'manual');
+  assert.equal(explanation.decision, null);
+  assert.equal(explanation.note, 'Підміна на прохання працівника');
+  assert.ok(explanation.selected.every(({ reasons }) => reasons.some((reason) => reason.includes('Підміна'))));
+  assert.ok(explanation.selected.flatMap(({ alternatives }) => alternatives).every(({ outcome }) => outcome === 'manual'));
+  removeDutyAssignment(state, people[1].id, '2026-08-24', now);
+  explanation = getDutyExplanation(state, '2026-08-24', now);
+  assert.deepEqual(explanation.selected.map(({ employeeId }) => employeeId), [people[0].id]);
+  assert.equal(explanation.reconstructed, false);
+});
+
+test('старі або застарілі пояснення чесно відновлюються без вигаданого первісного рішення', () => {
+  const { state, people, now } = flexibleDutyState(2);
+  setDutyAssignment(state, { date: '2026-08-24', employeeIds: people.map(({ id }) => id) }, now);
+  state.duties.assignments['2026-08-24'].explanation = { selected: [], rules: { minimumRestDays: 99 } };
+  const before = clone(state);
+  const explanation = getDutyExplanation(state, '2026-08-24', now);
+  assert.equal(explanation.reconstructed, true);
+  assert.equal(explanation.decision, null);
+  assert.equal(explanation.rules.minimumRestDays, 2);
+  assert.ok(explanation.selected.every(({ reasons }) => reasons[0].includes('не збережено')));
+  assert.deepEqual(state, before);
+});
+
+test('закріплення відрізняється від автоматичного добору, а причина винятку збережена', () => {
+  const { state, people, now } = flexibleDutyState(3);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, { minimumRestDays: 0, preventConsecutiveDays: false }, now);
+  setDutyDayException(state, '2026-08-24', { allowWeeklyLimit: true, note: 'Термінова підміна' }, now);
+  generateDutySchedule(state, { startDate: '2026-08-24', endDate: '2026-08-24',
+    pinnedAssignments: [{ date: '2026-08-24', employeeIds: [people[0].id] }] }, now);
+  const explanation = getDutyExplanation(state, '2026-08-24', now);
+  assert.equal(explanation.exception.note, 'Термінова підміна');
+  assert.ok(explanation.selected.find(({ employeeId }) => employeeId === people[0].id).reasons[0].includes('вручну'));
+  assert.ok(explanation.selected.find(({ employeeId }) => employeeId !== people[0].id).reasons[0].includes('автоматично'));
+});
+
+test('рухома й повна історія пар мають різні перевірні межі', () => {
+  const { state, people, now } = flexibleDutyState(2);
+  setDutyAssignment(state, { date: '2026-08-01', employeeIds: people.map(({ id }) => id) }, now);
+  const rules = { pairHistoryPeriod: 'rolling', pairHistoryDays: 5, minimumRestDays: 0 };
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, rules, now);
+  const filter = { startDate: '2026-08-24', endDate: '2026-08-24' };
+  let preview = previewDutySchedule(state, filter, now);
+  assert.equal(preview.assignments[0].explanation.selected[0].evidence.partners[0].repeats, 0);
+  updateDutyScheduleRules(state, state.activeDutyScheduleId, { ...rules, pairHistoryPeriod: 'all' }, now);
+  preview = previewDutySchedule(state, filter, now);
+  assert.equal(preview.assignments[0].explanation.selected[0].evidence.partners[0].repeats, 1);
+  assert.deepEqual(preview.assignments[0].explanation.selected[0].evidence.partners[0].dates, ['2026-08-01']);
+});
 
 test('о 18:00 незаповнений робочий день автоматично стає пропуском', () => {
   const beforeClose = localDate(2026, 7, 17, 17, 59);

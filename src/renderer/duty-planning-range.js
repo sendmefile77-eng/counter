@@ -78,9 +78,10 @@
       const date = shiftDate(startDate, offset);
       const assignment = assignments[date];
       const weekday = dateFromKey(date).getDay();
-      const required = Number(rules?.requiredByWeekday?.[weekday]
-        || ((weekday === 0 || weekday === 6)
-          ? rules?.weekendDutyCount : rules?.weekdayDutyCount)) === 1 ? 1 : 2;
+      const configured = rules?.requiredByWeekday?.[weekday]
+        ?? ((weekday === 0 || weekday === 6) ? rules?.weekendDutyCount : rules?.weekdayDutyCount);
+      const count = Number(configured ?? 2);
+      const required = Number.isInteger(count) && count >= 0 && count <= 15 ? count : 2;
       const assigned = new Set(assignment?.employeeIds || []).size;
       if (assigned < required && !(assigned === 1 && assignment?.singleApproved)) return false;
     }
@@ -90,6 +91,8 @@
   function nextDutyPlanningRange(currentSnapshot, now = new Date()) {
     const duties = currentSnapshot?.duties;
     if (!duties || typeof duties !== 'object') return nextCalendarWeek(now);
+    // With no scheduled days, there is no unfinished week to search for.
+    if (weekHasPlanningRecord({}, weekStart(localDateKey(now)), duties.rules)) return nextCalendarWeek(now);
 
     const assignments = duties.assignments && typeof duties.assignments === 'object'
       ? duties.assignments

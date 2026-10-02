@@ -22,13 +22,17 @@ const DEFAULT_DUTY_RULES = Object.freeze({
   requiredByWeekday: {},
   preventConsecutiveDays: true,
   preventConsecutiveWeekends: true,
+  weekendRestWeeks: 1,
   minimumRestDays: 2,
   minimumRestMode: 'prefer',
   planningPriority: 'balanced',
   maximumDutiesPerWeek: 0,
   compensateNextWeek: true,
+  compensationFrom: 1,
+  compensationTarget: 2,
   avoidRepeatedPairs: true,
   pairHistoryPeriod: 'year',
+  pairHistoryDays: 90,
   shortageBehavior: 'leave_empty',
 });
 
@@ -168,25 +172,31 @@ function normalizeDutyRules(input = {}) {
   const overrides = source.requiredByWeekday && typeof source.requiredByWeekday === 'object'
     ? source.requiredByWeekday : {};
   return {
-    weekdayDutyCount: clampInteger(source.weekdayDutyCount, 1, 2, 2),
-    weekendDutyCount: clampInteger(source.weekendDutyCount, 1, 2, 2),
+    weekdayDutyCount: clampInteger(source.weekdayDutyCount, 0, 15, 2),
+    weekendDutyCount: clampInteger(source.weekendDutyCount, 0, 15, 2),
     requiredByWeekday: Object.fromEntries(
-      Array.from({ length: 7 }, (_, weekday) => [weekday, Number(overrides[weekday])])
-        .filter(([, count]) => count === 1 || count === 2),
+      Object.entries(overrides)
+        .filter(([weekday, count]) => /^[0-6]$/.test(weekday) && count !== '' && count != null)
+        .map(([weekday, count]) => [weekday, Number(count)])
+        .filter(([, count]) => Number.isInteger(count) && count >= 0 && count <= 15),
     ),
     preventConsecutiveDays: source.preventConsecutiveDays !== false,
     preventConsecutiveWeekends: source.preventConsecutiveWeekends !== false,
-    minimumRestDays: clampInteger(source.minimumRestDays, 0, 6, 2),
+    weekendRestWeeks: clampInteger(source.weekendRestWeeks, 1, 8, 1),
+    minimumRestDays: clampInteger(source.minimumRestDays, 0, 30, 2),
     minimumRestMode: source.minimumRestMode === 'require' ? 'require' : 'prefer',
     planningPriority: ['balanced', 'rest', 'rotation', 'pairs'].includes(source.planningPriority)
       ? source.planningPriority : 'balanced',
     maximumDutiesPerWeek: clampInteger(source.maximumDutiesPerWeek, 0, 7, 0),
     compensateNextWeek: source.compensateNextWeek !== false,
+    compensationFrom: clampInteger(source.compensationFrom, 0, 6, 1),
+    compensationTarget: clampInteger(source.compensationTarget, 1, 7, 2),
     avoidRepeatedPairs: source.avoidRepeatedPairs !== false,
-    pairHistoryPeriod: ['month', 'quarter', 'year'].includes(source.pairHistoryPeriod)
+    pairHistoryPeriod: ['month', 'quarter', 'year', 'rolling', 'all'].includes(source.pairHistoryPeriod)
       ? source.pairHistoryPeriod
       : 'year',
-    shortageBehavior: 'leave_empty',
+    pairHistoryDays: clampInteger(source.pairHistoryDays, 1, 366, 90),
+    shortageBehavior: source.shortageBehavior === 'require_full_day' ? 'require_full_day' : 'leave_empty',
   };
 }
 
@@ -1420,12 +1430,14 @@ function clearDutyRestriction(state, employeeId, date, now = new Date()) {
   return changed;
 }
 
-function setDutyAssignment(state, { date, employeeIds, singleApproved = false }, now = new Date()) {
+function setDutyAssignment(state, { date, employeeIds, singleApproved = false, note = '' }, now = new Date()) {
   assertDateKey(date);
   assertDutyDateUnlocked(state, date);
   if (!Array.isArray(employeeIds)) throw new Error('Не передано склад чергових.');
   const ids = [...new Set(employeeIds.filter(Boolean))];
-  if (ids.length > 2) throw new Error('На один день можна призначити не більше двох чергових.');
+  if (ids.length > dutyRequiredCount(state, date)) {
+    throw new Error(`За правилами на цей день потрібно ${dutyRequiredCount(state, date)} чергових. Спочатку змініть кількість у правилах.`);
+  }
   if (ids.length === 1 && dutyRequiredCount(state, date) > 1 && !singleApproved) {
     throw new Error('Для чергування однієї людини потрібне окреме підтвердження.');
   }
@@ -1447,8 +1459,10 @@ function setDutyAssignment(state, { date, employeeIds, singleApproved = false },
       singleApproved: ids.length === 1
         && (Boolean(singleApproved) || dutyRequiredCount(state, date) === 1),
       source: 'manual',
+      note: String(note || '').trim().slice(0, 500),
       updatedAt: now.toISOString(),
     };
+    state.duties.assignments[date].explanation = explainDutyAssignment(state, date, ids, { now, provenance: 'manual' });
   }
   appendAudit(state, 'duty_assignment_set', { date, employeeIds: ids, singleApproved }, now);
   return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
@@ -1481,7 +1495,9 @@ function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
   } else {
     const restriction = dutyRestriction(state, employeeId, date);
     if (restriction) throw new Error(`«${employee.name}» недоступний для чергування на цю дату.`);
-    if (ids.length >= 2) throw new Error('На цей день уже призначено двох чергових. Спочатку зніміть одного з них.');
+    if (ids.length >= dutyRequiredCount(state, date)) {
+      throw new Error('Склад цього дня вже заповнено за правилами. Змініть кількість або зніміть одного з чергових.');
+    }
     ids.push(employeeId);
   }
 
@@ -1497,8 +1513,10 @@ function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
         || (existingIndex < 0 && previous?.singleApproved === true)
       ),
       source: 'manual_quick',
+      note: previous?.note || '',
       updatedAt: now.toISOString(),
     };
+    state.duties.assignments[date].explanation = explainDutyAssignment(state, date, ids, { now, provenance: 'manual' });
   }
   appendAudit(state, 'duty_assignment_cycled', {
     employeeId,
@@ -1532,6 +1550,7 @@ function removeDutyAssignment(
       source: 'manual_quick',
       updatedAt: now.toISOString(),
     };
+    state.duties.assignments[date].explanation = explainDutyAssignment(state, date, ids, { now, provenance: 'manual' });
   }
   appendAudit(state, auditAction, {
     employeeId,
@@ -1648,8 +1667,8 @@ function applyDutyPins(state, pinnedAssignments, startDate, endDate, now) {
       throw new Error('Закріплення має бути в межах вибраного тижня без повторення дати.');
     }
     if (!Array.isArray(entry.employeeIds) || entry.employeeIds.length < 1
-      || entry.employeeIds.length > 2 || new Set(entry.employeeIds).size !== entry.employeeIds.length) {
-      throw new Error('Для закріплення оберіть одного або двох різних працівників.');
+      || entry.employeeIds.length > 15 || new Set(entry.employeeIds).size !== entry.employeeIds.length) {
+      throw new Error('Для закріплення оберіть від 1 до 15 різних працівників.');
     }
     const existing = state.duties.assignments[date];
     const fixedIds = dutyFixedEmployeeIds(existing);
@@ -1680,22 +1699,22 @@ function applyDutyPins(state, pinnedAssignments, startDate, endDate, now) {
     ))) {
       throw new Error(`Закріплення на ${date} створює чергування два дні поспіль. Змініть склад або задайте разовий виняток.`);
     }
-    if (rules.minimumRestMode === 'require' && !exception.allowRestGap
+    if (rules.minimumRestMode === 'require'
       && newIds.some((id) => {
         for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
-          if (fixedOn(addDays(date, -offset)).includes(id)
-            || fixedOn(addDays(date, offset)).includes(id)) return true;
+          const previous = addDays(date, -offset);
+          const next = addDays(date, offset);
+          if ((!exception.allowRestGap && fixedOn(previous).includes(id))
+            || (!state.duties.dayExceptions?.[next]?.allowRestGap && fixedOn(next).includes(id))) return true;
         }
         return false;
       })) {
       throw new Error(`Закріплення на ${date} порушує обов’язковий інтервал відпочинку.`);
     }
-    if (rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
+    if (rules.preventConsecutiveWeekends
       && [0, 6].includes(dayOfWeek(date))) {
-      const saturday = dayOfWeek(date) === 6 ? date : addDays(date, -1);
-      if (newIds.some((id) => [addDays(saturday, -7), addDays(saturday, -6)]
-        .some((previous) => fixedOn(previous).includes(id)))) {
-        throw new Error(`Закріплення на ${date} повторює сусідній уікенд.`);
+      if (newIds.some((id) => dutyWeekendConflict(state, date, id, rules, fixedOn))) {
+        throw new Error(`Закріплення на ${date} порушує інтервал між уікендами.`);
       }
     }
     if (rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit) {
@@ -1715,8 +1734,13 @@ function applyDutyPins(state, pinnedAssignments, startDate, endDate, now) {
       realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
       singleApproved: false,
       source: 'manual_quick',
+      note: previous?.note || '',
       updatedAt: now.toISOString(),
     };
+  }
+  for (const date of proposed.keys()) {
+    const assignment = state.duties.assignments[date];
+    assignment.explanation = explainDutyAssignment(state, date, assignment.employeeIds, { now, provenance: 'manual' });
   }
   if (proposed.size) appendAudit(state, 'duty_pins_applied', {
     scheduleId: state.activeDutyScheduleId,
@@ -1751,25 +1775,21 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
     fixed: false,
     missing: needed,
   }];
-  for (const employeeId of candidates) {
-    options.push({
-      employeeIds: [...fixedIds, employeeId],
-      addedIds: [employeeId],
-      fixed: false,
-      missing: needed - 1,
-    });
-  }
-  if (needed >= 2) {
-    for (let left = 0; left < candidates.length - 1; left += 1) {
-      for (let right = left + 1; right < candidates.length; right += 1) {
-        options.push({
-          employeeIds: [...fixedIds, candidates[left], candidates[right]],
-          addedIds: [candidates[left], candidates[right]],
-          fixed: false,
-          missing: needed - 2,
-        });
-      }
+  const chosen = [];
+  const combinations = (from, size) => {
+    if (chosen.length === size) {
+      options.push({ employeeIds: [...fixedIds, ...chosen], addedIds: [...chosen],
+        fixed: false, missing: needed - size });
+      return;
     }
+    for (let index = from; index <= candidates.length - (size - chosen.length); index += 1) {
+      chosen.push(candidates[index]);
+      combinations(index + 1, size);
+      chosen.pop();
+    }
+  };
+  for (let size = 1; size <= Math.min(needed, candidates.length); size += 1) {
+    if (rules.shortageBehavior !== 'require_full_day' || size === needed) combinations(0, size);
   }
   return options;
 }
@@ -1777,7 +1797,7 @@ function dutyAssignmentOptions(state, date, dutyQueue, employeesById) {
 function dutyRequiredCount(state, date) {
   const rules = normalizeDutyRules(state.duties.rules);
   const weekday = dayOfWeek(date);
-  if (rules.requiredByWeekday[weekday]) return rules.requiredByWeekday[weekday];
+  if (Object.hasOwn(rules.requiredByWeekday, weekday)) return rules.requiredByWeekday[weekday];
   return weekday === 0 || weekday === 6
     ? rules.weekendDutyCount
     : rules.weekdayDutyCount;
@@ -1800,13 +1820,13 @@ function dutyPreferenceScore(rules, metrics) {
 }
 
 function dutyRestConflict(state, date, employeeId, rules, selectedOptions) {
-  if (rules.minimumRestDays < 1 || state.duties.dayExceptions?.[date]?.allowRestGap) return false;
+  if (rules.minimumRestDays < 1) return false;
   for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
     const previous = addDays(date, -offset);
     const next = addDays(date, offset);
-    if ((selectedOptions?.get(previous)?.employeeIds
+    if (!state.duties.dayExceptions?.[date]?.allowRestGap && (selectedOptions?.get(previous)?.employeeIds
       || state.duties.assignments[previous]?.employeeIds || []).includes(employeeId)) return true;
-    if ((selectedOptions?.get(next)?.employeeIds
+    if (!state.duties.dayExceptions?.[next]?.allowRestGap && (selectedOptions?.get(next)?.employeeIds
       || dutyFixedEmployeeIds(state.duties.assignments[next])).includes(employeeId)) return true;
   }
   return false;
@@ -1815,6 +1835,35 @@ function dutyRestConflict(state, date, employeeId, rules, selectedOptions) {
 function dutyPairKey(employeeIds) {
   if (employeeIds.length !== 2) return '';
   return [...employeeIds].sort().join('|');
+}
+
+function dutyPairKeys(employeeIds) {
+  const ids = [...new Set(employeeIds)];
+  const keys = [];
+  for (let left = 0; left < ids.length; left += 1) {
+    for (let right = left + 1; right < ids.length; right += 1) {
+      keys.push(dutyPairKey([ids[left], ids[right]]));
+    }
+  }
+  return keys;
+}
+
+function dutyWeekendConflict(state, date, employeeId, rules, idsOnDate) {
+  if (!rules.preventConsecutiveWeekends || ![0, 6].includes(dayOfWeek(date))) return false;
+  const saturday = dayOfWeek(date) === 6 ? date : addDays(date, -1);
+  const idsOn = idsOnDate || ((day) => day < date
+    ? state.duties.assignments[day]?.employeeIds || []
+    : dutyFixedEmployeeIds(state.duties.assignments[day]));
+  const exception = state.duties.dayExceptions || {};
+  for (let week = 1; week <= rules.weekendRestWeeks; week += 1) {
+    for (const offset of [0, 1]) {
+      const previous = addDays(saturday, -7 * week + offset);
+      const next = addDays(saturday, 7 * week + offset);
+      if (!exception[date]?.allowConsecutiveWeekend && idsOn(previous).includes(employeeId)) return true;
+      if (!exception[next]?.allowConsecutiveWeekend && idsOn(next).includes(employeeId)) return true;
+    }
+  }
+  return false;
 }
 
 function dutyBalanceMetrics(counts, employeeIds) {
@@ -1845,6 +1894,7 @@ function dutyCountsBetween(state, startDate, endDate) {
 }
 
 function dutyCompensationTargets(state, startDate, eligibleEmployeeIds) {
+  const rules = normalizeDutyRules(state.duties.rules);
   const currentWeekStart = dutyWeekStart(startDate);
   const previousWeekStart = addDays(currentWeekStart, -7);
   const previousWeekEnd = addDays(currentWeekStart, -1);
@@ -1852,8 +1902,8 @@ function dutyCompensationTargets(state, startDate, eligibleEmployeeIds) {
   const eligible = new Set(eligibleEmployeeIds);
   return new Map(
     state.duties.participantIds
-      .filter((employeeId) => eligible.has(employeeId) && previousWeekCounts[employeeId] === 1)
-      .map((employeeId) => [employeeId, 2]),
+      .filter((employeeId) => eligible.has(employeeId) && previousWeekCounts[employeeId] === rules.compensationFrom)
+      .map((employeeId) => [employeeId, rules.compensationTarget]),
   );
 }
 
@@ -1866,6 +1916,8 @@ function dutyCompensationDeficit(counts, compensationTargets) {
 }
 
 function dutyPairHistoryStart(rules, date) {
+  if (rules.pairHistoryPeriod === 'all') return '0001-01-01';
+  if (rules.pairHistoryPeriod === 'rolling') return addDays(date, -rules.pairHistoryDays);
   const [year, month] = date.split('-').map(Number);
   if (rules.pairHistoryPeriod === 'month') {
     return `${year}-${String(month).padStart(2, '0')}-01`;
@@ -1908,7 +1960,11 @@ function exactDutyBlockPlan(
     }
   }
 
-  const beamWidth = 1200;
+  // Larger teams have many more combinations. Bound memory without changing
+  // the established search width for the original one/two-person schedules.
+  const largestOptionCount = Math.max(...optionsByDate.map((options) => options.length));
+  const beamWidth = largestOptionCount > 200
+    ? Math.max(1, Math.min(1200, Math.floor(100000 / largestOptionCount))) : 1200;
   let beam = [{
     selectedOptions: new Map(),
     counts: { ...rangeCounts },
@@ -1940,9 +1996,10 @@ function exactDutyBlockPlan(
         const exception = state.duties.dayExceptions?.[date] || {};
         if (rules.preventConsecutiveDays && !exception.allowConsecutiveDay
           && option.addedIds.some((employeeId) => previousDayIds.has(employeeId))) continue;
-        if (rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
-          && (weekday === 6 || weekday === 0)
-          && option.addedIds.some((employeeId) => previousWeekendIds.has(employeeId))) continue;
+        if (option.addedIds.some((id) => dutyWeekendConflict(state, date, id, rules,
+          (day) => partial.selectedOptions.get(day)?.employeeIds
+            || (day < dates[0] ? state.duties.assignments[day]?.employeeIds || []
+              : dutyFixedEmployeeIds(state.duties.assignments[day]))))) continue;
         if (rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit
           && option.addedIds.some((employeeId) => (
             (partial.counts[employeeId] || 0) >= rules.maximumDutiesPerWeek
@@ -1956,7 +2013,7 @@ function exactDutyBlockPlan(
         let addedQueueCost = 0;
         for (const employeeId of option.addedIds) {
           if (!exception.allowRestGap && rules.minimumRestDays > 0) {
-            for (let offset = 2; offset <= rules.minimumRestDays; offset += 1) {
+            for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
               const priorIds = new Set(
                 partial.selectedOptions.get(addDays(date, -offset))?.employeeIds
                   || state.duties.assignments[addDays(date, -offset)]?.employeeIds
@@ -1975,10 +2032,12 @@ function exactDutyBlockPlan(
         }
         const nextPairCounts = new Map(partial.pairCounts);
         let addedPairPenalty = 0;
-        if (!option.fixed && option.employeeIds.length === 2) {
-          const pairKey = dutyPairKey(option.employeeIds);
-          addedPairPenalty = rules.avoidRepeatedPairs ? nextPairCounts.get(pairKey) || 0 : 0;
-          nextPairCounts.set(pairKey, addedPairPenalty + 1);
+        if (!option.fixed) {
+          for (const pairKey of dutyPairKeys(option.employeeIds)) {
+            const repeats = nextPairCounts.get(pairKey) || 0;
+            addedPairPenalty += rules.avoidRepeatedPairs ? repeats : 0;
+            nextPairCounts.set(pairKey, repeats + 1);
+          }
         }
         const nextQueue = [...partial.queue];
         moveDutyQueueToEnd(nextQueue, option.employeeIds);
@@ -2067,9 +2126,10 @@ function exactDutyBlockPlan(
       for (const option of options) {
         if (rules.preventConsecutiveDays && !exception.allowConsecutiveDay
           && option.addedIds.some((id) => previousIds.includes(id))) continue;
-        if (rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
-          && (weekday === 6 || weekday === 0)
-          && option.addedIds.some((id) => previousWeekendIds.has(id))) continue;
+        if (option.addedIds.some((id) => dutyWeekendConflict(state, date, id, rules,
+          (day) => selected.get(day)?.employeeIds
+            || (day < dates[0] ? state.duties.assignments[day]?.employeeIds || []
+              : dutyFixedEmployeeIds(state.duties.assignments[day]))))) continue;
         if (rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit
           && option.addedIds.some((id) => (counts[id] || 0) >= rules.maximumDutiesPerWeek)) continue;
         if (rules.minimumRestMode === 'require'
@@ -2102,6 +2162,75 @@ function exactDutyBlockPlan(
       .filter((item) => item.missing > 0),
     searchLimited,
   };
+}
+
+function dutyDecisionBasis(state, dates, queue, counts, balanceIds, pairs, targets) {
+  return {
+    dates, queue: [...queue], counts: { ...counts }, balanceIds: [...balanceIds],
+    pairs: [...pairs], targets: [...targets],
+    fixed: Object.fromEntries(dates.map((date) => [date, dutyFixedEmployeeIds(state.duties.assignments[date])])),
+    approvedSingles: dates.filter((date) => state.duties.assignments[date]?.singleApproved),
+    exceptions: clone(state.duties.dayExceptions || {}), rules: normalizeDutyRules(state.duties.rules),
+    required: Object.fromEntries(dates.map((date) => [date, dutyRequiredCount(state, date)])),
+    outside: Object.fromEntries(Object.entries(state.duties.assignments)
+      .filter(([date]) => !dates.includes(date)).map(([date, assignment]) => [date, [...(assignment.employeeIds || [])]])),
+  };
+}
+
+function dutyDecisionMetrics(basis, plan) {
+  const rules = basis.rules;
+  const counts = { ...basis.counts };
+  const queue = [...basis.queue];
+  const pairCounts = new Map(basis.pairs);
+  const idsOn = (date) => plan.get(date) || basis.outside[date] || [];
+  const weekendDate = basis.dates.find((date) => [0, 6].includes(dayOfWeek(date)));
+  const saturday = weekendDate && (dayOfWeek(weekendDate) === 6 ? weekendDate : addDays(weekendDate, -1));
+  const previousWeekend = new Set(saturday
+    ? [addDays(saturday, -7), addDays(saturday, -6)].flatMap(idsOn) : []);
+  let missing = 0;
+  let cooldownViolations = 0;
+  let weekendReservePenalty = 0;
+  let repeatedPairPenalty = 0;
+  let queueCost = 0;
+  for (const date of basis.dates) {
+    const ids = idsOn(date);
+    const fixed = basis.fixed[date];
+    const added = ids.filter((id) => !fixed.includes(id));
+    const complete = fixed.length >= basis.required[date] || basis.approvedSingles.includes(date);
+    missing += basis.approvedSingles.includes(date) ? 0 : Math.max(0, basis.required[date] - ids.length);
+    for (const id of added) {
+      counts[id] = (counts[id] || 0) + 1;
+      queueCost += Math.max(0, queue.indexOf(id));
+      if (!basis.exceptions[date]?.allowRestGap) {
+        for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
+          if (idsOn(addDays(date, -offset)).includes(id)) cooldownViolations += 1;
+        }
+      }
+      if (weekendDate && ![0, 6].includes(dayOfWeek(date)) && !previousWeekend.has(id)) weekendReservePenalty += 1;
+    }
+    if (!complete) {
+      for (const key of dutyPairKeys(ids)) {
+        const repeats = pairCounts.get(key) || 0;
+        repeatedPairPenalty += rules.avoidRepeatedPairs ? repeats : 0;
+        pairCounts.set(key, repeats + 1);
+      }
+    }
+    moveDutyQueueToEnd(queue, ids);
+  }
+  const balance = dutyBalanceMetrics(counts, basis.balanceIds);
+  const metrics = { spread: balance.spread, squares: balance.squares, cooldownViolations,
+    weekendReservePenalty, repeatedPairPenalty, queueCost,
+    compensationDeficit: rules.compensateNextWeek ? dutyCompensationDeficit(counts, new Map(basis.targets)) : 0 };
+  return { ...metrics, missing, score: [missing, ...dutyPreferenceScore(rules, metrics)] };
+}
+
+function dutyScoreLabels(rules) {
+  const common = ['Різниця навантаження', 'Невиконана компенсація', 'Скорочення бажаного відпочинку',
+    'Резерв людей на вихідні', 'Повтори пар', 'Сума квадратів навантаження', 'Відхилення від черги'];
+  const order = rules.planningPriority === 'rest' ? [2, 0, 1, 3, 4, 5, 6]
+    : rules.planningPriority === 'rotation' ? [6, 0, 1, 2, 3, 4, 5]
+      : rules.planningPriority === 'pairs' ? [4, 0, 1, 2, 3, 5, 6] : [0, 1, 2, 3, 4, 5, 6];
+  return ['Порожні місця', ...order.map((index) => common[index])];
 }
 
 function writeGeneratedDutyAssignment(state, date, employeeIds, now, shortage = false) {
@@ -2163,8 +2292,9 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       }
     }
     if (assignment.date >= pairHistoryStart && assignment.date <= endDate) {
-      const pairKey = dutyPairKey(assignment.employeeIds || []);
-      if (pairKey) pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+      for (const pairKey of dutyPairKeys(assignment.employeeIds || [])) {
+        pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+      }
     }
   }
   const balanceEmployeeIds = state.duties.participantIds.filter((employeeId) => {
@@ -2185,6 +2315,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
   const shortages = [];
   const uncertainDates = [];
   const weekendConflicts = [];
+  const changedDates = new Set();
   let generated = 0;
   let cursor = startDate;
 
@@ -2193,6 +2324,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
     for (let date = startDate; date <= endDate; date = addDays(date, 1)) {
       planningDates.push(date);
     }
+    const basis = dutyDecisionBasis(state, planningDates, dutyQueue, rangeCounts, balanceEmployeeIds, pairCounts, compensationTargets);
     const plan = exactDutyBlockPlan(
       state,
       planningDates,
@@ -2203,6 +2335,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       pairCounts,
       compensationTargets,
     );
+    improveDutyPlan(state, basis, plan);
     shortages.push(...plan.shortages);
     if (plan.searchLimited) uncertainDates.push(...plan.shortages.map((item) => item.date));
     for (const date of planningDates) {
@@ -2215,8 +2348,14 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
         now,
         selected.length < dutyRequiredCount(state, date),
       );
-      if (changed) generated += 1;
+      if (changed) { generated += 1; changedDates.add(date); }
       moveDutyQueueToEnd(dutyQueue, addedIds);
+    }
+    for (const date of new Set([...changedDates, ...pinnedAssignments.map((entry) => entry.date)])) {
+      const assignment = state.duties.assignments[date];
+      assignment.explanation = explainDutyAssignment(state, date, assignment.employeeIds, {
+        now, provenance: assignment.source.startsWith('manual') ? 'manual' : 'generated', basis,
+      });
     }
     if (generated > 0) {
       appendAudit(state, 'duty_schedule_generated', {
@@ -2270,11 +2409,13 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
         const changed = writeGeneratedDutyAssignment(state, date, selected, now, shortage);
         if (changed) {
           generated += 1;
+          changedDates.add(date);
           for (const employeeId of addedIds) {
             rangeCounts[employeeId] = (rangeCounts[employeeId] || 0) + 1;
           }
-          const pairKey = dutyPairKey(selected);
-          if (pairKey) pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+          for (const pairKey of dutyPairKeys(selected)) {
+            pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+          }
         }
         moveDutyQueueToEnd(dutyQueue, selected);
       }
@@ -2287,7 +2428,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
     const existingComplete = existingIds.length >= dutyRequiredCount(state, cursor)
       || (existingIds.length === 1 && existing.singleApproved);
     if (existingComplete) {
-      moveDutyQueueToEnd(dutyQueue, existing.employeeIds);
+      moveDutyQueueToEnd(dutyQueue, existing?.employeeIds || []);
       cursor = addDays(cursor, 1);
       continue;
     }
@@ -2312,9 +2453,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
         || option.addedIds.every((id) => !dutyRestConflict(state, cursor, id, rules)))
       .filter((option) => rules.maximumDutiesPerWeek === 0 || exception.allowWeeklyLimit
         || option.addedIds.every((id) => (weekCounts[id] || 0) < rules.maximumDutiesPerWeek))
-      .filter((option) => !rules.preventConsecutiveWeekends || exception.allowConsecutiveWeekend
-        || ![0, 6].includes(dayOfWeek(cursor))
-        || option.addedIds.every((id) => !previousWeekendIds.has(id)));
+      .filter((option) => option.addedIds.every((id) => !dutyWeekendConflict(state, cursor, id, rules)));
     let best = null;
     for (const option of options) {
       const nextDate = addDays(cursor, 1);
@@ -2330,7 +2469,8 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
             const employee = employeesById.get(employeeId);
             return employee?.active
               && !nextFixedIds.includes(employeeId)
-              && !selectedToday.has(employeeId)
+              && (!rules.preventConsecutiveDays || state.duties.dayExceptions?.[nextDate]?.allowConsecutiveDay
+                || !selectedToday.has(employeeId))
               && !dutyRestriction(state, employeeId, nextDate);
           });
           nextDayMissing = Math.max(
@@ -2344,7 +2484,7 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       let queueCost = 0;
       for (const employeeId of option.addedIds) {
         if (!exception.allowRestGap && rules.minimumRestDays > 0) {
-          for (let offset = 2; offset <= rules.minimumRestDays; offset += 1) {
+          for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
             if (state.duties.assignments[addDays(cursor, -offset)]?.employeeIds?.includes(employeeId)) {
               cooldownViolations += 1;
             }
@@ -2358,10 +2498,8 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       const compensationDeficit = rules.compensateNextWeek
         ? dutyCompensationDeficit(simulatedCounts, compensationTargets)
         : 0;
-      const pairKey = dutyPairKey(option.employeeIds);
-      const repeatedPairPenalty = rules.avoidRepeatedPairs && pairKey
-        ? pairCounts.get(pairKey) || 0
-        : 0;
+      const repeatedPairPenalty = rules.avoidRepeatedPairs
+        ? dutyPairKeys(option.employeeIds).reduce((sum, key) => sum + (pairCounts.get(key) || 0), 0) : 0;
       const score = [option.missing, nextDayMissing, ...dutyPreferenceScore(rules, {
         spread: balance.spread, compensationDeficit, cooldownViolations,
         weekendReservePenalty: 0, repeatedPairPenalty, squares: balance.squares, queueCost,
@@ -2384,12 +2522,20 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
       for (const employeeId of addedIds) {
         rangeCounts[employeeId] = (rangeCounts[employeeId] || 0) + 1;
       }
-      const pairKey = dutyPairKey(selected);
-      if (pairKey) pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+      for (const pairKey of dutyPairKeys(selected)) {
+        pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+      }
     }
     moveDutyQueueToEnd(dutyQueue, addedIds);
-    if (changed) generated += 1;
+    if (changed) { generated += 1; changedDates.add(cursor); }
     cursor = addDays(cursor, 1);
+  }
+
+  for (const date of new Set([...changedDates, ...pinnedAssignments.map((entry) => entry.date)])) {
+    const assignment = state.duties.assignments[date];
+    assignment.explanation = explainDutyAssignment(state, date, assignment.employeeIds, {
+      now, provenance: assignment.source.startsWith('manual') ? 'manual' : 'generated',
+    });
   }
 
   if (generated > 0) {
@@ -2430,83 +2576,169 @@ function dutyRestrictionLabel(code) {
   return labels[code] || code;
 }
 
-function explainDutyAssignment(state, date, employeeIds) {
-  const selectedIds = [...new Set(employeeIds || [])];
-  const rules = normalizeDutyRules(state.duties.rules);
-  const weekStart = dutyWeekStart(date);
-  const previousWeekStart = addDays(weekStart, -7);
-  const previousWeekEnd = addDays(weekStart, -1);
-  const currentCounts = dutyCountsBetween(state, weekStart, addDays(date, -1));
-  const previousCounts = dutyCountsBetween(state, previousWeekStart, previousWeekEnd);
-  const assignmentsBefore = Object.values(state.duties.assignments)
-    .filter((assignment) => assignment.date < date)
-    .sort((left, right) => right.date.localeCompare(left.date));
-  const pairCounts = new Map();
-  const pairHistoryStart = dutyPairHistoryStart(rules, date);
-  for (const assignment of assignmentsBefore) {
-    if (assignment.date < pairHistoryStart) continue;
-    const key = dutyPairKey(assignment.employeeIds || []);
-    if (key) pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+function dutyCandidateConflicts(state, date, employeeId, rules, idsOnDate) {
+  const idsOn = idsOnDate || ((day) => state.duties.assignments[day]?.employeeIds || []);
+  const reasons = [];
+  const restriction = dutyRestriction(state, employeeId, date);
+  if (restriction) return [dutyRestrictionLabel(restriction)];
+  const exception = state.duties.dayExceptions?.[date] || {};
+  const nextDate = addDays(date, 1);
+  if (rules.preventConsecutiveDays && !exception.allowConsecutiveDay && idsOn(addDays(date, -1)).includes(employeeId)) {
+    reasons.push(`чергування попереднього дня ${addDays(date, -1)}`);
   }
+  if (rules.preventConsecutiveDays && !state.duties.dayExceptions?.[nextDate]?.allowConsecutiveDay
+    && idsOn(nextDate).includes(employeeId)) reasons.push(`чергування наступного дня ${nextDate}`);
+  if (dutyWeekendConflict(state, date, employeeId, rules, idsOn)) {
+    reasons.push(`потрібно пропустити ${rules.weekendRestWeeks} уікенд(и)`);
+  }
+  if (rules.minimumRestMode === 'require') {
+    for (let offset = 1; offset <= rules.minimumRestDays; offset += 1) {
+      const previous = addDays(date, -offset);
+      const next = addDays(date, offset);
+      if ((!exception.allowRestGap && idsOn(previous).includes(employeeId))
+        || (!state.duties.dayExceptions?.[next]?.allowRestGap && idsOn(next).includes(employeeId))) {
+        reasons.push(`обов’язковий відпочинок ${rules.minimumRestDays} днів; близьке чергування ${idsOn(previous).includes(employeeId) ? previous : next}`);
+        break;
+      }
+    }
+  }
+  const weekStart = dutyWeekStart(date);
+  const count = Array.from({ length: 7 }, (_, offset) => idsOn(addDays(weekStart, offset)).includes(employeeId) ? 1 : 0)
+    .reduce((sum, value) => sum + value, 0);
+  const proposedCount = count + (idsOn(date).includes(employeeId) ? 0 : 1);
+  if (rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit && proposedCount > rules.maximumDutiesPerWeek) {
+    reasons.push(`тижневий ліміт ${rules.maximumDutiesPerWeek}: після призначення було б ${proposedCount}`);
+  }
+  return reasons;
+}
+
+function improveDutyPlan(state, basis, plan) {
+  // Check actual one-person replacements with the same ordered score as the
+  // weekly search. Never move a manual/finalized assignment to improve a score.
+  const selected = plan.selectedByDate;
+  let current = dutyDecisionMetrics(basis, selected);
+  for (let pass = 0; pass < 40; pass += 1) {
+    let improvement = null;
+    for (const date of basis.dates) {
+      const ids = selected.get(date) || [];
+      if (basis.fixed[date].length >= basis.required[date] || state.duties.assignments[date]?.singleApproved) continue;
+      const removable = ids.filter((id) => !basis.fixed[date].includes(id));
+      if (ids.length < basis.required[date] && basis.rules.shortageBehavior !== 'require_full_day') removable.push(null);
+      for (const replaced of removable) {
+        for (const candidate of basis.balanceIds) {
+          if (ids.includes(candidate)) continue;
+          const alternative = new Map(selected);
+          const nextIds = ids.filter((id) => id !== replaced);
+          nextIds.push(candidate);
+          alternative.set(date, nextIds);
+          const idsOn = (day) => alternative.get(day) || state.duties.assignments[day]?.employeeIds || [];
+          if (dutyCandidateConflicts(state, date, candidate, basis.rules, idsOn).length) continue;
+          const metrics = dutyDecisionMetrics(basis, alternative);
+          if (compareDutyScores(metrics.score, current.score) < 0
+            && (!improvement || compareDutyScores(metrics.score, improvement.metrics.score) < 0)) {
+            improvement = { date, nextIds, metrics };
+          }
+        }
+      }
+    }
+    if (!improvement) break;
+    selected.set(improvement.date, improvement.nextIds);
+    current = improvement.metrics;
+  }
+  plan.score = current.score;
+  plan.addedByDate = new Map(basis.dates.map((date) => [date,
+    (selected.get(date) || []).filter((id) => !basis.fixed[date].includes(id))]));
+  plan.shortages = basis.dates.map((date) => ({ date, missing: Math.max(0, basis.required[date] - (selected.get(date)?.length || 0)) }))
+    .filter(({ date, missing }) => missing > 0 && !state.duties.assignments[date]?.singleApproved);
+}
+
+function explainDutyAssignment(state, date, employeeIds, options = {}) {
+  const selectedIds = [...new Set(employeeIds || [])];
+  const assignment = state.duties.assignments[date];
+  const rules = normalizeDutyRules(options.basis?.rules || state.duties.rules);
+  const weekStart = dutyWeekStart(date);
+  const weekEnd = addDays(weekStart, 6);
+  const weekCounts = dutyCountsBetween(state, weekStart, weekEnd);
+  const previousCounts = dutyCountsBetween(state, addDays(weekStart, -7), addDays(weekStart, -1));
+  const assignmentsBefore = Object.values(state.duties.assignments)
+    .filter((item) => item.date < date).sort((a, b) => b.date.localeCompare(a.date));
+  const queue = buildDutyQueue(state, date);
+  const totals = dutyTotals(state, date.slice(0, 4), date);
+  const pairHistoryStart = dutyPairHistoryStart(rules, date);
+  const basis = options.basis;
+  const plan = basis && new Map(basis.dates.map((day) => [day, [...(state.duties.assignments[day]?.employeeIds || [])]]));
+  const decision = basis && dutyDecisionMetrics(basis, plan);
+  const scoreLabels = dutyScoreLabels(rules);
+  const provenance = options.provenance || (assignment?.source?.startsWith('generated') ? 'generated' : 'manual');
   const selected = selectedIds.map((employeeId) => {
-    const lastDuty = assignmentsBefore.find((assignment) => (
-      assignment.employeeIds?.includes(employeeId)
-    ))?.date || null;
-    const reasons = [];
-    if (rules.compensateNextWeek && previousCounts[employeeId] === 1) {
-      reasons.push('минулого тижня було одне чергування — діє компенсаційний пріоритет');
+    const employee = getEmployee(state, employeeId);
+    const manual = provenance === 'manual' || assignment?.manualEmployeeIds?.includes(employeeId)
+      || (options.reconstructed && assignment?.source?.startsWith('manual'));
+    const lastDuty = assignmentsBefore.find((item) => item.employeeIds?.includes(employeeId))?.date || null;
+    const restDays = lastDuty ? Math.round((dateKeyToUtc(date) - dateKeyToUtc(lastDuty)) / 86400000) - 1 : null;
+    const reasons = [options.reconstructed ? 'Первісне обґрунтування не збережено; нижче наведено перевірні факти поточного стану.'
+      : manual ? 'Призначено або закріплено вручну.' : 'Обрано автоматично під час спільного розрахунку періоду.'];
+    if (manual && assignment?.note) reasons.push(`Причина ручного призначення: ${assignment.note}`);
+    if (manual && !assignment?.note) reasons.push('Окрему причину ручного вибору не вказано.');
+    if (assignment?.singleApproved && dutyRequiredCount(state, date) > 1) reasons.push('Одиночне чергування окремо підтверджено вручну.');
+    const conflicts = dutyCandidateConflicts(state, date, employeeId, rules);
+    reasons.push(conflicts.length ? `Обмеження не виконані: ${conflicts.join('; ')}.` : 'Доступний для цієї дати; обов’язкові обмеження виконані або є збережений разовий виняток.');
+    reasons.push(`За тиждень ${weekStart} — ${weekEnd}: ${weekCounts[employeeId] || 0} чергувань; минулого тижня: ${previousCounts[employeeId] || 0}.`);
+    reasons.push(lastDuty ? `Попереднє чергування ${lastDuty}; повних днів відпочинку: ${restDays}.` : 'До цієї дати в збереженій історії немає чергувань.');
+    reasons.push(`Місце в черзі перед цим днем: ${queue.indexOf(employeeId) + 1} із ${queue.length}; річний підсумок до дати: ${totals[employeeId]?.total || 0}.`);
+    if (rules.compensateNextWeek && previousCounts[employeeId] === rules.compensationFrom) {
+      reasons.push(`Минулого тижня було ${rules.compensationFrom} чергувань — пріоритет до ${rules.compensationTarget} цього тижня.`);
     }
-    reasons.push(`до цього дня у поточному тижні: ${currentCounts[employeeId] || 0}`);
-    reasons.push(lastDuty
-      ? `попереднє чергування: ${lastDuty}`
-      : 'раніше в цьому році не чергував');
-    const partnerId = selectedIds.find((id) => id !== employeeId);
-    if (partnerId && rules.avoidRepeatedPairs) {
-      const repeats = pairCounts.get(dutyPairKey([employeeId, partnerId])) || 0;
-      reasons.push(repeats
-        ? `ця пара вже була ${repeats} раз(и) за обраний період історії`
-        : 'ця пара раніше не використовувалася за обраний період історії');
-    }
-    return { employeeId, reasons };
-  });
-  const notSelected = (state.duties.participantIds || [])
-    .filter((employeeId) => !selectedIds.includes(employeeId))
-    .map((employeeId) => {
-      const reasons = [];
-      const restriction = dutyRestriction(state, employeeId, date);
-      if (restriction) reasons.push(dutyRestrictionLabel(restriction));
-      const exception = state.duties.dayExceptions?.[date] || {};
-      if (!restriction && rules.preventConsecutiveDays && !exception.allowConsecutiveDay
-        && state.duties.assignments[addDays(date, -1)]?.employeeIds?.includes(employeeId)) {
-        reasons.push('чергував попереднього календарного дня');
-      }
-      if (!restriction && rules.preventConsecutiveDays
-        && !state.duties.dayExceptions?.[addDays(date, 1)]?.allowConsecutiveDay
-        && dutyFixedEmployeeIds(state.duties.assignments[addDays(date, 1)]).includes(employeeId)) {
-        reasons.push('уже призначений на наступний календарний день');
-      }
-      if (!restriction && rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
-        && [0, 6].includes(dayOfWeek(date))) {
-        const saturday = dayOfWeek(date) === 6 ? date : addDays(date, -1);
-        if ([addDays(saturday, -7), addDays(saturday, -6)].some((previousDate) => (
-          state.duties.assignments[previousDate]?.employeeIds?.includes(employeeId)
-        ))) reasons.push('чергував у попередній календарний уікенд');
-      }
-      if (!reasons.length && rules.maximumDutiesPerWeek > 0
-        && (currentCounts[employeeId] || 0) >= rules.maximumDutiesPerWeek) {
-        reasons.push('досяг тижневого ліміту');
-      }
-      if (!reasons.length) reasons.push('інший доступний варіант мав вищий пріоритет рівномірності або ротації пар');
-      return { employeeId, reasons };
+    const partners = selectedIds.filter((id) => id !== employeeId).map((partnerId) => {
+      const dates = assignmentsBefore.filter((item) => item.date >= pairHistoryStart
+        && item.employeeIds?.includes(employeeId) && item.employeeIds?.includes(partnerId)).map((item) => item.date);
+      return { employeeId: partnerId, name: getEmployee(state, partnerId).name, repeats: dates.length, dates };
     });
+    for (const partner of partners) reasons.push(`З ${partner.name}: ${partner.repeats} попередніх спільних чергувань за обраний період${partner.dates.length ? ` (${partner.dates.slice(0, 5).join(', ')}${partner.dates.length > 5 ? ', …' : ''})` : ''}.`);
+    const alternatives = (state.duties.participantIds || []).filter((id) => !selectedIds.includes(id)).map((candidateId) => {
+      const candidateName = getEmployee(state, candidateId).name;
+      const blocked = dutyCandidateConflicts(state, date, candidateId, rules);
+      if (blocked.length) return { employeeId: candidateId, name: candidateName, outcome: 'blocked', reasons: blocked };
+      if (manual) return { employeeId: candidateId, name: candidateName, outcome: 'manual', reasons: ['Доступний, але цей працівник обраний вручну.'] };
+      if (!basis || basis.fixed[date]?.includes(employeeId)) return { employeeId: candidateId, name: candidateName, outcome: 'available', reasons: ['Допустима альтернатива. Повну оцінку початкового пошуку не збережено.'] };
+      const replacement = new Map(plan);
+      replacement.set(date, selectedIds.map((id) => id === employeeId ? candidateId : id));
+      const metrics = dutyDecisionMetrics(basis, replacement);
+      const index = decision.score.findIndex((value, i) => value !== metrics.score[i]);
+      if (index < 0) return { employeeId: candidateId, name: candidateName, outcome: 'equal', reasons: ['Рівноцінна заміна за всіма критеріями розрахунку; застосовано стабільний порядок вибору.'], score: metrics.score };
+      const worse = metrics.score[index] > decision.score[index];
+      return { employeeId: candidateId, name: candidateName, outcome: worse ? 'worse' : 'better', score: metrics.score,
+        reasons: [worse ? `Заміна погіршує «${scoreLabels[index]}»: ${decision.score[index]} → ${metrics.score[index]}.`
+          : `Допустима заміна має кращу оцінку «${scoreLabels[index]}»: ${decision.score[index]} → ${metrics.score[index]}. Пошук мав обмеження; не можна стверджувати, що початковий варіант єдиний найкращий.`] };
+    });
+    return { employeeId, name: employee.name, reasons, alternatives,
+      evidence: { weekTotal: weekCounts[employeeId] || 0, previousWeekTotal: previousCounts[employeeId] || 0,
+        lastDuty, restDays, queuePosition: queue.indexOf(employeeId) + 1, yearTotal: totals[employeeId]?.total || 0, partners, conflicts } };
+  });
+  const notSelected = (state.duties.participantIds || []).filter((id) => !selectedIds.includes(id)).map((employeeId) => ({
+    employeeId, name: getEmployee(state, employeeId).name,
+    reasons: dutyCandidateConflicts(state, date, employeeId, rules),
+  })).map((item) => ({ ...item, reasons: item.reasons.length ? item.reasons : ['Доступний; порівняння заміни наведено для кожного обраного чергового.'] }));
   return {
-    date,
-    requiredCount: dutyRequiredCount(state, date),
-    selected,
-    notSelected,
-    exception: clone(state.duties.dayExceptions?.[date] || null),
-    rules: clone(rules),
+    version: 2, date, scheduleId: state.activeDutyScheduleId, scheduleName: dutySchedules(state).find((item) => item.id === state.activeDutyScheduleId)?.name || '',
+    provenance, createdAt: (options.now || new Date()).toISOString(), reconstructed: Boolean(options.reconstructed),
+    source: assignment?.source || 'empty', note: assignment?.note || '', requiredCount: dutyRequiredCount(state, date),
+    selected, notSelected, weekStart, weekEnd,
+    weekLoad: (state.duties.participantIds || []).map((employeeId) => ({ employeeId, name: getEmployee(state, employeeId).name, total: weekCounts[employeeId] || 0 })),
+    decision: decision ? { startDate: basis.dates[0], endDate: basis.dates.at(-1), score: decision.score, labels: scoreLabels,
+      scope: 'Заміна однієї людини в цьому дні; решта розрахованого періоду незмінна.' } : null,
+    exception: clone(state.duties.dayExceptions?.[date] || null), rules: clone(rules),
   };
+}
+
+function getDutyExplanation(state, date, now = new Date()) {
+  assertDateKey(date);
+  const assignment = state.duties.assignments[date];
+  const saved = assignment?.explanation;
+  if (saved?.version === 2 && saved.date === date && Array.isArray(saved.selected)
+    && saved.selected.every((item) => item && typeof item.employeeId === 'string')
+    && JSON.stringify(saved.selected.map(({ employeeId }) => employeeId)) === JSON.stringify(assignment.employeeIds)) return clone(saved);
+  return explainDutyAssignment(state, date, assignment?.employeeIds || [], { now, reconstructed: true, provenance: 'reconstructed' });
 }
 
 function calculateDutyFairness(state, { startDate, endDate }) {
@@ -2539,8 +2771,9 @@ function calculateDutyFairness(state, { startDate, endDate }) {
   });
   const pairCounts = new Map();
   for (const assignment of assignments) {
-    const key = dutyPairKey(assignment.employeeIds || []);
-    if (key) pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+    for (const key of dutyPairKeys(assignment.employeeIds || [])) {
+      pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+    }
   }
   const pairs = [...pairCounts.entries()]
     .map(([key, count]) => ({ employeeIds: key.split('|'), count }))
@@ -2578,11 +2811,9 @@ function explainDutyShortage(state, date) {
         && dutyFixedEmployeeIds(state.duties.assignments[nextDate]).includes(employeeId)) {
         reasons.push('уже призначений на наступний день');
       }
-      if (!restriction && rules.preventConsecutiveWeekends && !exception.allowConsecutiveWeekend
-        && [0, 6].includes(dayOfWeek(date))
-        && [addDays(saturday, -7), addDays(saturday, -6)].some((previous) => (
-          state.duties.assignments[previous]?.employeeIds?.includes(employeeId)
-        ))) reasons.push('чергував у попередній уікенд');
+      if (!restriction && dutyWeekendConflict(state, date, employeeId, rules)) {
+        reasons.push(`інтервал між уікендами: ${rules.weekendRestWeeks} тижн.`);
+      }
       if (!restriction && rules.maximumDutiesPerWeek > 0 && !exception.allowWeeklyLimit
         && (weekCounts[employeeId] || 0) >= rules.maximumDutiesPerWeek) {
         reasons.push('досяг тижневого ліміту');
@@ -2613,7 +2844,7 @@ function previewDutySchedule(state, filter, now = new Date()) {
       employeeIds: [...(assignment?.employeeIds || [])],
       singleApproved: Boolean(assignment?.singleApproved),
       source: assignment?.source || 'empty',
-      explanation: assignment?.explanation || explainDutyAssignment(draft, date, assignment?.employeeIds || []),
+      explanation: getDutyExplanation(draft, date, now),
     });
   }
   return {
@@ -2787,6 +3018,7 @@ module.exports = {
   duplicateDutySchedule,
   ensureAutomaticMisses,
   generateDutySchedule,
+  getDutyExplanation,
   getEmployee,
   isSubmitted,
   isEmployeeWorkday,

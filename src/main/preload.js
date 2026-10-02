@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('counter', {
   initializeDuties: (entries, participantIds) => ipcRenderer.invoke('duties:initialize', { entries, participantIds }),
   generateDuties: (filter) => ipcRenderer.invoke('duties:generate', filter),
   previewDuties: (filter) => ipcRenderer.invoke('duties:preview', filter),
+  getDutyExplanation: (date) => ipcRenderer.invoke('duties:explanation', { date }),
   setDutyAssignment: (payload) => ipcRenderer.invoke('duties:set-assignment', payload),
   toggleDutyAssignment: (employeeId, date) => (
     ipcRenderer.invoke('duties:toggle-assignment', { employeeId, date })

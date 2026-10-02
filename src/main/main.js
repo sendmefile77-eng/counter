@@ -25,6 +25,7 @@ const {
   duplicateDutySchedule,
   ensureAutomaticMisses,
   generateDutySchedule,
+  getDutyExplanation,
   initializeDutyHistory,
   moveEmployee,
   normalizeState,
@@ -446,6 +447,7 @@ function registerIpc() {
   ipcMain.handle('duties:schedule-rules', (_event, { scheduleId, rules }) => (
     mutate('duties:schedule-rules', (state) => updateDutyScheduleRules(state, scheduleId, rules))
   ));
+  ipcMain.handle('duties:explanation', (_event, { date }) => getDutyExplanation(store.state, date));
   ipcMain.handle('duties:week-lock', (_event, { date, locked }) => (
     mutate('duties:week-lock', (state) => setDutyWeekLocked(state, date, locked))
   ));

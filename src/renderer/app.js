@@ -171,7 +171,7 @@ function activeDutySchedule() {
 }
 
 function dutyRules() {
-  return snapshot.duties?.rules || {
+  return {
     weekdayDutyCount: 2,
     weekendDutyCount: 2,
     requiredByWeekday: {},
@@ -184,15 +184,21 @@ function dutyRules() {
     compensateNextWeek: true,
     avoidRepeatedPairs: true,
     pairHistoryPeriod: 'year',
+    pairHistoryDays: 90,
+    weekendRestWeeks: 1,
+    compensationFrom: 1,
+    compensationTarget: 2,
+    shortageBehavior: 'leave_empty',
+    ...snapshot.duties?.rules,
   };
 }
 
 function dutyRequiredCount(date) {
   const day = dateFromKey(date).getDay();
-  if (dutyRules().requiredByWeekday?.[day]) return Number(dutyRules().requiredByWeekday[day]);
+  if (Object.hasOwn(dutyRules().requiredByWeekday || {}, day)) return Number(dutyRules().requiredByWeekday[day]);
   return day === 0 || day === 6
-    ? Number(dutyRules().weekendDutyCount || 2)
-    : Number(dutyRules().weekdayDutyCount || 2);
+    ? Number(dutyRules().weekendDutyCount ?? 2)
+    : Number(dutyRules().weekdayDutyCount ?? 2);
 }
 
 function dutyWeekStart(date) {
@@ -1139,51 +1145,171 @@ function openDutyCopyModal() {
   `);
 }
 
-function openDutyRulesModal() {
-  const schedule = activeDutySchedule();
-  const rules = dutyRules();
-  openModal(`
-    <form id="duty-rules-form" data-schedule-id="${h(schedule.id)}">
-      <header class="modal-head"><div><h2>Правила графіка</h2><p>${h(schedule.name)} · зміни не перераховують старі тижні</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
-      <div class="modal-body duty-rules-form">
-        <h3>Кількість людей</h3>
-        <div class="form-grid">
-          <label class="field"><span>Чергових у будні</span><select name="weekdayDutyCount"><option value="2" ${rules.weekdayDutyCount === 2 ? 'selected' : ''}>2</option><option value="1" ${rules.weekdayDutyCount === 1 ? 'selected' : ''}>1</option></select></label>
-          <label class="field"><span>Чергових у вихідні</span><select name="weekendDutyCount"><option value="2" ${rules.weekendDutyCount === 2 ? 'selected' : ''}>2</option><option value="1" ${rules.weekendDutyCount === 1 ? 'selected' : ''}>1</option></select></label>
-        </div>
-        <p class="muted">Для окремих днів можна замінити загальне правило. «За замовчуванням» успадковує кількість для буднів або вихідних.</p>
-        <div class="duty-weekday-rules">
-          ${[['Пн', 1], ['Вт', 2], ['Ср', 3], ['Чт', 4], ['Пт', 5], ['Сб', 6], ['Нд', 0]].map(([label, day]) => `<label class="field"><span>${label}</span><select name="required-day-${day}"><option value="" ${!rules.requiredByWeekday?.[day] ? 'selected' : ''}>За замовчуванням</option><option value="1" ${rules.requiredByWeekday?.[day] === 1 ? 'selected' : ''}>1 людина</option><option value="2" ${rules.requiredByWeekday?.[day] === 2 ? 'selected' : ''}>2 людини</option></select></label>`).join('')}
-        </div>
-        <h3>Обмеження й розподіл</h3>
-        <div class="form-grid">
-          <label class="field"><span>Інтервал між чергуваннями, днів</span><input name="minimumRestDays" type="number" min="0" max="6" value="${rules.minimumRestDays}" required></label>
-          <label class="field"><span>Інтервал відпочинку</span><select name="minimumRestMode"><option value="prefer" ${rules.minimumRestMode !== 'require' ? 'selected' : ''}>Бажаний: можна порушити для заповнення</option><option value="require" ${rules.minimumRestMode === 'require' ? 'selected' : ''}>Обов’язковий: залишити прогалину</option></select></label>
-          <label class="field"><span>Максимум чергувань за тиждень</span><select name="maximumDutiesPerWeek"><option value="0" ${rules.maximumDutiesPerWeek === 0 ? 'selected' : ''}>Автоматично</option>${[1, 2, 3, 4, 5, 6, 7].map((value) => `<option value="${value}" ${rules.maximumDutiesPerWeek === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
-          <label class="field"><span>Історія пар</span><select name="pairHistoryPeriod"><option value="month" ${rules.pairHistoryPeriod === 'month' ? 'selected' : ''}>Поточний місяць</option><option value="quarter" ${rules.pairHistoryPeriod === 'quarter' ? 'selected' : ''}>Поточний квартал</option><option value="year" ${rules.pairHistoryPeriod === 'year' ? 'selected' : ''}>Поточний рік</option></select></label>
-          <label class="field"><span>Що важливіше за рівної кількості призначень</span><select name="planningPriority"><option value="balanced" ${rules.planningPriority === 'balanced' ? 'selected' : ''}>Рівномірне навантаження</option><option value="rest" ${rules.planningPriority === 'rest' ? 'selected' : ''}>Більше відпочинку</option><option value="rotation" ${rules.planningPriority === 'rotation' ? 'selected' : ''}>Черга за порядком</option><option value="pairs" ${rules.planningPriority === 'pairs' ? 'selected' : ''}>Різні пари</option></select></label>
-        </div>
-        <div class="settings-grid">
-          <label class="check-row"><input name="preventConsecutiveDays" type="checkbox" ${rules.preventConsecutiveDays ? 'checked' : ''}><span><strong>Заборонити два дні поспіль</strong><span>Жорстке правило, крім разового винятку.</span></span></label>
-          <label class="check-row"><input name="preventConsecutiveWeekends" type="checkbox" ${rules.preventConsecutiveWeekends ? 'checked' : ''}><span><strong>Заборонити сусідні уікенди</strong><span>Хто чергував у суботу або неділю, пропускає наступний уікенд.</span></span></label>
-          <label class="check-row"><input name="compensateNextWeek" type="checkbox" ${rules.compensateNextWeek ? 'checked' : ''}><span><strong>Компенсувати наступного тижня</strong><span>Одне чергування дає пріоритет на два наступного тижня.</span></span></label>
-          <label class="check-row"><input name="avoidRepeatedPairs" type="checkbox" ${rules.avoidRepeatedPairs ? 'checked' : ''}><span><strong>Уникати повторення пар</strong><span>Однакові поєднання використовуються в останню чергу.</span></span></label>
-        </div>
-        <div class="confirm-box">Спершу заповнюються всі можливі місця. Пріоритет визначає вибір між допустимими варіантами. Обов’язкові обмеження можуть залишити місце порожнім; тоді день буде позначено червоним.</div>
-      </div>
-      <footer class="modal-foot"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти правила</button></footer>
-    </form>
-  `, true);
+function dutyRulesFormInput(formElement) {
+  const form = new FormData(formElement);
+  const numeric = (name) => Number(form.get(name));
+  const checked = (name) => form.get(name) === 'on';
+  return {
+    weekdayDutyCount: numeric('weekdayDutyCount'),
+    weekendDutyCount: numeric('weekendDutyCount'),
+    requiredByWeekday: Object.fromEntries(Array.from({ length: 7 }, (_, day) => [day, form.get(`required-day-${day}`)])
+      .filter(([, value]) => value !== '' && value != null).map(([day, value]) => [day, Number(value)])),
+    minimumRestDays: numeric('minimumRestDays'),
+    minimumRestMode: String(form.get('minimumRestMode')),
+    planningPriority: String(form.get('planningPriority')),
+    maximumDutiesPerWeek: numeric('maximumDutiesPerWeek'),
+    pairHistoryPeriod: String(form.get('pairHistoryPeriod')),
+    pairHistoryDays: numeric('pairHistoryDays'),
+    weekendRestWeeks: numeric('weekendRestWeeks'),
+    compensationFrom: numeric('compensationFrom'),
+    compensationTarget: numeric('compensationTarget'),
+    shortageBehavior: String(form.get('shortageBehavior')),
+    preventConsecutiveDays: checked('preventConsecutiveDays'),
+    preventConsecutiveWeekends: checked('preventConsecutiveWeekends'),
+    compensateNextWeek: checked('compensateNextWeek'),
+    avoidRepeatedPairs: checked('avoidRepeatedPairs'),
+  };
 }
 
-function renderDutyExplanation(explanation) {
-  if (!explanation) return '<p class="muted">Цей склад внесено вручну; автоматичного пояснення немає.</p>';
+function updateDutyRulesSummary() {
+  const form = modalRoot.querySelector('#duty-rules-form');
+  if (!form) return;
+  const rules = dutyRulesFormInput(form);
+  const counts = [1, 2, 3, 4, 5, 6, 0].map((day) => rules.requiredByWeekday[day]
+    ?? ([0, 6].includes(day) ? rules.weekendDutyCount : rules.weekdayDutyCount));
+  const slots = counts.reduce((sum, count) => sum + count, 0);
+  const people = dutyParticipants().length;
+  const warnings = [];
+  if (counts.some((count) => count > people)) warnings.push(`У графіку ${people} учасників: у деякі дні людей буде недостатньо.`);
+  if (rules.maximumDutiesPerWeek > 0 && slots > people * rules.maximumDutiesPerWeek) {
+    warnings.push(`Тижневий ліміт дозволяє лише ${people * rules.maximumDutiesPerWeek} призначень. Потрібно ${slots}.`);
+  }
+  if (!rules.preventConsecutiveDays && rules.minimumRestMode === 'require' && rules.minimumRestDays > 0) {
+    warnings.push('Два дні поспіль усе ще неможливі через обов’язковий відпочинок. Щоб дозволити їх, задайте 0 днів або бажаний відпочинок.');
+  }
+  if (rules.compensateNextWeek && rules.maximumDutiesPerWeek > 0 && rules.compensationTarget > rules.maximumDutiesPerWeek) {
+    warnings.push('Ціль компенсації більша за тижневий ліміт. Ліміт має перевагу.');
+  }
+  const summary = form.querySelector('[data-rules-summary]');
+  summary.innerHTML = `<strong>${slots} призначень на тиждень · ${people} учасників</strong><span>${counts.map((count, index) => `${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'][index]}: ${count}`).join(' · ')}</span>${warnings.map((warning) => `<p>${h(warning)}</p>`).join('')}`;
+}
+
+function openDutyRulesModal(initialRules = dutyRules()) {
+  const schedule = activeDutySchedule();
+  const rules = initialRules;
+  const numberField = (name, label, min, max, hint = '') => `<label class="field"><span>${label}</span><input name="${name}" type="number" min="${min}" max="${max}" step="1" value="${rules[name]}" required>${hint ? `<small>${hint}</small>` : ''}</label>`;
+  const choices = (name, title, options) => `<fieldset class="rule-choices"><legend>${title}</legend><div>${options.map(([value, label, note]) => `<label class="rule-choice"><input type="radio" name="${name}" value="${value}" ${rules[name] === value ? 'checked' : ''}><span><strong>${label}</strong>${note ? `<small>${note}</small>` : ''}</span></label>`).join('')}</div></fieldset>`;
+  openModal(`
+    <form id="duty-rules-form" data-schedule-id="${h(schedule.id)}">
+      <header class="modal-head"><div><h2>Правила графіка</h2><p>${h(schedule.name)} · зміни діятимуть під час наступного формування</p></div><button class="icon-button" type="button" aria-label="Закрити" data-close-modal>×</button></header>
+      <div class="modal-body duty-rules-form">
+        <div class="rules-summary" data-rules-summary aria-live="polite"></div>
+        <section class="rule-section">
+          <h3>Кількість людей</h3>
+          <p class="muted">Від 0 до 15. Нуль означає день без чергувань. Для окремого дня порожнє поле успадковує загальне правило.</p>
+          <div class="form-grid">
+            ${numberField('weekdayDutyCount', 'Чергових у будні', 0, 15)}
+            ${numberField('weekendDutyCount', 'Чергових у вихідні', 0, 15)}
+          </div>
+          <div class="duty-weekday-rules">
+            ${[['Пн', 1], ['Вт', 2], ['Ср', 3], ['Чт', 4], ['Пт', 5], ['Сб', 6], ['Нд', 0]].map(([label, day]) => `<label class="field"><span>${label}</span><input type="number" name="required-day-${day}" min="0" max="15" step="1" value="${rules.requiredByWeekday?.[day] ?? ''}" placeholder="Загальне" aria-label="Чергових: ${label}, порожнє поле — загальне правило"></label>`).join('')}
+          </div>
+        </section>
+        <section class="rule-section">
+          <h3>Відпочинок і ліміти</h3>
+          <div class="form-grid">
+            ${numberField('minimumRestDays', 'Повних днів між чергуваннями', 0, 30, '0 — інтервал не враховується.')}
+            ${numberField('maximumDutiesPerWeek', 'Максимум чергувань за тиждень', 0, 7, '0 — без окремого ліміту; діє решта правил.')}
+          </div>
+          ${choices('minimumRestMode', 'Як дотримуватися інтервалу', [
+            ['prefer', 'Бажаний', 'Можна скоротити для заповнення графіка.'],
+            ['require', 'Обов’язковий', 'За нестачі людей лишається прогалина.'],
+          ])}
+          <div class="settings-grid">
+            <label class="check-row"><input name="preventConsecutiveDays" type="checkbox" ${rules.preventConsecutiveDays ? 'checked' : ''}><span><strong>Заборонити два дні поспіль</strong><span>Діє незалежно від бажаного відпочинку.</span></span></label>
+            <label class="check-row"><input name="preventConsecutiveWeekends" type="checkbox" ${rules.preventConsecutiveWeekends ? 'checked' : ''}><span><strong>Робити перерву між уікендами</strong><span>Увімкніть і задайте тривалість нижче.</span></span></label>
+          </div>
+          ${numberField('weekendRestWeeks', 'Скільки уікендів пропустити після чергування', 1, 8, '1 — пропустити наступний уікенд; 2 — наступні два. Вимикається прапорцем вище.')}
+        </section>
+        <section class="rule-section">
+          <h3>Розподіл навантаження</h3>
+          ${choices('planningPriority', 'Основний пріоритет після заповнення місць', [
+            ['balanced', 'Рівномірне навантаження', 'Найменша різниця між людьми.'],
+            ['rest', 'Більше відпочинку', 'Спершу довший інтервал, потім рівномірність.'],
+            ['rotation', 'Черга за порядком', 'Спершу циклічна черга, потім рівномірність.'],
+            ['pairs', 'Різні пари', 'Спершу нові поєднання, потім рівномірність.'],
+          ])}
+          <label class="check-row"><input name="compensateNextWeek" type="checkbox" ${rules.compensateNextWeek ? 'checked' : ''}><span><strong>Компенсувати навантаження наступного тижня</strong><span>Пріоритет для людей з указаної кількості до цілі; обов’язкові правила не порушуються.</span></span></label>
+          <div class="form-grid">
+            ${numberField('compensationFrom', 'Якщо минулого тижня було', 0, 6, 'Кількість чергувань, зокрема 0.')}
+            ${numberField('compensationTarget', 'Бажана кількість цього тижня', 1, 7)}
+          </div>
+        </section>
+        <section class="rule-section">
+          <h3>Повторення пар</h3>
+          <label class="check-row"><input name="avoidRepeatedPairs" type="checkbox" ${rules.avoidRepeatedPairs ? 'checked' : ''}><span><strong>Уникати повторення пар</strong><span>Якщо чергових більше двох, враховуються всі пари у складі.</span></span></label>
+          ${choices('pairHistoryPeriod', 'Яку історію враховувати', [
+            ['month', 'Поточний місяць'], ['quarter', 'Поточний квартал'], ['year', 'Поточний рік'],
+            ['rolling', 'Останні N днів'], ['all', 'Уся збережена історія'],
+          ])}
+          ${numberField('pairHistoryDays', 'N днів для історії пар', 1, 366, 'Використовується в режимі «Останні N днів».')}
+        </section>
+        <section class="rule-section">
+          <h3>Якщо людей не вистачає</h3>
+          ${choices('shortageBehavior', 'Дія генератора', [
+            ['leave_empty', 'Призначити доступних', 'Заповнити можливі місця; решту позначити як дефіцит.'],
+            ['require_full_day', 'Додавати лише повний склад', 'Якщо повний склад неможливий, нових людей цього дня не додавати.'],
+          ])}
+          <div class="confirm-box">Внесені вручну люди й готові дні зберігаються. Для перебудови вже заповненого тижня спочатку очистіть його. Разові винятки задаються у складі конкретного дня.</div>
+        </section>
+      </div>
+      <footer class="modal-foot three-way"><button class="button" type="button" data-duty-rules-reset>Початкові правила</button><button class="button" type="button" data-close-modal>Скасувати</button><button class="button primary" type="submit">Зберегти правила</button></footer>
+    </form>
+  `, true);
+  modalRoot.querySelector('.modal').classList.add('duty-rules-modal');
+  updateDutyRulesSummary();
+}
+
+async function loadDutyExplanation(date) {
+  try { return await window.counter.getDutyExplanation(date); }
+  catch (error) { showToast(error.message || String(error), { error: true }); return snapshot.duties.assignments[date]?.explanation || null; }
+}
+
+function renderDutyExplanation(explanation, employeeId = null) {
+  if (!explanation) return '<p class="muted">Пояснення ще не збережене. Відкрийте день повторно після оновлення програми.</p>';
+  const selected = (explanation.selected || []).filter((item) => !employeeId || item.employeeId === employeeId);
+  const rules = explanation.rules || dutyRules();
+  const priority = { balanced: 'рівномірне навантаження', rest: 'відпочинок', rotation: 'циклічна черга', pairs: 'різні пари' }[rules.planningPriority];
+  const exception = explanation.exception;
+  const exceptions = exception && [
+    exception.allowConsecutiveDay && 'два дні поспіль', exception.allowConsecutiveWeekend && 'скорочення перерви між уікендами',
+    exception.allowRestGap && 'скорочення відпочинку', exception.allowWeeklyLimit && 'перевищення тижневого ліміту',
+  ].filter(Boolean);
   return `
     <div class="duty-explanation">
-      ${explanation.selected?.map((item) => `<article><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong><ul>${item.reasons.map((reason) => `<li>${h(reason)}</li>`).join('')}</ul></article>`).join('') || '<p class="muted">Чергових не призначено.</p>'}
-      ${explanation.notSelected?.length ? `<details><summary>Чому не обрано інших</summary>${explanation.notSelected.map((item) => `<div class="explanation-rejected"><strong>${h(employeeById(item.employeeId)?.name || '—')}</strong>: ${h(item.reasons.join('; '))}</div>`).join('')}</details>` : ''}
+      <div class="confirm-box">${explanation.reconstructed
+        ? 'Пояснення відновлено за поточними даними. Початкові правила й оцінку старого призначення не було збережено.'
+        : `Збережено разом із призначенням: ${h(new Date(explanation.createdAt).toLocaleString('uk-UA'))}. Наведено дані на той момент.`}</div>
+      <p class="muted">Потрібно чергових: ${explanation.requiredCount}. Пріоритет: ${h(priority)}. Відпочинок: ${rules.minimumRestDays} днів (${rules.minimumRestMode === 'require' ? 'обов’язковий' : 'бажаний'}). Тижневий ліміт: ${rules.maximumDutiesPerWeek || 'без окремого ліміту'}.</p>
+      ${exceptions?.length ? `<div class="confirm-box">Разовий дозвіл: ${h(exceptions.join(', '))}. Причина: ${h(exception.note || 'не вказана')}.</div>` : ''}
+      ${selected.map((item) => `<article><strong>${h(item.name || employeeById(item.employeeId)?.name || '—')}</strong><ul>${item.reasons.map((reason) => `<li>${h(reason)}</li>`).join('')}</ul>
+        ${item.alternatives?.length ? `<details class="modal-details"><summary>Чому замість мене не поставили іншого</summary><div class="table-scroll"><table class="data-table explanation-table"><thead><tr><th>Працівник</th><th>Перевірка заміни</th></tr></thead><tbody>${item.alternatives.map((alternative) => `<tr><td>${h(alternative.name)}</td><td>${h(alternative.reasons.join('; '))}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+      </article>`).join('') || '<p class="muted">Чергових не призначено.</p>'}
+      ${explanation.weekLoad?.length ? `<details class="modal-details"><summary>Навантаження всіх учасників за цей тиждень</summary><div class="table-scroll"><table class="data-table"><thead><tr><th>Працівник</th><th>Чергувань</th></tr></thead><tbody>${explanation.weekLoad.map((item) => `<tr><td>${h(item.name)}</td><td>${item.total}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+      ${explanation.decision ? `<details class="modal-details"><summary>Послідовність критеріїв і оцінка розрахунку</summary><p class="muted">${h(explanation.decision.scope)} Критерії порівнюються згори вниз; менше число краще.</p><div class="table-scroll"><table class="data-table"><thead><tr><th>Критерій</th><th>Оцінка</th></tr></thead><tbody>${explanation.decision.labels.map((label, index) => `<tr><td>${h(label)}</td><td>${explanation.decision.score[index]}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+      ${explanation.notSelected?.length && !employeeId ? `<details class="modal-details"><summary>Доступність інших учасників</summary>${explanation.notSelected.map((item) => `<div class="explanation-rejected"><strong>${h(item.name || employeeById(item.employeeId)?.name || '—')}</strong>: ${h(item.reasons.join('; '))}</div>`).join('')}</details>` : ''}
     </div>
   `;
+}
+
+function dutyExplanationText(explanation, employeeId = null) {
+  const selected = explanation.selected.filter((item) => !employeeId || item.employeeId === employeeId);
+  return [`Чергування ${explanation.date} · ${explanation.scheduleName}`, explanation.reconstructed
+    ? 'Відновлено за поточними даними; первісну оцінку не збережено.' : `Дані на момент призначення: ${explanation.createdAt}`,
+    ...selected.flatMap((item) => [item.name, ...item.reasons.map((reason) => `• ${reason}`),
+      ...(item.alternatives || []).map((other) => `${other.name}: ${other.reasons.join('; ')}`)]),
+    explanation.exception?.note ? `Причина разового винятку: ${explanation.exception.note}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 async function openDutyPreviewModal(startDate, endDate, pinnedAssignments = []) {
@@ -1273,7 +1399,8 @@ function dutyRestrictionText(employeeId, date) {
   return '';
 }
 
-function openDutyDayModal(date) {
+async function openDutyDayModal(date) {
+  const explanation = await loadDutyExplanation(date);
   const assignment = snapshot.duties.assignments[date] || { employeeIds: [], singleApproved: false };
   const requiredCount = dutyRequiredCount(date);
   const missing = Math.max(0, requiredCount - assignment.employeeIds.length);
@@ -1286,21 +1413,22 @@ function openDutyDayModal(date) {
       <div class="modal-body">
         ${locked ? '<div class="confirm-box duty-locked-notice">Тиждень заблоковано від випадкових змін. Для редагування спочатку розблокуйте його.</div>' : ''}
         <div class="confirm-box ${incomplete ? 'duty-shortage-modal' : ''}">${incomplete
-          ? `Не вистачає ${missing} ${missing === 1 ? 'чергового' : 'чергових'}. Додайте другого працівника або залиште одного й увімкніть окремий дозвіл нижче.`
-          : `Для цього дня потрібно: ${requiredCount}. ${requiredCount === 2 ? 'Якщо обрано одного, окремо підтвердьте одиночне чергування.' : 'Окремий дозвіл на одного не потрібен.'}`}</div>
+          ? `Не вистачає ${missing} ${missing === 1 ? 'чергового' : 'чергових'}. Додайте доступних працівників до потрібної кількості або підтвердьте одиночне чергування.`
+          : `Для цього дня потрібно: ${requiredCount}. ${requiredCount > 1 ? 'Якщо обрано одного, окремо підтвердьте одиночне чергування.' : 'Окремий дозвіл на одного не потрібен.'}`}</div>
         <div class="duty-picker">${dutyParticipants().map((employee) => {
           const restriction = dutyRestrictionText(employee.id, date);
           const checked = assignment.employeeIds.includes(employee.id);
           return `<label class="duty-pick ${restriction ? 'restricted' : ''}"><input type="checkbox" name="employeeIds" value="${h(employee.id)}" ${checked ? 'checked' : ''} ${restriction || locked ? 'disabled' : ''}><span><strong>${h(employee.name)}</strong>${restriction ? `<small>${h(restriction)}</small>` : '<small>Доступний</small>'}</span></label>`;
         }).join('')}</div>
-        ${requiredCount === 2 ? `<label class="check-row"><input type="checkbox" name="singleApproved" ${assignment.singleApproved ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволяю чергування однієї людини</strong><span>Потрібно лише тоді, коли в списку залишено одного працівника.</span></span></label>` : ''}
-        <details class="modal-details" ${assignment.explanation ? 'open' : ''}><summary>Чому обрано саме цих працівників</summary>${renderDutyExplanation(assignment.explanation)}</details>
+        ${requiredCount > 1 ? `<label class="check-row"><input type="checkbox" name="singleApproved" ${assignment.singleApproved ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволяю чергування однієї людини</strong><span>Потрібно лише тоді, коли в списку залишено одного працівника.</span></span></label>` : ''}
+        <label class="field"><span>Причина ручного призначення</span><textarea name="note" maxlength="500" placeholder="Наприклад, підміна на прохання працівника" ${locked ? 'disabled' : ''}>${h(assignment.note || '')}</textarea></label>
+        <details class="modal-details" open><summary>Чому обрано саме цих працівників</summary>${renderDutyExplanation(explanation)}<button class="button small" type="button" data-copy-duty-explanation="${date}">Скопіювати пояснення дня</button></details>
         <section class="day-exception-box">
           <h3>Разовий виняток лише на цей день</h3>
           <div class="settings-grid">
             <label class="check-row"><input id="exception-consecutive" type="checkbox" ${exception.allowConsecutiveDay ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволити після попереднього дня</strong></span></label>
             <label class="check-row"><input id="exception-weekend" type="checkbox" ${exception.allowConsecutiveWeekend ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволити сусідній уікенд</strong></span></label>
-            <label class="check-row"><input id="exception-rest" type="checkbox" ${exception.allowRestGap ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Ігнорувати бажаний відпочинок</strong></span></label>
+            <label class="check-row"><input id="exception-rest" type="checkbox" ${exception.allowRestGap ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволити коротший відпочинок</strong></span></label>
             <label class="check-row"><input id="exception-limit" type="checkbox" ${exception.allowWeeklyLimit ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Перевищити тижневий ліміт</strong></span></label>
           </div>
           <label class="field"><span>Причина винятку</span><input id="exception-note" maxlength="500" value="${h(exception.note || '')}" ${locked ? 'disabled' : ''}></label>
@@ -1315,7 +1443,8 @@ function openDutyDayModal(date) {
   `, true);
 }
 
-function openDutyEmployeeModal(employeeId, date) {
+async function openDutyEmployeeModal(employeeId, date) {
+  const explanation = await loadDutyExplanation(date);
   const employee = employeeById(employeeId);
   const key = `${employeeId}|${date}`;
   const assignment = snapshot.duties.assignments[date];
@@ -1331,6 +1460,7 @@ function openDutyEmployeeModal(employeeId, date) {
     <div class="modal-body">
       <div>Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
       ${assigned ? `
+        <details class="modal-details" open><summary>Чому я чергую цього дня</summary>${renderDutyExplanation(explanation, employeeId)}<button class="button small" type="button" data-copy-duty-explanation="${date}" data-explanation-employee="${h(employeeId)}">Скопіювати пояснення</button></details>
         <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-realized="${realized ? 'false' : 'true'}" data-date="${date}" data-employee-id="${h(employeeId)}">${realized ? 'Скасувати позначку виконання' : 'Позначити виконаним'}</button>
         <button class="button danger" data-remove-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
         <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
@@ -2121,6 +2251,7 @@ modalRoot.addEventListener('change', (event) => {
 });
 
 modalRoot.addEventListener('input', (event) => {
+  if (event.target.closest('#duty-rules-form')) updateDutyRulesSummary();
   const form = event.target.closest('#submission-form, #receipt-correction-form, #status-period-form');
   if (!form) return;
   form.querySelector('[type="submit"]').disabled = true;
@@ -2129,6 +2260,23 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  const copyExplanation = event.target.closest('[data-copy-duty-explanation]');
+  if (copyExplanation) {
+    try {
+      const explanation = await window.counter.getDutyExplanation(copyExplanation.dataset.copyDutyExplanation);
+      await navigator.clipboard.writeText(dutyExplanationText(explanation, copyExplanation.dataset.explanationEmployee || null));
+      showToast('Пояснення скопійовано.');
+    } catch (error) { showToast(error.message || String(error), { error: true }); }
+    return;
+  }
+  if (event.target.closest('[data-duty-rules-reset]')) {
+    openDutyRulesModal({ weekdayDutyCount: 2, weekendDutyCount: 2, requiredByWeekday: {},
+      minimumRestDays: 2, minimumRestMode: 'prefer', maximumDutiesPerWeek: 0,
+      preventConsecutiveDays: true, preventConsecutiveWeekends: true, weekendRestWeeks: 1,
+      planningPriority: 'balanced', compensateNextWeek: true, compensationFrom: 1, compensationTarget: 2,
+      avoidRepeatedPairs: true, pairHistoryPeriod: 'year', pairHistoryDays: 90, shortageBehavior: 'leave_empty' });
+    return;
+  }
   if (event.target.matches('[data-modal-close]') || event.target.closest('[data-close-modal]')) {
     closeModal();
     return;
@@ -2434,23 +2582,8 @@ modalRoot.addEventListener('submit', async (event) => {
     return;
   }
   if (event.target.id === 'duty-rules-form') {
-    const form = new FormData(event.target);
     const result = await run(
-      () => window.counter.updateDutyScheduleRules(event.target.dataset.scheduleId, {
-        weekdayDutyCount: Number(form.get('weekdayDutyCount')),
-        weekendDutyCount: Number(form.get('weekendDutyCount')),
-        requiredByWeekday: Object.fromEntries(Array.from({ length: 7 }, (_, day) => [day, form.get(`required-day-${day}`)])
-          .filter(([, value]) => value === '1' || value === '2').map(([day, value]) => [day, Number(value)])),
-        minimumRestDays: Number(form.get('minimumRestDays')),
-        minimumRestMode: String(form.get('minimumRestMode')),
-        planningPriority: String(form.get('planningPriority')),
-        maximumDutiesPerWeek: Number(form.get('maximumDutiesPerWeek')),
-        pairHistoryPeriod: String(form.get('pairHistoryPeriod') || 'year'),
-        preventConsecutiveDays: form.get('preventConsecutiveDays') === 'on',
-        preventConsecutiveWeekends: form.get('preventConsecutiveWeekends') === 'on',
-        compensateNextWeek: form.get('compensateNextWeek') === 'on',
-        avoidRepeatedPairs: form.get('avoidRepeatedPairs') === 'on',
-      }),
+      () => window.counter.updateDutyScheduleRules(event.target.dataset.scheduleId, dutyRulesFormInput(event.target)),
       'Правила цього графіка збережено.',
     );
     if (result) closeModal();
@@ -2487,6 +2620,7 @@ modalRoot.addEventListener('submit', async (event) => {
         date: event.target.dataset.date,
         employeeIds: form.getAll('employeeIds').map(String),
         singleApproved: form.get('singleApproved') === 'on',
+        note: String(form.get('note') || ''),
       }),
       'Склад чергових збережено.',
     );

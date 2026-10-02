@@ -137,3 +137,25 @@ test('falls back to the next calendar week when no schedule state is available',
     { startDate: '2026-09-21', endDate: '2026-09-27' },
   );
 });
+
+test('zero-duty days need no assignments and three-person shortages are revisited', () => {
+  const assignments = assignmentsForRange('2026-08-24', '2026-08-28');
+  for (const assignment of Object.values(assignments)) assignment.employeeIds.push('c');
+  const snapshot = { duties: { baselineThroughDate: '2026-08-23', assignments,
+    rules: { weekdayDutyCount: 3, weekendDutyCount: 0 } } };
+  assert.deepEqual(nextDutyPlanningRange(snapshot, new Date(2026, 8, 14, 12)), {
+    startDate: '2026-08-31', endDate: '2026-09-06',
+  });
+  assignments['2026-08-26'].employeeIds.pop();
+  assert.equal(nextDutyPlanningRange(snapshot).startDate, '2026-08-24');
+  snapshot.duties.rules.requiredByWeekday = { 3: 0 };
+  assert.equal(nextDutyPlanningRange(snapshot).startDate, '2026-08-31');
+});
+
+test('a schedule with all seven days off falls back without scanning years', () => {
+  const snapshot = { duties: { baselineThroughDate: '2026-08-23', assignments: {},
+    rules: { weekdayDutyCount: 0, weekendDutyCount: 0 } } };
+  assert.deepEqual(nextDutyPlanningRange(snapshot, new Date(2026, 8, 14, 12)), {
+    startDate: '2026-09-21', endDate: '2026-09-27',
+  });
+});
