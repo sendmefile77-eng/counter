@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
+  createDraw: input => ipcRenderer.invoke('draws:create', input),
+  createTaskFromDraw: (id, input) => ipcRenderer.invoke('draws:create-task', { id, input }),
+  confirmAction: message => ipcRenderer.invoke('dialog:confirm', message),
   createTask: input => ipcRenderer.invoke('tasks:create', input),
   updateTask: (id, input) => ipcRenderer.invoke('tasks:update', { id, input }),
   setTaskStatus: (id, input) => ipcRenderer.invoke('tasks:status', { id, input }),

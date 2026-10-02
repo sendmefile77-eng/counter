@@ -87,7 +87,7 @@ class DataStore {
     return this.backupCandidates().flatMap(({ id, path: backupPath }) => {
       try {
         const state = this.readBackup(backupPath);
-        return [{ id, employees: state.employees.length, receipts: state.receipts.length, tasks: state.tasks.length,
+        return [{ id, employees: state.employees.length, receipts: state.receipts.length, tasks: state.tasks.length, draws:state.draws.length,
           savedAt: fs.statSync(backupPath).mtime.toISOString() }];
       } catch (_error) {
         return [];

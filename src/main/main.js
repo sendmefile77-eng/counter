@@ -57,6 +57,7 @@ const {
 } = require('../shared/domain');
 const { DataStore } = require('./store');
 const tasks = require('../shared/tasks');
+const draws = require('../shared/draws');
 const planner = require('../shared/planner');
 const { employeeOverview, weeklySummary, buildWeeklyCsv, buildWeeklyHtml } = require('../shared/management');
 const { createReminderService, setupWindowsNotifications } = require('./task-reminders');
@@ -70,6 +71,7 @@ let windowMode = 'widget';
 let lastBroadcastDate = null;
 let reminders = null;
 let dataImportPending = false;
+let activationRequested = false;
 const undoStack = [];
 
 function clampWidgetSize(value) {
@@ -184,6 +186,7 @@ function createMainWindow() {
     applyWidgetShape(widgetSize);
     if (!restoreWidgetPosition(widgetSize)) mainWindow.center();
     mainWindow.show();
+    if (activationRequested) { mainWindow.focus(); activationRequested = false; }
     reminders?.check();
   });
   mainWindow.on('moved', () => {
@@ -343,6 +346,11 @@ function buildCsv(state) {
     task.documentRef || '', task.recurrence === 'none' ? '' : planner.RECURRENCE_LABELS[task.recurrence], task.description || '',
   ]);
   const rows = [
+    ...(state.draws || []).flatMap(draw => draw.participants.map(person => [
+      `Жеребкування №${draw.number}`, draw.createdAt, person.name,
+      draw.selectedIds.includes(person.id) ? 'Короткий сірник · обрано' : 'Довгий сірник · не обрано',
+      '', draw.title, '', `${draw.description}${draw.rerollReason ? `; Повторне: ${draw.rerollReason}` : ''}; Автор: ${draw.createdBy}; Протокол: ${draw.id}`,
+    ])),
     ...taskRows,
     ...requestRows,
     ...dutyRows,
@@ -355,6 +363,26 @@ function buildCsv(state) {
 
 function registerIpc() {
   ipcMain.handle('snapshot:get', () => currentSnapshot());
+  ipcMain.handle('draws:create', (_event, input) => {
+    const result = mutate('draws:create', state => draws.createDraw(state,input));
+    // A saved draw is a checkpoint: undoing earlier edits must not erase its result.
+    undoStack.length = 0;
+    return result;
+  });
+  ipcMain.handle('draws:create-task', (_event, { id, input }) => {
+    const existing = store.state.draws.find(draw=>draw.id===id)?.taskId;
+    if (existing && store.state.tasks.some(task=>task.id===existing)) return store.state.tasks.find(task=>task.id===existing);
+    return mutate('draws:create-task', state => draws.taskFromDraw(state,id,input));
+  });
+  ipcMain.handle('dialog:confirm', async (_event, message) => {
+    if (typeof message !== 'string' || !message.trim() || message.length>2500) throw new Error('Некоректний текст підтвердження.');
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show(); mainWindow.focus();
+    const answer = await dialog.showMessageBox(mainWindow,{ type:'question', title:'ЛАД · Підтвердження',
+      message, buttons:['Продовжити','Скасувати'], defaultId:1, cancelId:1, noLink:true });
+    return answer.response===0;
+  });
 
   ipcMain.handle('tasks:create', (_event, input) => mutate('tasks:create', state => tasks.createTask(state, input)));
   ipcMain.handle('tasks:update', (_event, { id, input }) => mutate('tasks:update', state => tasks.updateTask(state, id, input)));
@@ -611,7 +639,7 @@ function registerIpc() {
           type: 'question',
           title: 'Імпорт резервної копії ЛАД',
           message: `Імпортувати «${path.basename(filePath)}»?`,
-          detail: `Працівників: ${normalized.employees.length}; документів: ${normalized.receipts.length}; завдань: ${normalized.tasks.length}; графіків: ${normalized.dutySchedules.length}.\n\nПоточну базу буде замінено. Попередня база залишиться в локальній резервній копії; імпорт також можна скасувати кнопкою «Скасувати останню дію».`,
+          detail: `Працівників: ${normalized.employees.length}; документів: ${normalized.receipts.length}; завдань: ${normalized.tasks.length}; графіків: ${normalized.dutySchedules.length}; жеребкувань: ${normalized.draws.length}.\n\nПоточну базу буде замінено. Попередня база залишиться в локальній резервній копії; імпорт також можна скасувати кнопкою «Скасувати останню дію».`,
           buttons: ['Імпортувати', 'Скасувати'],
           defaultId: 1,
           cancelId: 1,
@@ -732,6 +760,15 @@ function registerIpc() {
   ipcMain.handle('window:close', () => mainWindow?.close());
 }
 
+function revealMainWindow() {
+  activationRequested = true;
+  if (!store) return;
+  if (!mainWindow || mainWindow.isDestroyed()) { createMainWindow(); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show(); mainWindow.focus();
+}
+app.on('second-instance', revealMainWindow);
+
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   store = new DataStore(applicationDataDirectory(), app.getPath('userData'));
@@ -762,9 +799,7 @@ app.whenReady().then(() => {
     if (changed || currentDate !== lastBroadcastDate) broadcast();
   }, 30_000);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-  });
+  app.on('activate', revealMainWindow);
 });
 
 app.on('before-quit', () => {

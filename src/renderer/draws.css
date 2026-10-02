@@ -1,0 +1,32 @@
+.draw-layout { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(280px,.9fr); gap:20px; align-items:start; }
+.draw-layout .panel { min-width:0; margin-top:0; }
+#draw-form { display:flex; flex-direction:column; gap:14px; }
+#draw-form .rules-heading { margin-bottom:4px; }
+.draw-match { flex:none; width:24px; height:64px; overflow:visible; }
+.draw-match path { fill:var(--accent); }
+.draw-match ellipse { fill:var(--steel); }
+.draw-match.short { height:44px; }
+.draw-result { margin-bottom:20px; border-top:3px solid var(--accent); }
+.draw-result h2 { overflow-wrap:anywhere; }
+.draw-result h3 { margin-top:22px; }
+.draw-winners,.draw-participants { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:18px 0; }
+.draw-person { display:flex; align-items:center; gap:14px; padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--panel-raised); min-width:0; }
+.draw-person strong,.draw-person small { display:block; overflow-wrap:anywhere; }
+.draw-person small { color:var(--muted); font-size:12px; margin:4px 0; }
+.draw-person strong { font-size:16px; }
+.draw-picker { border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:18px; }
+.draw-picker legend { padding:0 6px; font-weight:650; }
+.draw-checks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; max-height:250px; overflow:auto; margin-top:14px; }
+.draw-checks .check-row { margin:0; align-items:start; overflow-wrap:anywhere; }
+.draw-odds { padding:12px; background:var(--accent-soft); border-radius:8px; font-weight:650; line-height:1.6; }
+.draw-note { font-size:12px; line-height:1.6; }
+.draw-submit { width:100%; white-space:normal; }
+.draw-history h2 { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.draw-history-row { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; padding:16px 2px; border:0; border-top:1px solid var(--line); background:transparent; color:var(--text); text-align:left; font:inherit; cursor:pointer; }
+.draw-history-row:hover { background:var(--surface-hover); }
+.draw-history-row strong,.draw-history-row small { display:block; overflow-wrap:anywhere; }
+.draw-history-row strong { margin:6px 0; }
+.draw-history-row small { color:var(--muted); font-size:12px; line-height:1.6; }
+[data-draw-error] { color:var(--accent); }
+@media(max-width:1100px) { .draw-layout { grid-template-columns:1fr; } }
+@media(max-width:650px) { .draw-winners,.draw-participants,.draw-checks { grid-template-columns:1fr; } }

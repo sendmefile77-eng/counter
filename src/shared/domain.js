@@ -1,8 +1,9 @@
 const crypto = require('node:crypto');
 const journal = require('./journal');
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const { normalizeTasks } = require('./tasks');
+const { normalizeDraws } = require('./draws');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
   pending: '#586b85',
@@ -340,6 +341,7 @@ function defaultState(now = new Date()) {
     activeDutyScheduleId: 'primary',
     duties,
     tasks: [],
+    draws: [],
     timeOffEntries: [],
     settings: normalizeGlobalSettings(),
     audit: [{
@@ -469,6 +471,7 @@ function normalizeState(input, now = new Date()) {
   });
 
   state.tasks = normalizeTasks(input.tasks, state, now);
+  state.draws = normalizeDraws(input.draws);
   return state;
 }
 

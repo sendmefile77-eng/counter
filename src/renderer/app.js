@@ -312,9 +312,10 @@ function statusBadge(status) {
   return `<span class="status-badge" data-status="${status}">${h(STATUS_LABELS[status] || status)}</span>`;
 }
 
-function confirmAction(message, always = false) {
+async function confirmAction(message, always = false) {
   if (!always && snapshot?.settings?.confirmDestructiveActions === false) return true;
-  return window.confirm(message);
+  try { return await window.counter.confirmAction(message); }
+  catch (error) { showToast(error.message || 'Не вдалося відкрити підтвердження.', { error:true }); return false; }
 }
 
 function rememberScrollPositions() {
@@ -394,6 +395,7 @@ function renderShell() {
   appRoot.querySelectorAll('[data-employee-row-color]').forEach((row) => row.style.setProperty('--employee-row-rgb', DUTY_ROW_COLORS[Number(row.dataset.employeeRowColor)]));
   appRoot.querySelectorAll('[data-legend-status]').forEach((swatch) => { swatch.style.backgroundColor = statusColor(swatch.dataset.legendStatus); });
   updateDutyScrollExtent();
+  updateDrawOdds();
   restoreScrollPositions();
 }
 
@@ -488,6 +490,7 @@ const NAV_ICONS = {
   restore: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="11" height="11" rx="1"></rect><path d="M9 8V5h10v10h-3"></path></svg>',
   planner: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h3M15 13v5M13 15.5h4"></path></svg>',
   weekly: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM15 3v4h3M9 11h6M9 15h6M9 18h4"></path></svg>',
+  draws: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9v12M17 14v7"></path><ellipse cx="7" cy="6" rx="2.5" ry="3"></ellipse><ellipse cx="17" cy="11" rx="2.5" ry="3"></ellipse></svg>',
   search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>',
   today: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><path d="m9.4 12 1.7 1.8 3.8-4"></path></svg>',
   journal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"></rect><path d="M8 3.5v4M16 3.5v4M4 9.5h16M8 13h3M13 13h3M8 16h3"></path></svg>',
@@ -510,6 +513,7 @@ const NAV_ITEMS = [
   ['help', 'Довідка', 'Позначення й пояснення роботи'],
   ['planner', 'Планувальник', 'Завдання, календар, строки й нагадування'],
   ['weekly', 'Тижневе зведення', 'Виконане, затримки й рішення для керівника'],
+  ['draws', 'Тягнути сірник', 'Випадковий вибір виконавців та збережені протоколи'],
 ];
 
 async function navigateToTab(tab) {
@@ -524,12 +528,12 @@ async function navigateToTab(tab) {
 }
 
 function renderDashboard() {
-  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label} (Ctrl+${index === 9 ? 0 : index + 1})" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}</span></button>`;
+  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label}${index < 10 ? ` (Ctrl+${index === 9 ? 0 : index + 1})` : ''}" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}</span></button>`;
   return `
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
-        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','planner','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
+        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','planner','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees','draws'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
         <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6,8).map((item, i) => navButton(item, i + 6)).join('')}</nav>
         <div class="sidebar-note">
@@ -546,6 +550,7 @@ function renderDashboard() {
 }
 
 function renderActivePage() {
+  if (ui.tab === 'draws') return renderDrawPage();
   if (ui.tab === 'planner') return renderPlannerPage();
   if (ui.tab === 'weekly') return renderWeeklyPage();
   if (ui.tab === 'journal') return renderJournalPage();
@@ -1302,7 +1307,7 @@ function renderDataPage() {
         <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
       </div>
       <div class="backup-list"><h3>Доступні локальні копії</h3>
-        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
+        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань, ${backup.draws || 0} жеребкувань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
       </div>
       <p class="panel-copy data-file-path"><strong>Локальний файл:</strong> ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
@@ -1322,6 +1327,7 @@ function renderHelpPage() {
   return `
     <div class="page-header"><div><h1>Довідка та позначення</h1><p>Пояснення роботи програми без зміни її параметрів.</p></div></div>
     <section class="panel help-navigation"><h2>Швидка робота з ЛАД</h2><p class="panel-copy">Почніть з огляду дня. У планувальнику записуйте завдання, строки й нагадування; у тижневому зведенні перевіряйте виконане та потрібні рішення. У табелі змінюйте статуси, у чергуваннях — плануйте склад і перевіряйте пояснення. В аналітиці натискайте показник, щоб побачити дати й документи.</p><div class="help-shortcuts"><span><kbd>Ctrl K</kbd> Знайти розділ, працівника або завдання</span><span><kbd>Ctrl 1–9 / 0</kbd> Перейти до розділу</span><span><kbd>Esc</kbd> Закрити діалог</span><span><kbd>F11</kbd> Повний екран</span></div><p class="panel-copy">У діалозі можна пересуватися клавішею Tab. Теми, щільність і збільшений текст доступні в налаштуваннях.</p><button class="button small" data-tab="data">Налаштувати вигляд</button></section>
+    <section class="panel"><h2>Тягнути сірник</h2><p>1. Назвіть роботу, виберіть усіх або окремих активних працівників і кількість виконавців. 2. Натисніть «Тягнути сірники»: короткі сірники визначають виконавців, протокол зберігається одразу. 3. Створіть завдання з обраними людьми або скопіюйте повний протокол. Повторний розіграш потребує пояснення та зберігає попередній результат.</p><p class="muted">Після розіграшу можна скасовувати лише подальші дії. Імена в протоколі залишаються такими, якими були на момент вибору.</p></section>
     <section class="panel rules-panel">
       <div class="rules-grid">
         <article class="rule-card"><div class="rule-time">00:00</div><div><strong>Новий день</strong><p>Віджет переходить до поточної дати; попередня історія зберігається.</p></div></article>
@@ -2013,7 +2019,7 @@ async function submitOne(employeeId) {
   try { preview = await window.counter.previewSubmission(payload); }
   catch (error) { showToast(error.message || String(error), { error: true }); return; }
   if ((preview.dates.length !== 1 || preview.dates[0] !== localDateKey() || preview.unallocatedCredit)
-    && !confirmAction(`Один запит закриє: ${preview.dates.map((date) => formatDate(date)).join(', ') || 'жодного дня'}. Залишок: ${preview.unallocatedCredit}. Зарахувати?`, true)) return;
+    && !(await confirmAction(`Один запит закриє: ${preview.dates.map((date) => formatDate(date)).join(', ') || 'жодного дня'}. Залишок: ${preview.unallocatedCredit}. Зарахувати?`, true))) return;
   const receipt = await run(
     () => window.counter.recordSubmission(payload),
     'Один запит зараховано.',
@@ -2111,6 +2117,7 @@ function updateAnalyticsDraftNotice(form) {
 }
 
 appRoot.addEventListener('click', async (event) => {
+  if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   if (handleAnalyticsClick(event)) return;
   const todayFilter = event.target.closest('[data-today-filter]');
@@ -2171,6 +2178,7 @@ appRoot.addEventListener('click', async (event) => {
             dutyFocusedEmployeeId:'', dutySelectedWeek:'', journalFocusedEmployeeId:'', journalQuery:'',
             plannerEmployee:'', plannerQuery:'', plannerFocus:'', timeOffEmployee:'',
             weekly:null, weeklyError:'', weeklyLoading:false, profile:null });
+          drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0;
           ui.analyticsRevision += 1; ui.analyticsDetailRevision += 1;
           ui.weeklyRevision += 1; ui.profileRevision += 1;
           clearJournalSelection();
@@ -2184,8 +2192,8 @@ appRoot.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'reset-all-data') {
-      if (!confirmAction('Це назавжди видалить УСІ дані застосунку. Продовжити?', true)) return;
-      if (!confirmAction('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань, завдання й журнал «Відлучення» без можливості скасування?', true)) return;
+      if (!(await confirmAction('Це назавжди видалить УСІ дані застосунку. Продовжити?', true))) return;
+      if (!(await confirmAction('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань, завдання, жеребкування й журнал «Відлучення» без можливості скасування?', true))) return;
       const result = await run(
         () => window.counter.resetAllData(),
         null,
@@ -2193,7 +2201,7 @@ appRoot.addEventListener('click', async (event) => {
       );
       if (result?.reset) {
         ui.tab = 'today';
-        ui.settingsDraft = null;
+        ui.settingsDraft = null; drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0;
         ui.todayQuery = ''; ui.todayFilter = 'all';
         ui.weekly = null; ui.weeklyRevision += 1; ui.weeklyError = ''; ui.profile = null; ui.profileRevision += 1;
         ui.plannerQuery = ''; ui.plannerEmployee = ''; ui.plannerStatus = 'active'; ui.plannerPriority = ''; ui.plannerFocus = ''; ui.plannerArchived = false;
@@ -2345,7 +2353,7 @@ appRoot.addEventListener('click', async (event) => {
 
   const restoreBackupButton = event.target.closest('[data-restore-backup]');
   if (restoreBackupButton) {
-    if (!confirmAction('Відновити вибрану копію? Поточні дані буде замінено, але дію можна скасувати.', true)) return;
+    if (!(await confirmAction('Відновити вибрану копію? Поточні дані буде замінено, але дію можна скасувати.', true))) return;
     await run(() => window.counter.restoreBackup(restoreBackupButton.dataset.restoreBackup),
       'Резервну копію відновлено.');
     return;
@@ -2353,7 +2361,7 @@ appRoot.addEventListener('click', async (event) => {
 
   const deleteTimeOffButton = event.target.closest('[data-delete-time-off]');
   if (deleteTimeOffButton) {
-    if (!confirmAction('Видалити цей запис із журналу «Відлучення»?')) return;
+    if (!(await confirmAction('Видалити цей запис із журналу «Відлучення»?'))) return;
     await run(
       () => window.counter.deleteTimeOffEntry(deleteTimeOffButton.dataset.deleteTimeOff),
       'Запис видалено.',
@@ -2381,7 +2389,7 @@ appRoot.addEventListener('click', async (event) => {
   }
   if (event.target.closest('[data-delete-duty-schedule]')) {
     const schedule = activeDutySchedule();
-    if (!confirmAction(`Видалити графік «${schedule.name}» разом із його історією та позначками? Інші графіки не зміняться.`)) return;
+    if (!(await confirmAction(`Видалити графік «${schedule.name}» разом із його історією та позначками? Інші графіки не зміняться.`))) return;
     const result = await run(
       () => window.counter.deleteDutySchedule(schedule.id),
       `Графік «${schedule.name}» видалено.`,
@@ -2463,7 +2471,7 @@ appRoot.addEventListener('click', async (event) => {
     const scope = mode === 'generated'
       ? 'лише автоматичні призначення (ручні та реалізовані залишаться)'
       : 'усі призначення';
-    if (!confirmAction(`Очистити ${scope} за ${formatDate(startDate)} — ${formatDate(endDate)}? Зачеплено до ${affected.length} дн. і ${realized} реалізованих чергувань. Позначки відсутності, «А», заборони та правила залишаться. Дію можна скасувати.`, true)) return;
+    if (!(await confirmAction(`Очистити ${scope} за ${formatDate(startDate)} — ${formatDate(endDate)}? Зачеплено до ${affected.length} дн. і ${realized} реалізованих чергувань. Позначки відсутності, «А», заборони та правила залишаться. Дію можна скасувати.`, true))) return;
     const result = await run(() => window.counter.clearDutyWeek(startDate, mode), null);
     if (result) showToast(`Очищено ${result.removedDays} дн. графіка.`, { undo: result.removedDays > 0 });
     return;
@@ -2471,7 +2479,7 @@ appRoot.addEventListener('click', async (event) => {
 
   const archiveButton = event.target.closest('[data-archive-employee]');
   if (archiveButton) {
-    if (!confirmAction('Прибрати працівника з активного віджета? Історія залишиться в архіві.')) return;
+    if (!(await confirmAction('Прибрати працівника з активного віджета? Історія залишиться в архіві.'))) return;
     await run(() => window.counter.archiveEmployee(archiveButton.dataset.archiveEmployee), 'Працівника переміщено до архіву.');
     return;
   }
@@ -2603,6 +2611,7 @@ appRoot.addEventListener('keydown', (event) => {
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'journal-range-form') {
     const data = new FormData(event.target);
@@ -2665,6 +2674,11 @@ appRoot.addEventListener('submit', async (event) => {
 });
 
 appRoot.addEventListener('input', (event) => {
+  captureDrawInput(event);
+  if (event.target.matches('[data-draw-search]')) {
+    const cursor = event.target.selectionStart; drawUi.query = event.target.value; drawUi.page = 0; renderShell();
+    const input = appRoot.querySelector('[data-draw-search]'); input.focus(); if (cursor != null) input.setSelectionRange(cursor,cursor); return;
+  }
   const settingsForm = event.target.closest('#settings-form');
   if (settingsForm) { captureSettingsDraft(settingsForm); return; }
   if (event.target.matches('[data-today-search]')) {
@@ -2780,6 +2794,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   const quick = event.target.closest('[data-quick-type]');
   if (quick) {
@@ -2900,7 +2915,7 @@ modalRoot.addEventListener('click', async (event) => {
   const weekLockButton = event.target.closest('[data-toggle-week-lock]');
   if (weekLockButton) {
     const willLock = weekLockButton.dataset.locked !== 'true';
-    if (willLock && !confirmAction('Заблокувати весь тиждень від змін?')) return;
+    if (willLock && !(await confirmAction('Заблокувати весь тиждень від змін?'))) return;
     const result = await run(
       () => window.counter.setDutyWeekLocked(weekLockButton.dataset.toggleWeekLock, willLock),
       willLock ? 'Тиждень заблоковано.' : 'Тиждень розблоковано.',
@@ -2973,7 +2988,7 @@ modalRoot.addEventListener('click', async (event) => {
 
   const clearWorkdayButton = event.target.closest('[data-clear-workday-override]');
   if (clearWorkdayButton) {
-    if (!window.confirm('Повернути позначку «ВХ»? Установлений вручну статус цього дня буде очищено.')) return;
+    if (!(await confirmAction('Повернути позначку «ВХ»? Установлений вручну статус цього дня буде очищено.', true))) return;
     const result = await run(
       () => window.counter.clearWorkdayOverride(clearWorkdayButton.dataset.employeeId, clearWorkdayButton.dataset.date),
       'День знову позначено календарним вихідним.',
@@ -2989,7 +3004,7 @@ modalRoot.addEventListener('click', async (event) => {
   if (removeDutyButton) {
     const realized = snapshot.duties.assignments[removeDutyButton.dataset.date]
       ?.realizedEmployeeIds?.includes(removeDutyButton.dataset.employeeId);
-    if (realized && !confirmAction('Зняти вже виконане чергування? Це змінить підсумки.', true)) return;
+    if (realized && !(await confirmAction('Зняти вже виконане чергування? Це змінить підсумки.', true))) return;
     const result = await run(
       () => window.counter.removeDutyAssignment(removeDutyButton.dataset.employeeId, removeDutyButton.dataset.date),
       'Позначку чергування знято.',
@@ -3035,7 +3050,7 @@ modalRoot.addEventListener('click', async (event) => {
 
   const clearDutyDayButton = event.target.closest('[data-clear-duty-day]');
   if (clearDutyDayButton) {
-    if (!window.confirm('Очистити склад чергових на цей день?')) return;
+    if (!(await confirmAction('Очистити склад чергових на цей день?', true))) return;
     const result = await run(
       () => window.counter.setDutyAssignment({ date: clearDutyDayButton.dataset.clearDutyDay, employeeIds: [], singleApproved: false }),
       'Склад чергових очищено.',
@@ -3072,6 +3087,7 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'employee-rename-form') {
     const result = await run(() => window.counter.renameEmployee(event.target.dataset.employeeId,

@@ -24,7 +24,7 @@ test('legacy databases gain an empty task collection without altering facts or e
   const normalized = domain.normalizeState(domain.clone(state), now);
   assert.deepEqual(normalized.tasks, []); assert.deepEqual(normalized.records, state.records);
   assert.deepEqual(normalized.employees, state.employees); assert.equal(normalized.settings.taskRemindersEnabled, true);
-  assert.equal(normalized.schemaVersion, 8);
+  assert.equal(normalized.schemaVersion, domain.SCHEMA_VERSION);
 });
 test('task history records actor, reasons, changed values and survives reload and backup', () => {
   const { state, people } = fixture(); state.settings.operatorName = 'Начальник';
