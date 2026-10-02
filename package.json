@@ -1,6 +1,6 @@
 {
   "name": "counter-widget",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Локальний Windows-віджет щоденного обліку запитів працівників",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",

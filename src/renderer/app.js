@@ -103,9 +103,12 @@ let ui = {
   journalSelecting: false, journalSelected: [], journalSelectionAnchor: null, journalFocusedEmployeeId: '', journalBatchCells: null,
   analyticsStart: `${localDateKey().slice(0, 7)}-01`,
   analyticsEnd: localDateKey(),
-  analyticsEmployee: '',
-  analytics: null,
-  analyticsTrend: null,
+  analyticsScope: 'active', analyticsEmployeeIds: null, analyticsGroup: 'auto', analyticsCompare: true,
+  analytics: null, analyticsLoading: false, analyticsError: '', analyticsRevision: 0, analyticsDraft: null, analyticsRefreshPending: false,
+  analyticsView: 'overview', analyticsQuery: '', analyticsRowFilter: 'all',
+  analyticsSort: 'name', analyticsSortDirection: 1, analyticsColumns: 'simple', analyticsChart: 'days',
+  analyticsDocumentView: 'received', analyticsDocumentQuery: '', analyticsDocumentPage: 0,
+  analyticsDetail: null, analyticsDetailRevision: 0,
   backups: [],
   dutyMonth: localDateKey().slice(0, 7),
   dutySelectedWeek: '',
@@ -921,92 +924,203 @@ function renderTimeOffPage() {
   `;
 }
 
+const ANALYTICS_LABELS = {
+  calendarWorkdays: 'Робочі дні', workedDays: 'Відпрацьовано', requestDays: 'Закрито запитами',
+  documentDays: 'За документами', manualDays: 'Позначено без документа', actualRequestsReceived: 'Отримано запитів',
+  documentsReceived: 'Отримано документів', missed: 'Незакриті пропуски', pending: 'Без позначки',
+  absent: 'Відсутність', otherTasks: 'Інші завдання', requestRequiredDays: 'Норма запитів у днях',
+  completionPercent: 'Виконання норми', unallocatedCredit: 'Нерозподілений залишок',
+  sick: 'Лікарняний', vacation: 'Відпустка', personalPermission: 'Особисті справи', dayOff: 'Відгул', holiday: 'Свято',
+  submittedOnTime: 'Подав вчасно', submittedLate: 'Із запізненням', submittedAdvance: 'Наперед за дозволом', complexRequests: 'Складні запити',
+};
+
+function analyticsAvailableEmployees(scope = ui.analyticsScope) {
+  return snapshot.employees.filter((person) => scope === 'all' || (scope === 'active' ? person.active : !person.active));
+}
+function analyticsCurrentFilter() {
+  return { startDate: ui.analyticsStart, endDate: ui.analyticsEnd, scope: ui.analyticsScope,
+    employeeIds: ui.analyticsEmployeeIds, groupBy: ui.analyticsGroup, compare: ui.analyticsCompare };
+}
+function analyticsFormFilter(form = appRoot.querySelector('#analytics-form')) {
+  if (!form) return analyticsCurrentFilter();
+  const data = new FormData(form);
+  const ids = data.getAll('employeeIds').map(String);
+  const scope = form.dataset.scope || ui.analyticsScope;
+  const all = analyticsAvailableEmployees(scope).map((person) => person.id);
+  return { startDate: String(data.get('startDate') || ''), endDate: String(data.get('endDate') || ''), scope,
+    employeeIds: ids.length === all.length && all.every((id) => ids.includes(id)) ? null : ids,
+    groupBy: String(data.get('groupBy') || 'auto'), compare: data.get('compare') === 'on' };
+}
+async function loadAnalytics(filter = analyticsCurrentFilter(), { render = true } = {}) {
+  if (!render && ui.analyticsLoading) { ui.analyticsRefreshPending = true; return null; }
+  if (render) ui.analyticsDraft = filter;
+  const revision = ++ui.analyticsRevision;
+  ui.analyticsLoading = true;
+  const notice = appRoot.querySelector('[data-analytics-loading]');
+  if (notice) notice.textContent = 'Оновлення звіту…';
+  const button = appRoot.querySelector('#analytics-form [type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const report = await window.counter.getAnalyticsReport(filter);
+    if (revision !== ui.analyticsRevision) return null;
+    ui.analytics = report; ui.analyticsError = '';
+    if (render) ui.analyticsDraft = null;
+    ui.analyticsStart = filter.startDate; ui.analyticsEnd = filter.endDate; ui.analyticsScope = filter.scope;
+    ui.analyticsEmployeeIds = filter.employeeIds; ui.analyticsGroup = filter.groupBy; ui.analyticsCompare = filter.compare;
+    ui.analyticsDocumentPage = 0;
+    return report;
+  } catch (error) {
+    if (revision === ui.analyticsRevision) { ui.analyticsError = error.message || String(error); showToast(ui.analyticsError, { error: true }); }
+    return null;
+  } finally {
+    if (revision === ui.analyticsRevision) {
+      ui.analyticsLoading = false;
+      if (render) renderShell();
+      else {
+        if (notice?.isConnected) notice.textContent = ui.analyticsError ? `${ui.analyticsError} Показано останній успішний звіт.` : '';
+        if (button?.isConnected) button.disabled = false;
+      }
+      if (ui.analyticsRefreshPending) { ui.analyticsRefreshPending = false; void loadAnalytics(analyticsCurrentFilter(), { render: false }).then(() => renderShell()); }
+    }
+  }
+}
+function analyticsNumber(value) { return value == null ? '—' : Number(value).toLocaleString('uk-UA', { maximumFractionDigits: 1 }); }
+function analyticsValue(key, value) { return value == null ? '—' : `${analyticsNumber(value)}${key === 'completionPercent' ? '%' : ''}`; }
+function analyticsDelta(key, report = ui.analytics) {
+  if (!report?.comparison) return '';
+  const delta = key === 'completionPercent' ? report.comparison.completionDelta : report.comparison.delta[key];
+  if (delta == null) return '<small class="analytics-delta">Немає норми для порівняння</small>';
+  return `<small class="analytics-delta">${delta > 0 ? '+' : ''}${analyticsNumber(delta)}${key === 'completionPercent' ? ' в. п.' : ''} до попереднього періоду</small>`;
+}
 function renderAnalyticsPage() {
-  const analytics = ui.analytics;
+  const draft = ui.analyticsDraft || analyticsCurrentFilter();
+  const people = analyticsAvailableEmployees(draft.scope);
+  const selected = draft.employeeIds;
+  const count = selected ? selected.length : people.length;
   return `
-    <div class="page-header">
-      <div>
-        <h1>Статистика й аналітика</h1>
-        <p>Фактичні запити та зараховані ними робочі дні рахуються окремо.</p>
-      </div>
-    </div>
-    <form id="analytics-form" class="panel">
-      <div class="form-grid">
-        <label class="field">
-          <span>Працівник</span>
-          <select name="employeeId">
-            <option value="">Усі працівники</option>
-            ${snapshot.employees.map((employee) => `<option value="${h(employee.id)}" ${ui.analyticsEmployee === employee.id ? 'selected' : ''}>${h(employee.name)}</option>`).join('')}
-          </select>
-        </label>
-        <label class="field"><span>Від дати</span><input type="date" name="startDate" value="${ui.analyticsStart}" required></label>
-        <label class="field"><span>До дати</span><input type="date" name="endDate" value="${ui.analyticsEnd}" required></label>
-        <div class="field"><span>&nbsp;</span><button class="button primary" type="submit">Сформувати</button></div>
-      </div>
+    <div class="page-header"><div><h1>Статистика й аналітика</h1><p>Оберіть період і працівників. Натисніть показник, щоб перевірити його за датами та документами.</p></div></div>
+    <form id="analytics-form" data-scope="${draft.scope}" class="panel analytics-filter-panel">
+      <div class="analytics-presets button-row">${[['today', 'Сьогодні'], ['week', 'Цей тиждень'], ['month', 'Цей місяць'], ['last_month', 'Минулий місяць'], ['30days', 'Останні 30 днів'], ['year', 'Цей рік']].map(([key, label]) => `<button class="button small" type="button" data-analytics-preset="${key}">${label}</button>`).join('')}</div>
+      <div class="analytics-filter-grid"><label class="field"><span>Від дати</span><input type="date" name="startDate" value="${h(draft.startDate)}" required></label><label class="field"><span>До дати</span><input type="date" name="endDate" value="${h(draft.endDate)}" required></label><button class="button primary" type="submit" ${ui.analyticsLoading ? 'disabled' : ''}>Показати статистику</button></div>
+      <div class="analytics-scope button-row" aria-label="Група працівників">${[['active', 'Активні'], ['all', 'Разом з архівом'], ['archive', 'Тільки архів']].map(([key, label]) => `<button class="button small ${draft.scope === key ? 'primary' : ''}" type="button" data-analytics-scope="${key}" aria-pressed="${draft.scope === key}">${label}</button>`).join('')}</div>
+      <details class="analytics-worker-picker"><summary>Працівники: ${selected ? 'вибрано' : 'усі у групі'} ${count}. Змінити вибір</summary><div class="button-row"><button class="button small" type="button" data-analytics-pick="all">Вибрати всіх</button><button class="button small" type="button" data-analytics-pick="none">Зняти всіх</button></div><div class="analytics-worker-list">${people.map((person) => `<label class="check-row"><input name="employeeIds" type="checkbox" value="${h(person.id)}" ${!selected || selected.includes(person.id) ? 'checked' : ''}><span>${h(person.name)}${!person.active ? ' · архів' : ''}</span></label>`).join('') || '<p class="muted">У цій групі працівників немає.</p>'}</div></details>
+      <details class="analytics-extra-options"><summary>Динаміка та порівняння</summary><fieldset class="analytics-options"><legend>Крок графіка</legend>${[['auto', 'Автоматично'], ['day', 'Дні'], ['week', 'Тижні'], ['month', 'Місяці']].map(([value, label]) => `<label><input type="radio" name="groupBy" value="${value}" ${draft.groupBy === value ? 'checked' : ''}>${label}</label>`).join('')}</fieldset><label class="check-row"><input name="compare" type="checkbox" ${draft.compare ? 'checked' : ''}><span>Порівняти з попереднім періодом такої самої тривалості</span></label><p class="muted">До 3660 днів у звіті та до 124 точок на графіку. Для довгого періоду обирайте місяці.</p></details>
+      <p class="muted" data-analytics-loading aria-live="polite">${h(ui.analyticsError ? `${ui.analyticsError} Показано останній успішний звіт.` : ui.analyticsLoading ? 'Оновлення звіту…' : 'Зміни у фільтрах застосовуються кнопкою «Показати статистику».')}</p>
     </form>
-    ${analytics ? renderAnalyticsResult(analytics) : `<div class="panel"><p class="panel-copy">Натисніть «Сформувати», щоб отримати розрахунок.</p></div>`}
+    ${ui.analytics ? renderAnalyticsResult(ui.analytics) : '<section class="panel empty-state"><h2>Звіт ще не сформовано</h2><p>Виберіть період та натисніть «Показати статистику».</p></section>'}
   `;
 }
-
-function renderAnalyticsResult(analytics) {
-  const total = analytics.total;
-  const filteredReceipts = snapshot.receipts
-    .filter((receipt) => receipt.receivedDate >= analytics.startDate && receipt.receivedDate <= analytics.endDate)
-    .filter((receipt) => !analytics.employeeId || receipt.employeeId === analytics.employeeId)
-    .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+function analyticsMetricButton(key, value, employeeId = '', extra = '') {
+  return `<button class="analytics-number-button" ${!ui.analytics?.rows.length ? 'disabled' : ''} data-analytics-metric="${key}" ${employeeId ? `data-employee-id="${h(employeeId)}"` : ''} title="Переглянути розрахунок: ${h(ANALYTICS_LABELS[key])}">${analyticsValue(key, value)}${extra}</button>`;
+}
+function renderAnalyticsResult(report) {
+  const total = report.total;
+  const count = report.rows.length;
+  const cards = [
+    ['workedDays', `${total.requestDays} дн. запитів + ${total.otherTasks} дн. інших завдань`],
+    ['actualRequestsReceived', `У ${total.documentsReceived} документах, отриманих у періоді`],
+    ['requestDays', `${total.documentDays} за документами · ${total.manualDays} без документа`],
+    ['missed', 'Дні зі статусом «Не подав»'],
+    ['absent', 'Відпустка, лікарняний, відгул та інші звільнення'],
+    ['completionPercent', total.requestRequiredDays ? `${total.requestDays} із ${total.requestRequiredDays} днів норми` : 'У цьому періоді немає норми запитів'],
+  ];
   return `
-    <div class="metrics-grid">
-      <div class="metric-card"><strong>${total.workedDays || 0}</strong><span>відпрацьованих днів</span></div>
-      <div class="metric-card"><strong>${total.actualRequestsReceived || 0}</strong><span>фактичних запитів</span></div>
-      <div class="metric-card"><strong>${total.requestDays || 0}</strong><span>днів закрито запитами</span></div>
-      <div class="metric-card"><strong>${total.missed || 0}</strong><span>незакритих пропусків</span></div>
-      <div class="metric-card"><strong>${total.completionPercent || 0}%</strong><span>виконання норми</span></div>
-    </div>
-    <section class="panel">
-      <div class="rules-heading"><div><h2>Динаміка за місяцями</h2><p>Закриті запитами дні та пропуски у вибраному періоді</p></div><button class="button small" data-export-analytics>Експортувати цей звіт</button></div>
-      ${(ui.analyticsTrend || []).length ? `<div class="analytics-trend"><p class="muted">Зелений — дні, закриті запитами; червоний — пропуски. Числа праворуч у тому самому порядку.</p>${ui.analyticsTrend.map((item) => `<div class="analytics-trend-row"><span>${h(formatMonth(item.month))}</span><div class="analytics-trend-track" title="${item.requestDays} закрито, ${item.missed} пропусків"><i style="width:${item.requestDays + item.missed ? Math.round(item.requestDays * 100 / (item.requestDays + item.missed)) : 0}%"></i></div><strong>${item.requestDays} / ${item.missed}</strong></div>`).join('')}</div>` : '<p class="muted">Для графіка оберіть період до 36 місяців.</p>'}
-    </section>
-    <section class="panel">
-      <h2>Письмова аналітика</h2>
-      <div class="analytics-text">
-        ${analytics.rows.map((row) => `
-          <div class="analytics-line">
-            <strong>${h(row.name)}.</strong>
-            За обраний період: ${row.calendarWorkdays} робочих днів, відпрацьовано ${row.workedDays}.
-            Отримано ${row.actualRequestsReceived} фактичних запитів у ${row.documentsReceived} документах; ними закрито ${row.requestDays} днів.
-            Вчасно — ${row.submittedOnTime}, із запізненням — ${row.submittedLate}, наперед за дозволом — ${row.submittedAdvance}.
-            Інші завдання — ${row.otherTasks}, особисті справи — ${row.personalPermission}, незакриті пропуски — ${row.missed}, очікується сьогодні — ${row.pending}.
-            Складних запитів із вагою у два дні — ${row.complexRequests}. Виконання норми — ${row.completionPercent}%.
-          </div>
-        `).join('') || '<p class="muted">Немає даних за обраний період.</p>'}
-      </div>
-    </section>
-    <section class="panel">
-      <h2>Показники за працівниками</h2>
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr><th>Працівник</th><th>Робочі дні</th><th>Відпрацьовано</th><th>Запити</th><th>Закрито днів</th><th>Не подав</th><th>Інші завдання</th><th>Особисті справи</th><th>Виконання</th></tr></thead>
-          <tbody>
-            ${analytics.rows.map((row) => `<tr><td>${h(row.name)}</td><td>${row.calendarWorkdays}</td><td>${row.workedDays}</td><td>${row.actualRequestsReceived}</td><td>${row.requestDays}</td><td>${row.missed}</td><td>${row.otherTasks}</td><td>${row.personalPermission}</td><td>${row.completionPercent}%</td></tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="panel">
-      <h2>Аналітика документів і запитів</h2>
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr><th>Дата</th><th>Працівник</th><th>Документ</th><th>Фактичні запити</th><th>Складний</th><th>Зараховано днів</th><th>Дати зарахування</th><th>Залишок</th></tr></thead>
-          <tbody>
-            ${filteredReceipts.map((receipt) => {
-              const employee = employeeById(receipt.employeeId);
-              return `<tr><td>${receipt.receivedDate}</td><td>${h(employee?.name || '—')}</td><td>${h(receipt.documentRef || '—')}<br><button class="button small" data-correct-receipt="${h(receipt.id)}">Виправити</button></td><td>${receipt.actualRequestCount}</td><td>${receipt.complexTwoDay ? 'Так, 2 дні' : 'Ні'}</td><td>${receipt.allocations.length}</td><td>${h(receipt.allocations.map((item) => item.date).join(', ') || '—')}</td><td>${receipt.unallocatedCredit}${receipt.unallocatedCredit ? `<br><button class="button small" data-allocate-receipt="${h(receipt.id)}">Розподілити</button>` : ''}</td></tr>`;
-            }).join('') || '<tr><td colspan="8">За обраний період документів немає.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <div class="analytics-report-heading"><div><strong>Показаний звіт: ${h(formatDate(report.startDate))} — ${h(formatDate(report.endDate))}</strong><p>${count === 1 ? h(report.rows[0].name) : `${count} працівників. Підсумки днів підсумовано для всіх вибраних людей.`}</p>${report.futureCalendarDays ? `<p class="analytics-notice">Результати лише до ${h(formatDate(report.asOfDate))}. Майбутні ${report.futureWorkdays} робочих дн. не додаються до норми, пропусків чи «Без позначки».</p>` : ''}</div><div class="button-row">${[['workers', 'CSV працівників'], ['trend', 'CSV динаміки'], ['documents', 'CSV документів']].map(([view, label]) => `<button class="button small" data-export-analytics-view="${view}" ${ui.analyticsError || !count ? 'disabled' : ''}>${label}</button>`).join('')}</div></div>
+    ${!count ? '<div class="confirm-box">У вибраній групі немає працівників. Змініть групу або додайте працівників.</div>' : ''}
+    <div class="analytics-metric-grid">${cards.map(([key, description]) => `<button class="metric-card analytics-metric-card" ${!count ? 'disabled' : ''} data-analytics-metric="${key}"><span>${h(ANALYTICS_LABELS[key])}</span><strong>${analyticsValue(key, total[key])}</strong><small>${h(description)}</small>${analyticsDelta(key, report)}<span class="analytics-card-hint">Показати розрахунок →</span></button>`).join('')}</div>
+    ${report.comparison ? `<p class="analytics-comparison-note">Порівняння: ${h(formatDate(report.comparison.startDate))} — ${h(formatDate(report.comparison.endDate))}, ті самі працівники. Кількість робочих днів може відрізнятися. Зміна відсотка — у відсоткових пунктах.</p>` : ''}
+    <div class="analytics-attention">${analyticsMetricButton('pending', total.pending, '', '<span> дн. без позначки</span>')}${analyticsMetricButton('unallocatedCredit', total.unallocatedCredit, '', '<span> од. залишку документів</span>')}</div>
+    <div class="button-row analytics-view-tabs">${[['overview', 'Огляд'], ['workers', 'Працівники'], ['documents', 'Документи']].map(([key, label]) => `<button class="button ${ui.analyticsView === key ? 'primary' : ''}" data-analytics-view="${key}" aria-pressed="${ui.analyticsView === key}">${label}</button>`).join('')}</div>
+    ${ui.analyticsView === 'workers' ? renderAnalyticsWorkers(report) : ui.analyticsView === 'documents' ? renderAnalyticsDocuments(report) : `${renderAnalyticsChart(report)}${renderAnalyticsExplanation(report)}`}
   `;
+}
+function renderAnalyticsChart(report) {
+  const isRequests = ui.analyticsChart === 'requests';
+  const series = isRequests ? [['actualRequestsReceived', 'Фактичні запити']] : [['requestDays', 'Дні за запитами'], ['otherTasks', 'Інші завдання'], ['absent', 'Відсутність'], ['missed', 'Пропуски'], ['pending', 'Без позначки']];
+  const maximum = Math.max(1, ...report.trend.map((row) => isRequests ? row.actualRequestsReceived : row.calendarWorkdays));
+  const label = (row) => report.groupBy === 'month' ? formatMonth(row.key) : report.groupBy === 'day' ? formatDate(row.from) : `${formatDate(row.from)} — ${formatDate(row.to)}`;
+  const groupLabel = { day: 'днями', week: 'тижнями', month: 'місяцями' }[report.groupBy];
+  return `<section class="panel analytics-chart-panel"><div class="rules-heading"><div><h2>Динаміка за ${groupLabel}</h2><p>${isRequests ? 'Фактичні запити за датою отримання документа.' : 'Кожен відрізок — кількість робочих днів. Для всіх рядків однакова шкала.'} Натисніть період, щоб розгорнути його.</p></div><div class="button-row"><button class="button small ${!isRequests ? 'primary' : ''}" data-analytics-chart="days">Дні табеля</button><button class="button small ${isRequests ? 'primary' : ''}" data-analytics-chart="requests">Отримані запити</button></div></div>
+    <div class="analytics-chart-legend">${series.map(([key, title]) => `<span class="analytics-legend-${key}">${title}</span>`).join('')}<span>Шкала: 0–${maximum} ${isRequests ? 'запитів' : 'дн.'}</span></div>
+    <div class="analytics-chart-rows">${report.trend.map((row) => {
+      let x = 0;
+      const rectangles = series.map(([key]) => {
+        const width = Math.round(row[key] / maximum * 5000) / 10;
+        const rect = width ? `<rect class="analytics-bar-${key}" x="${x}" y="2" width="${width}" height="16"><title>${h(ANALYTICS_LABELS[key])}: ${row[key]}</title></rect>` : '';
+        x += width; return rect;
+      }).join('');
+      const summary = isRequests ? `${row.actualRequestsReceived} запитів · ${row.documentsReceived} док.` : `${row.calendarWorkdays} дн. · ${row.missed} пропусків`;
+      return `<div class="analytics-chart-row"><button class="analytics-period-link" data-analytics-bucket-from="${row.from}" data-analytics-bucket-to="${row.to}">${h(label(row))}</button><svg viewBox="0 0 500 20" preserveAspectRatio="none" role="img" aria-label="${h(label(row))}: ${h(series.map(([key]) => `${ANALYTICS_LABELS[key]} ${row[key]}`).join(', '))}"><rect class="analytics-bar-background" x="0" y="2" width="500" height="16"/>${rectangles}</svg><span>${summary}${!row.calendarWorkdays && !row.actualRequestsReceived ? ' · немає даних' : ''}</span></div>`;
+    }).join('') || '<p class="muted">За цей період ще немає поточних або минулих днів.</p>'}</div></section>`;
+}
+function renderAnalyticsExplanation(report) {
+  const t = report.total;
+  return `<section class="panel analytics-explanation"><h2>Як читати ці цифри</h2><div class="analytics-explanation-grid"><div><h3>Запити та дні — різні величини</h3><p>Отримано <strong>${t.actualRequestsReceived} запитів</strong> за датами документів. У табелі закрито <strong>${t.requestDays} днів</strong> за датами днів: ${t.documentDays} за документами і ${t.manualDays} позначено без документа.</p><p>Документ може закрити дні іншого періоду. Ручна позначка «Подав» не створює отриманий документ чи фактичний запит.</p></div><div><h3>Що входить до норми</h3><p>${t.calendarWorkdays} робочих дн. − ${t.otherTasks} дн. інших завдань − ${t.absent} дн. відсутності = <strong>${t.requestRequiredDays} дн. норми запитів</strong>.</p><p>${t.requestRequiredDays ? `${t.requestDays} ÷ ${t.requestRequiredDays} × 100 = ${analyticsNumber(t.completionPercent)}%.` : 'Норми немає — відсоток не розраховується.'}</p><p>Відпрацьовано: ${t.requestDays} дн. запитів + ${t.otherTasks} дн. інших завдань = ${t.workedDays}.</p></div></div><details><summary>Без позначки, відсутність та залишок</summary><p>«Без позначки» — робочі дні до сьогодні без статусу; можуть включати минулі дні, якщо автозакриття вимкнено. Відсутність — лікарняний, відпустка, відгул, особисті справи та свято. Нерозподілений залишок — одиниці документів, отриманих у періоді, які ще не зараховано на дні.</p><p>Підсумки обчислюються за поточними записами; виправлення документів або табеля змінюють звіт.</p></details></section>`;
+}
+function analyticsVisibleRows(report = ui.analytics) {
+  const rows = report.rows.filter((row) => row.name.toLocaleLowerCase('uk-UA').includes(ui.analyticsQuery.toLocaleLowerCase('uk-UA'))
+    && (ui.analyticsRowFilter === 'all' || (row[ui.analyticsRowFilter] || 0) > 0));
+  return rows.sort((a, b) => {
+    if (ui.analyticsSort === 'name') return ui.analyticsSortDirection * a.name.localeCompare(b.name, 'uk');
+    const av = a[ui.analyticsSort]; const bv = b[ui.analyticsSort];
+    if (av == null || bv == null) return av == null && bv == null ? a.name.localeCompare(b.name, 'uk') : av == null ? 1 : -1;
+    return ui.analyticsSortDirection * (av - bv) || a.name.localeCompare(b.name, 'uk');
+  });
+}
+function renderAnalyticsWorkers(report) {
+  const rows = analyticsVisibleRows(report);
+  const simple = ['calendarWorkdays', 'workedDays', 'requestDays', 'actualRequestsReceived', 'missed', 'absent', 'pending', 'completionPercent'];
+  const full = [...simple.slice(0, 4), 'documentDays', 'manualDays', 'otherTasks', 'submittedLate', 'submittedAdvance', ...simple.slice(4), 'sick', 'vacation', 'personalPermission', 'dayOff', 'holiday', 'requestRequiredDays', 'unallocatedCredit'];
+  const columns = ui.analyticsColumns === 'full' ? full : simple;
+  const header = (key, label) => `<th><button data-analytics-sort="${key}" title="Сортувати">${h(label)}${ui.analyticsSort === key ? ui.analyticsSortDirection === 1 ? ' ↑' : ' ↓' : ''}</button></th>`;
+  return `<section class="panel"><div class="rules-heading"><div><h2>Працівники</h2><p>Натисніть число для списку дат, ім’я — для підсумку працівника.</p></div><div class="button-row"><button class="button small ${ui.analyticsColumns === 'simple' ? 'primary' : ''}" data-analytics-columns="simple">Основні показники</button><button class="button small ${ui.analyticsColumns === 'full' ? 'primary' : ''}" data-analytics-columns="full">Усі показники</button></div></div><div class="analytics-table-tools"><label class="field"><span>Пошук у таблиці</span><input type="search" data-analytics-search value="${h(ui.analyticsQuery)}" placeholder="Ім’я або прізвище"></label><div class="button-row">${[['all', 'Усі'], ['missed', 'З пропусками'], ['pending', 'Без позначки'], ['unallocatedCredit', 'Із залишком']].map(([key, label]) => `<button class="button small ${ui.analyticsRowFilter === key ? 'primary' : ''}" data-analytics-row-filter="${key}">${label}</button>`).join('')}</div></div><p class="muted">Показано ${rows.length} із ${report.rows.length}. Пошук і ці фільтри стосуються таблиці; картки та CSV містять увесь вибраний звіт.</p><div class="table-scroll analytics-workers-scroll"><table class="data-table analytics-workers-table"><thead><tr>${header('name', 'Працівник')}${columns.map((key) => header(key, ANALYTICS_LABELS[key])).join('')}</tr></thead><tbody>${rows.map((row) => `<tr><td><button class="analytics-name-link" data-analytics-worker="${h(row.employeeId)}">${h(row.name)}</button>${!row.active ? '<small class="muted">Архів</small>' : ''}</td>${columns.map((key) => `<td>${analyticsMetricButton(key, row[key], row.employeeId)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${columns.length + 1}">За цими умовами працівників немає.</td></tr>`}</tbody></table></div></section>`;
+}
+function renderAnalyticsDocuments(report) {
+  const receipts = report.receipts.filter((receipt) => (ui.analyticsDocumentView === 'received' ? receipt.receivedInside : ui.analyticsDocumentView === 'allocated' ? receipt.datesInside.length > 0 : receipt.receivedInside && receipt.unallocatedCredit > 0)
+    && `${receipt.name} ${receipt.documentRef || ''} ${receipt.note || ''}`.toLocaleLowerCase('uk-UA').includes(ui.analyticsDocumentQuery.toLocaleLowerCase('uk-UA')));
+  const pages = Math.max(1, Math.ceil(receipts.length / 25));
+  ui.analyticsDocumentPage = Math.min(pages - 1, ui.analyticsDocumentPage);
+  return `<section class="panel"><h2>Документи та їхні дні</h2><div class="analytics-table-tools"><label class="field"><span>Пошук документів</span><input type="search" data-analytics-document-search value="${h(ui.analyticsDocumentQuery)}" placeholder="Працівник, номер або примітка"></label><div class="button-row">${[['received', 'Отримані у періоді'], ['allocated', 'Закрили дні періоду'], ['remaining', 'Із залишком']].map(([key, label]) => `<button class="button small ${ui.analyticsDocumentView === key ? 'primary' : ''}" data-analytics-documents="${key}">${label}</button>`).join('')}</div></div><p class="muted">«Дні цього періоду» рахуються за табелем. Документ, отриманий раніше, може закривати ці дні. CSV документів містить обидві групи з окремою ознакою отримання у періоді.</p><div class="table-scroll"><table class="data-table"><thead><tr><th>Отримано</th><th>Працівник / документ</th><th>Фактичні запити</th><th>Усього зараховано днів</th><th>Дні цього періоду</th><th>Залишок</th><th>Дії</th></tr></thead><tbody>${receipts.slice(ui.analyticsDocumentPage * 25, (ui.analyticsDocumentPage + 1) * 25).map((receipt) => `<tr><td>${h(formatDate(receipt.receivedDate))}${!receipt.receivedInside ? '<small class="muted">Поза періодом отримання</small>' : ''}</td><td>${h(receipt.name)}<br><strong>${h(receipt.documentRef || 'Без номера')}</strong></td><td>${receipt.actualRequestCount}</td><td>${receipt.allocations.length}</td><td>${receipt.datesInside.length}<details><summary>Дати</summary>${h(receipt.datesInside.map(formatDate).join(', ') || 'У цьому періоді немає')}</details></td><td>${receipt.unallocatedCredit}</td><td><button class="button small" data-correct-receipt="${h(receipt.id)}">Виправити</button>${receipt.unallocatedCredit ? `<button class="button small" data-allocate-receipt="${h(receipt.id)}">Розподілити</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7">За цими умовами документів немає.</td></tr>'}</tbody></table></div><div class="analytics-pagination"><button class="button small" data-analytics-document-page="-1" ${!ui.analyticsDocumentPage ? 'disabled' : ''}>← Назад</button><span>${receipts.length} док. · сторінка ${ui.analyticsDocumentPage + 1}/${pages}</span><button class="button small" data-analytics-document-page="1" ${ui.analyticsDocumentPage >= pages - 1 ? 'disabled' : ''}>Далі →</button></div></section>`;
+}
+function refreshAnalyticsView(selector = '') {
+  const focused = selector && document.activeElement?.matches(selector);
+  const position = focused ? document.activeElement.selectionStart : null;
+  renderShell();
+  if (focused) { const next = appRoot.querySelector(selector); next?.focus(); if (position != null) next?.setSelectionRange(position, position); }
+}
+function analyticsFormula(row) {
+  return `<div class="confirm-box"><p>${row.calendarWorkdays} робочих дн. − ${row.otherTasks} дн. інших завдань − ${row.absent} дн. відсутності = <strong>${row.requestRequiredDays} дн. норми</strong>.</p><p>${row.requestRequiredDays ? `${row.requestDays} закритих дн. ÷ ${row.requestRequiredDays} × 100 = ${analyticsNumber(row.completionPercent)}%.` : 'Норми немає — відсоток не розраховується.'}</p></div>`;
+}
+function openAnalyticsWorker(employeeId) {
+  const row = ui.analytics?.rows.find((item) => item.employeeId === employeeId);
+  if (!row) return;
+  openModal(`<header class="modal-head"><div><h2>${h(row.name)}</h2><p>${h(formatDate(ui.analytics.startDate))} — ${h(formatDate(ui.analytics.endDate))}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body">${analyticsFormula(row)}<div class="analytics-worker-metrics">${Object.keys(ANALYTICS_LABELS).filter((key) => key !== 'completionPercent').map((key) => `<div><span>${h(ANALYTICS_LABELS[key])}</span>${analyticsMetricButton(key, row[key], employeeId)}</div>`).join('')}</div></div><footer class="modal-foot"><button class="button" data-close-modal>Закрити</button></footer>`, true);
+}
+async function openAnalyticsMetric(metric, employeeId = '') {
+  const report = ui.analytics;
+  if (!report || !ANALYTICS_LABELS[metric]) return;
+  if (metric === 'completionPercent') {
+    const row = employeeId ? report.rows.find((item) => item.employeeId === employeeId) : report.total;
+    if (!row) return;
+    openModal(`<header class="modal-head"><div><h2>Як розраховано виконання норми</h2><p>${employeeId ? h(row.name) : 'Усі вибрані працівники'}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body">${analyticsFormula(row)}<p>Майбутні дні виключено. Відсутність та інші завдання не вимагають запиту. Загальний відсоток розраховується із сум днів, а не як середнє відсотків працівників.</p><div class="button-row">${['requestDays', 'requestRequiredDays', 'absent'].map((key) => `<button class="button small" data-analytics-metric="${key}" data-employee-id="${h(employeeId)}">${h(ANALYTICS_LABELS[key])}: ${row[key]}</button>`).join('')}</div></div><footer class="modal-foot"><button class="button" data-close-modal>Закрити</button></footer>`, true);
+    return;
+  }
+  ui.analyticsDetail = { filter: { ...report.filter, employeeIds: [...report.employeeIds] }, metric, employeeId: employeeId || null, page: 0 };
+  await loadAnalyticsDetails();
+}
+async function loadAnalyticsDetails() {
+  const input = ui.analyticsDetail;
+  if (!input) return;
+  openModal('<div class="modal-body"><p>Завантаження розрахунку…</p><button class="button" data-close-modal>Закрити</button></div>', true);
+  const revision = ui.analyticsDetailRevision;
+  try {
+    const result = await window.counter.getAnalyticsDetails(input);
+    if (revision !== ui.analyticsDetailRevision || !modalRoot.querySelector('.modal')) return;
+    input.page = result.page;
+    const source = (item) => item.source === 'receipt' ? item.documentRef || 'Документ без номера' : item.source === 'automatic_close' ? 'Автоматичне закриття' : item.source === 'no_record' ? 'Статусу немає' : item.source === 'manual' ? 'Ручна позначка' : 'Позначка без документа';
+    openModal(`<header class="modal-head"><div><h2>${h(ANALYTICS_LABELS[input.metric])}</h2><p>${h(formatDate(input.filter.startDate))} — ${h(formatDate(input.filter.endDate))} · ${input.employeeId ? h(employeeById(input.employeeId)?.name || '') : 'Усі вибрані працівники'}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p class="confirm-box">Підсумок: <strong>${result.totalValue}</strong>. Записів: ${result.totalRows}. Дані за поточним табелем.</p><div class="table-scroll"><table class="data-table"><thead><tr><th>Дата</th><th>Працівник</th><th>Статус / кількість</th><th>Підстава</th><th>Дії</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${h(formatDate(item.date))}</td><td>${h(item.name)}</td><td>${item.status ? h(STATUS_LABELS[item.status] || item.status) : item.value}${item.override ? '<small>Робочий вихідний</small>' : ''}</td><td>${h(source(item))}${item.note ? `<p>${h(item.note)}</p>` : ''}${item.dates ? `<details><summary>Дати зарахування</summary>${h(item.dates.map(formatDate).join(', ') || 'Немає')}</details>` : ''}</td><td>${item.status ? `<button class="button small" data-analytics-show-day="${item.date}" data-employee-id="${h(item.employeeId)}">У табель</button>` : `<button class="button small" data-correct-receipt="${h(item.receiptId)}">Документ</button>`}</td></tr>`).join('') || '<tr><td colspan="5">Записів за цим показником немає.</td></tr>'}</tbody></table></div></div><footer class="modal-foot three-way"><button class="button" data-analytics-detail-page="-1" ${!result.page ? 'disabled' : ''}>← Назад</button><span>Сторінка ${result.page + 1}/${result.pages}</span><button class="button" data-analytics-detail-page="1" ${result.page + 1 >= result.pages ? 'disabled' : ''}>Далі →</button></footer>`, true);
+    modalRoot.querySelector('.modal').classList.add('analytics-detail-modal');
+  } catch (error) { if (revision === ui.analyticsDetailRevision) { closeModal(); showToast(error.message || String(error), { error: true }); } }
 }
 
 function renderEmployeesPage() {
@@ -1145,6 +1259,7 @@ function queueWidgetWindowMode(mode) {
 }
 
 function openModal(content, wide = false) {
+  ui.analyticsDetailRevision += 1;
   modalRoot.innerHTML = `<div class="modal-backdrop" data-modal-close><section class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${content}</section></div>`;
   if (ui.mode === 'widget' && !widgetDialogExpanded) {
     widgetDialogExpanded = true;
@@ -1153,6 +1268,7 @@ function openModal(content, wide = false) {
 }
 
 function closeModal() {
+  ui.analyticsDetailRevision += 1;
   modalRoot.innerHTML = '';
   ui.dutyPreview = null;
   if (widgetDialogExpanded) {
@@ -1737,16 +1853,7 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
     ui.dutySelectedWeek = '';
     ui.dutyFocusedEmployeeId = '';
   }
-  if (analytics) {
-    const filter = {
-      employeeId: ui.analyticsEmployee || null,
-      startDate: ui.analyticsStart,
-      endDate: ui.analyticsEnd,
-    };
-    ui.analytics = await window.counter.getAnalytics(filter);
-    try { ui.analyticsTrend = await window.counter.getAnalyticsTrend(filter); }
-    catch (_error) { ui.analyticsTrend = null; }
-  }
+  if (analytics) await loadAnalytics(analyticsCurrentFilter(), { render: false });
   if (duties && snapshot.duties?.initialized) {
     const year = ui.dutyMonth.slice(0, 4);
     [ui.dutyStats, ui.dutyFairness] = await Promise.all([
@@ -1805,7 +1912,76 @@ function dutyParticipantIds(formElement) {
   return new FormData(formElement).getAll('participantIds').map(String);
 }
 
+function handleAnalyticsClick(event) {
+  const preset = event.target.closest('[data-analytics-preset]');
+  if (preset) {
+    const filter = analyticsFormFilter(); const today = localDateKey();
+    const key = preset.dataset.analyticsPreset;
+    filter.endDate = today;
+    filter.startDate = key === 'today' ? today : key === 'week' ? dutyWeekStart(today) : key === '30days' ? shiftDate(today, -29) : key === 'year' ? `${today.slice(0, 4)}-01-01` : `${today.slice(0, 7)}-01`;
+    if (key === 'last_month') { const month = monthShift(today.slice(0, 7), -1); filter.startDate = `${month}-01`; filter.endDate = `${month}-${String(daysInMonth(month)).padStart(2, '0')}`; }
+    void loadAnalytics(filter); return true;
+  }
+  const scope = event.target.closest('[data-analytics-scope]');
+  if (scope) { void loadAnalytics({ ...analyticsFormFilter(), scope: scope.dataset.analyticsScope, employeeIds: null }); return true; }
+  const pick = event.target.closest('[data-analytics-pick]');
+  if (pick) {
+    const form = pick.closest('form'); form.querySelectorAll('[name="employeeIds"]').forEach((box) => { box.checked = pick.dataset.analyticsPick === 'all'; });
+    ui.analyticsDraft = analyticsFormFilter(form); updateAnalyticsDraftNotice(form); return true;
+  }
+  const metric = event.target.closest('[data-analytics-metric]');
+  if (metric) { void openAnalyticsMetric(metric.dataset.analyticsMetric, metric.dataset.employeeId || ''); return true; }
+  const worker = event.target.closest('[data-analytics-worker]');
+  if (worker) { openAnalyticsWorker(worker.dataset.analyticsWorker); return true; }
+  const view = event.target.closest('[data-analytics-view]');
+  if (view) { ui.analyticsView = view.dataset.analyticsView; renderShell(); return true; }
+  const chart = event.target.closest('[data-analytics-chart]');
+  if (chart) { ui.analyticsChart = chart.dataset.analyticsChart; renderShell(); return true; }
+  const bucket = event.target.closest('[data-analytics-bucket-from]');
+  if (bucket) { void loadAnalytics({ ...ui.analytics.filter, startDate: bucket.dataset.analyticsBucketFrom, endDate: bucket.dataset.analyticsBucketTo }); return true; }
+  const sort = event.target.closest('[data-analytics-sort]');
+  if (sort) {
+    ui.analyticsSortDirection = ui.analyticsSort === sort.dataset.analyticsSort ? -ui.analyticsSortDirection : sort.dataset.analyticsSort === 'name' ? 1 : -1;
+    ui.analyticsSort = sort.dataset.analyticsSort; renderShell(); return true;
+  }
+  const rowFilter = event.target.closest('[data-analytics-row-filter]');
+  if (rowFilter) { ui.analyticsRowFilter = rowFilter.dataset.analyticsRowFilter; renderShell(); return true; }
+  const columns = event.target.closest('[data-analytics-columns]');
+  if (columns) { ui.analyticsColumns = columns.dataset.analyticsColumns; renderShell(); return true; }
+  const documents = event.target.closest('[data-analytics-documents]');
+  if (documents) { ui.analyticsDocumentView = documents.dataset.analyticsDocuments; ui.analyticsDocumentPage = 0; renderShell(); return true; }
+  const documentPage = event.target.closest('[data-analytics-document-page]');
+  if (documentPage) { ui.analyticsDocumentPage = Math.max(0, ui.analyticsDocumentPage + Number(documentPage.dataset.analyticsDocumentPage)); renderShell(); return true; }
+  const detailPage = event.target.closest('[data-analytics-detail-page]');
+  if (detailPage && ui.analyticsDetail) { ui.analyticsDetail.page = Math.max(0, ui.analyticsDetail.page + Number(detailPage.dataset.analyticsDetailPage)); void loadAnalyticsDetails(); return true; }
+  const day = event.target.closest('[data-analytics-show-day]');
+  if (day) {
+    const person = employeeById(day.dataset.employeeId); closeModal();
+    ui.tab = 'journal'; ui.journalView = 'week'; ui.journalAnchor = day.dataset.analyticsShowDay;
+    ui.journalQuery = person?.name || ''; ui.journalFilter = 'all'; ui.journalArchived = !person?.active;
+    ui.journalFocusedEmployeeId = day.dataset.employeeId; clearJournalSelection(); renderShell(); return true;
+  }
+  const correction = event.target.closest('[data-correct-receipt]');
+  if (correction && correction.closest('#modal-root')) { openReceiptCorrectionModal(correction.dataset.correctReceipt); return true; }
+  const exportButton = event.target.closest('[data-export-analytics-view]');
+  if (exportButton && ui.analytics && !ui.analyticsError) {
+    const filter = { ...ui.analytics.filter, employeeIds: [...ui.analytics.employeeIds] };
+    void run(() => window.counter.exportAnalyticsReport({ filter, view: exportButton.dataset.exportAnalyticsView }), null, { undo: false })
+      .then((result) => { if (result && !result.canceled) showToast('Статистику експортовано.'); });
+    return true;
+  }
+  return false;
+}
+function updateAnalyticsDraftNotice(form) {
+  const count = form.querySelectorAll('[name="employeeIds"]:checked').length;
+  const summary = form.querySelector('.analytics-worker-picker summary');
+  if (summary) summary.textContent = `Працівники: вибрано ${count}. Змінити вибір`;
+  const notice = form.querySelector('[data-analytics-loading]');
+  if (notice) notice.textContent = 'Фільтри змінено. Натисніть «Показати статистику», щоб оновити цифри.';
+}
+
 appRoot.addEventListener('click', async (event) => {
+  if (handleAnalyticsClick(event)) return;
   const actionButton = event.target.closest('[data-action]');
   if (actionButton) {
     const action = actionButton.dataset.action;
@@ -1880,14 +2056,6 @@ appRoot.addEventListener('click', async (event) => {
     } else {
       renderShell();
     }
-    return;
-  }
-
-  if (event.target.closest('[data-export-analytics]')) {
-    const result = await run(() => window.counter.exportAnalytics({
-      employeeId: ui.analyticsEmployee || null, startDate: ui.analyticsStart, endDate: ui.analyticsEnd,
-    }), null, { undo: false });
-    if (result && !result.canceled) showToast('Звіт за вибраний період експортовано.');
     return;
   }
 
@@ -2361,16 +2529,14 @@ appRoot.addEventListener('submit', async (event) => {
     const employee = await run(() => window.counter.addEmployee(form.get('name')), 'Працівника додано.');
     if (employee) event.target.reset();
   }
-  if (event.target.id === 'analytics-form') {
-    const form = new FormData(event.target);
-    ui.analyticsEmployee = String(form.get('employeeId') || '');
-    ui.analyticsStart = String(form.get('startDate'));
-    ui.analyticsEnd = String(form.get('endDate'));
-    await refresh({ analytics: true });
-  }
+  if (event.target.id === 'analytics-form') { await loadAnalytics(analyticsFormFilter(event.target)); }
 });
 
 appRoot.addEventListener('input', (event) => {
+  const analyticsForm = event.target.closest('#analytics-form');
+  if (analyticsForm) { ui.analyticsDraft = analyticsFormFilter(analyticsForm); updateAnalyticsDraftNotice(analyticsForm); return; }
+  if (event.target.matches('[data-analytics-search]')) { ui.analyticsQuery = event.target.value; refreshAnalyticsView('[data-analytics-search]'); return; }
+  if (event.target.matches('[data-analytics-document-search]')) { ui.analyticsDocumentQuery = event.target.value; ui.analyticsDocumentPage = 0; refreshAnalyticsView('[data-analytics-document-search]'); return; }
   if (!event.target.matches('[data-journal-search]')) return;
   ui.journalQuery = event.target.value; clearJournalSelection(); refreshJournalView();
 });
@@ -2445,6 +2611,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (handleAnalyticsClick(event)) return;
   const copyExplanation = event.target.closest('[data-copy-duty-explanation]');
   if (copyExplanation) {
     try {
@@ -2844,24 +3011,7 @@ toastRoot.addEventListener('click', async (event) => {
 
 window.counter.onChanged(async (nextSnapshot) => {
   snapshot = nextSnapshot;
-  if (ui.tab === 'analytics') {
-    try {
-      ui.analytics = await window.counter.getAnalytics({
-        employeeId: ui.analyticsEmployee || null,
-        startDate: ui.analyticsStart,
-        endDate: ui.analyticsEnd,
-      });
-      try {
-        ui.analyticsTrend = await window.counter.getAnalyticsTrend({
-          employeeId: ui.analyticsEmployee || null,
-          startDate: ui.analyticsStart,
-          endDate: ui.analyticsEnd,
-        });
-      } catch (_error) { ui.analyticsTrend = null; }
-    } catch (error) {
-      showToast(error.message || String(error), { error: true });
-    }
-  }
+  if (ui.tab === 'analytics') await loadAnalytics(analyticsCurrentFilter(), { render: false });
   if (ui.tab === 'duties' && snapshot.duties?.initialized) {
     try {
       const year = ui.dutyMonth.slice(0, 4);

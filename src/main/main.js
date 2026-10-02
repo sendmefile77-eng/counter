@@ -56,6 +56,7 @@ const {
   updateTimeOffEntry,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
+const { calculateAnalyticsReport, getAnalyticsDetails, buildAnalyticsCsv } = require('../shared/analytics');
 
 let mainWindow = null;
 let store = null;
@@ -403,6 +404,19 @@ function registerIpc() {
   ));
   ipcMain.handle('analytics:get', (_event, filter) => calculateStatistics(store.state, filter));
   ipcMain.handle('analytics:trend', (_event, filter) => calculateAnalyticsTrend(store.state, filter));
+  ipcMain.handle('analytics:report', (_event, filter) => calculateAnalyticsReport(store.state, filter));
+  ipcMain.handle('analytics:details', (_event, input) => getAnalyticsDetails(store.state, input));
+  ipcMain.handle('analytics:export-report', async (_event, { filter, view }) => {
+    const report = calculateAnalyticsReport(store.state, filter);
+    const csv = buildAnalyticsCsv(report, view);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Експортувати статистику', defaultPath: `counter-statistics-${view}-${report.startDate}-${report.endDate}.csv`,
+      filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    fs.writeFileSync(result.filePath, csv, 'utf8');
+    return { canceled: false, filePath: result.filePath };
+  });
   ipcMain.handle('analytics:export', async (_event, filter) => {
     const analytics = calculateStatistics(store.state, filter);
     const result = await dialog.showSaveDialog(mainWindow, {
