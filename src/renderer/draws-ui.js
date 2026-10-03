@@ -1,5 +1,5 @@
 /* Saved match draws use the operating system random source in the main process. */
-const drawUi = { draft:null, resultId:'', query:'', page:0, busy:false };
+const drawUi = { draft:null, resultId:'', query:'', page:0, busy:false, reveal:null };
 function drawById(id) { return (snapshot.draws || []).find(draw => draw.id === id); }
 function drawDraft() {
   if (!drawUi.draft) drawUi.draft = { title:'', description:'', count:1, participantIds:activeEmployees().map(person => person.id), previousDrawId:'', rerollReason:'' };
@@ -17,17 +17,90 @@ function drawResultHtml(draw, full = false) {
 }
 function renderDrawPage() {
   const draft = drawDraft(), people = activeEmployees(), selected = new Set(draft.participantIds);
-  const result = drawById(drawUi.resultId);
+  const result = drawUi.reveal ? null : drawById(drawUi.resultId);
   const query = drawUi.query.toLocaleLowerCase('uk-UA');
   const history = [...(snapshot.draws || [])].reverse().filter(draw => `${draw.number} ${draw.title} ${draw.createdBy} ${draw.rerollReason} ${draw.participants.map(person => person.name).join(' ')}`.toLocaleLowerCase('uk-UA').includes(query));
   const pages = Math.max(1,Math.ceil(history.length / 15)); drawUi.page = Math.min(drawUi.page,pages - 1);
-  return `<header class="page-header"><div><span class="page-eyebrow">ЛАД · чесний випадковий вибір</span><h1>Тягнути сірник</h1><p>Немає добровольців? Оберіть коло учасників і кількість виконавців.</p></div><button class="button" data-draw-new>Нове жеребкування</button></header>${result ? drawResultHtml(result) : ''}<div class="draw-layout"><section class="panel"><form id="draw-form"><div class="rules-heading"><div><h2>${draft.previousDrawId ? 'Повторне жеребкування' : 'Кому дістанеться короткий сірник?'}</h2><p>Результат зберігається одразу й залишається в історії.</p></div>${matchIcon()}</div><label class="field"><span>Яку роботу треба виконати? *</span><input name="title" value="${h(draft.title)}" minlength="2" maxlength="160" required placeholder="Наприклад, підготувати приміщення"></label><label class="field"><span>Пояснення роботи</span><textarea name="description" maxlength="1500" rows="2">${h(draft.description)}</textarea></label><label class="field"><span>Кількість виконавців *</span><input type="number" name="count" min="1" max="${Math.max(1,selected.size)}" value="${h(draft.count)}" required></label>${draft.previousDrawId ? `<label class="field"><span>Чому проводите повторно? *</span><textarea name="rerollReason" rows="2" maxlength="500" required>${h(draft.rerollReason)}</textarea><small>Попередній результат залишиться в історії. Склад учасників можна змінити.</small></label>` : ''}<fieldset class="draw-picker"><legend>Хто тягне сірник?</legend><div class="button-row"><button type="button" class="button small" data-draw-select="all">Усі активні</button><button type="button" class="button small" data-draw-select="none">Зняти вибір</button></div><div class="draw-checks">${people.map(person => `<label class="check-row"><input type="checkbox" name="participantIds" value="${h(person.id)}" ${selected.has(person.id) ? 'checked' : ''}><span>${h(person.name)}</span></label>`).join('') || '<p class="muted">Спочатку додайте працівників у розділі «Працівники».</p>'}</div></fieldset><p class="draw-odds" data-draw-odds aria-live="polite"></p><p class="muted draw-note">Збережений розіграш створює точку відліку для скасування дій. Після нього можна скасовувати лише подальші зміни. Табель і графік чергувань не змінюються.</p><p data-draw-error role="alert" hidden></p><button type="submit" class="button primary draw-submit" ${!people.length || drawUi.busy ? 'disabled' : ''}>${drawUi.busy ? 'Зберігаємо результат…' : 'Тягнути сірники й зберегти результат'}</button></form></section><section class="panel draw-history"><h2>Історія жеребкувань <span class="count-pill">${(snapshot.draws || []).length}</span></h2><label class="field"><span>Знайти протокол</span><input type="search" data-draw-search value="${h(drawUi.query)}" placeholder="Робота, ім’я або номер"></label><div>${history.slice(drawUi.page * 15,(drawUi.page + 1) * 15).map(draw => `<button class="draw-history-row" data-draw-protocol="${h(draw.id)}"><span><small>№${draw.number} · ${h(new Date(draw.createdAt).toLocaleString('uk-UA'))}</small><strong>${h(draw.title)}</strong><small>${h(draw.selectedIds.map(id => draw.participants.find(person => person.id === id).name).join(', '))}</small>${draw.previousDrawId ? '<small>Повторний розіграш · є пояснення</small>' : ''}</span><span aria-hidden="true">→</span></button>`).join('') || '<p class="muted">Протоколів поки немає або нічого не знайдено.</p>'}</div>${pages > 1 ? `<div class="button-row"><button class="button small" data-draw-page="-1" ${drawUi.page === 0 ? 'disabled' : ''}>← Назад</button><span>${drawUi.page + 1} / ${pages}</span><button class="button small" data-draw-page="1" ${drawUi.page + 1 === pages ? 'disabled' : ''}>Далі →</button></div>` : ''}</section></div>`;
+  return `<header class="page-header"><div><span class="page-eyebrow">ЛАД · чесний випадковий вибір</span><h1>Тягнути сірник</h1><p>Немає добровольців? Оберіть коло учасників і кількість виконавців.</p></div><button class="button" data-draw-new>Нове жеребкування</button></header>${result ? drawResultHtml(result) : ''}<div class="draw-layout"><section class="panel"><form id="draw-form"><div class="rules-heading"><div><h2>${draft.previousDrawId ? 'Повторне жеребкування' : 'Кому дістанеться короткий сірник?'}</h2><p>Результат зберігається одразу й залишається в історії.</p></div>${matchIcon()}</div><label class="field"><span>Яку роботу треба виконати? *</span><input name="title" value="${h(draft.title)}" minlength="2" maxlength="160" required placeholder="Наприклад, підготувати приміщення"></label><label class="field"><span>Пояснення роботи</span><textarea name="description" maxlength="1500" rows="2">${h(draft.description)}</textarea></label><label class="field"><span>Кількість виконавців *</span><input type="number" name="count" min="1" max="${Math.max(1,selected.size)}" value="${h(draft.count)}" required></label>${draft.previousDrawId ? `<label class="field"><span>Чому проводите повторно? *</span><textarea name="rerollReason" rows="2" maxlength="500" required>${h(draft.rerollReason)}</textarea><small>Попередній результат залишиться в історії. Склад учасників можна змінити.</small></label>` : ''}<fieldset class="draw-picker"><legend>Хто тягне сірник?</legend><div class="button-row"><button type="button" class="button small" data-draw-select="all">Усі активні</button><button type="button" class="button small" data-draw-select="none">Зняти вибір</button></div><div class="draw-checks">${people.map(person => `<label class="check-row"><input type="checkbox" name="participantIds" value="${h(person.id)}" ${selected.has(person.id) ? 'checked' : ''}><span>${h(person.name)}</span></label>`).join('') || '<p class="muted">Спочатку додайте працівників у розділі «Працівники».</p>'}</div></fieldset><p class="draw-odds" data-draw-odds aria-live="polite"></p><p class="muted draw-note">Збережений розіграш створює точку відліку для скасування дій. Після нього можна скасовувати лише подальші зміни. Табель і графік чергувань не змінюються.</p><p data-draw-error role="alert" hidden></p><button type="submit" class="button primary draw-submit" ${!people.length || drawUi.busy ? 'disabled' : ''}>${drawUi.busy ? 'Зберігаємо результат…' : 'Тягнути сірники й зберегти результат'}</button></form></section><section class="panel draw-history"><h2>Історія жеребкувань <span class="count-pill">${(snapshot.draws || []).length}</span></h2><label class="field"><span>Знайти протокол</span><input type="search" data-draw-search value="${h(drawUi.query)}" placeholder="Робота, ім’я або номер"></label><div>${history.slice(drawUi.page * 15,(drawUi.page + 1) * 15).map(draw => `<button class="draw-history-row" data-draw-protocol="${h(draw.id)}"><span><small>№${draw.number} · ${h(new Date(draw.createdAt).toLocaleString('uk-UA'))}</small><strong>${h(draw.title)}</strong><small>${drawUi.reveal && draw.id === drawUi.resultId ? 'Сірники ще витягуються…' : h(draw.selectedIds.map(id => draw.participants.find(person => person.id === id).name).join(', '))}</small>${draw.previousDrawId ? '<small>Повторний розіграш · є пояснення</small>' : ''}</span><span aria-hidden="true">→</span></button>`).join('') || '<p class="muted">Протоколів поки немає або нічого не знайдено.</p>'}</div>${pages > 1 ? `<div class="button-row"><button class="button small" data-draw-page="-1" ${drawUi.page === 0 ? 'disabled' : ''}>← Назад</button><span>${drawUi.page + 1} / ${pages}</span><button class="button small" data-draw-page="1" ${drawUi.page + 1 === pages ? 'disabled' : ''}>Далі →</button></div>` : ''}</section></div>`;
 }
 function updateDrawOdds() {
   const form = appRoot.querySelector('#draw-form'); if (!form) return;
+  form.setAttribute('aria-busy',String(drawUi.busy));
+  form.querySelectorAll('input,textarea,[data-draw-select]').forEach(field => { field.disabled = drawUi.busy; });
   const draft = drawDraft(), n = draft.participantIds.length, k = Number(draft.count);
   form.elements.count.max = Math.max(1,n);
   form.querySelector('[data-draw-odds]').textContent = n && k >= 1 && k <= n ? `Учасників: ${n} · обираємо ${k} · шанс кожного: ${(100*k/n).toLocaleString('uk-UA',{maximumFractionDigits:2})}%` : `Учасників: ${n}. Оберіть учасників і від 1 до ${n || 1} виконавців.`;
+}
+// The show only reveals an already saved protocol; it never draws again.
+function finishDrawReveal({ close = true, focus = true } = {}) {
+  const reveal = drawUi.reveal;
+  if (!reveal) return;
+  clearTimeout(reveal.timer);
+  document.removeEventListener('visibilitychange',reveal.onVisibility);
+  reveal.motion.removeEventListener('change',reveal.onMotion);
+  drawUi.reveal = null;
+  drawUi.busy = false;
+  renderShell();
+  if (close && modalRoot.contains(reveal.dialog)) closeModal(reveal.dialog);
+  const showResult = () => {
+    if (ui.tab !== 'draws' || modalRoot.childElementCount) return;
+    appRoot.querySelector('.draw-result')?.scrollIntoView({block:'start'});
+    if (focus) appRoot.querySelector('.draw-result [data-draw-task], .draw-result [data-open-task]')?.focus({preventScroll:true});
+  };
+  if (close) showResult(); else queueMicrotask(showResult);
+}
+function startDrawReveal(draw) {
+  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  if (motion.matches || document.hidden) return false;
+  const count = draw.selectedIds.length, pace = Math.min(900,4200/count), pullTime = Math.round(pace * .7);
+  const sticks = draw.participants.map(person => `<span class="draw-bundle-match" data-reveal-stick="${h(person.id)}"><i></i></span>`).join('');
+  toastRoot.querySelectorAll('.toast').forEach(toast => toast.remove());
+  openModal(`<header class="modal-head"><div><span class="page-eyebrow">Протокол №${draw.number}</span><h2>Тягнемо сірники</h2><p>${h(draw.title)}</p></div><button class="icon-button" type="button" data-close-modal aria-label="Пропустити анімацію та показати результат">×</button></header><div class="modal-body draw-reveal-body"><div class="draw-reveal-stage" data-reveal-phase="mix" aria-hidden="true"><div class="draw-stage-ring"></div><div class="draw-match-bundle">${sticks}</div><div class="draw-match-band"><strong>ЛАД</strong><span>Кому короткий?</span></div><div class="draw-pull-slot"></div><span class="draw-short-label">Короткий сірник</span></div><p class="draw-reveal-status" role="status" aria-live="polite">Перемішуємо сірники…</p><div class="draw-reveal-people">${draw.selectedIds.map((id,index) => `<div class="draw-reveal-person" data-reveal-person="${h(id)}"><span class="draw-reveal-number">${index + 1}</span><div><small>Виконавець ${index + 1}</small><strong>Сірник ще не витягнуто</strong></div></div>`).join('')}</div><p class="draw-reveal-note">Результат уже збережено. Можна пропустити анімацію — склад залишиться тим самим.</p></div><footer class="modal-foot"><span class="draw-reveal-progress">0 із ${count}</span><button class="button primary" type="button" data-draw-reveal-skip>Показати результат</button></footer>`,true);
+  const dialog = modalRoot.querySelector('.modal');
+  dialog.classList.add('draw-reveal-modal');
+  dialog.querySelectorAll('[data-reveal-stick]').forEach((stick,index) => {
+    const offset = index - (draw.participants.length - 1) / 2;
+    stick.style.setProperty('--match-x',`${offset * 13}px`);
+    stick.style.setProperty('--match-angle',`${offset * 4}deg`);
+    stick.style.setProperty('--match-delay',`${index * -53}ms`);
+  });
+  const reveal = { dialog, timer:null, motion,
+    onVisibility:() => { if (document.hidden) finishDrawReveal(); },
+    onMotion:event => { if (event.matches) finishDrawReveal(); } };
+  drawUi.reveal = reveal;
+  renderShell();
+  document.addEventListener('visibilitychange',reveal.onVisibility);
+  motion.addEventListener('change',reveal.onMotion);
+  const later = (callback,delay) => { reveal.timer = setTimeout(() => { if (drawUi.reveal === reveal && dialog.isConnected) callback(); },delay); };
+  const stage = dialog.querySelector('.draw-reveal-stage'), status = dialog.querySelector('.draw-reveal-status');
+  const step = index => {
+    const id = draw.selectedIds[index], person = draw.participants.find(item => item.id === id);
+    stage.dataset.revealPhase = 'pull';
+    status.textContent = `Витягуємо сірник ${index + 1} із ${count}…`;
+    [...stage.querySelectorAll('[data-reveal-stick]')].find(stick => stick.dataset.revealStick === id).classList.add('is-taken');
+    stage.querySelector('.draw-pull-slot').innerHTML = '<span class="draw-pulled-match"><i></i></span>';
+    stage.querySelector('.draw-pulled-match').style.setProperty('--pull-time',`${pullTime}ms`);
+    later(() => {
+      stage.dataset.revealPhase = 'revealed';
+      const card = [...dialog.querySelectorAll('[data-reveal-person]')].find(item => item.dataset.revealPerson === id);
+      card.classList.add('is-revealed');
+      card.querySelector('strong').textContent = person.name;
+      status.textContent = `Короткий сірник — ${person.name}`;
+      dialog.querySelector('.draw-reveal-progress').textContent = `${index + 1} із ${count}`;
+      card.scrollIntoView({block:'nearest'});
+      later(() => {
+        if (index + 1 < count) step(index + 1);
+        else {
+          stage.dataset.revealPhase = 'complete';
+          dialog.querySelector('h2').textContent = 'Сірники витягнуто';
+          status.textContent = `Обрано ${count} із ${draw.participants.length}. Результат збережено.`;
+          later(() => finishDrawReveal(),850);
+        }
+      },pace - pullTime);
+    },pullTime);
+  };
+  later(() => step(0),800);
+  return true;
 }
 function captureDrawInput(event) {
   const form = event.target.closest('#draw-form'); if (!form) return;
@@ -44,6 +117,8 @@ function openDrawProtocol(id) {
 }
 async function handleDrawClick(event) {
   const target = event.target;
+  if (target.closest('[data-draw-reveal-skip]')) { finishDrawReveal(); return true; }
+  if (drawUi.busy && target.closest('[data-draw-new], [data-draw-select], [data-draw-repeat]')) return true;
   if (target.closest('[data-draw-new]')) { drawUi.draft = null; drawUi.resultId = ''; renderShell(); return true; }
   const select = target.closest('[data-draw-select]'); if (select) { drawDraft().participantIds = select.dataset.drawSelect === 'all' ? activeEmployees().map(person => person.id) : []; renderShell(); return true; }
   const protocol = target.closest('[data-draw-protocol]'); if (protocol) { openDrawProtocol(protocol.dataset.drawProtocol); return true; }
@@ -64,10 +139,17 @@ async function handleDrawSubmit(event) {
   if (drawUi.busy) return true;
   captureDrawInput({target:event.target.querySelector('[name="title"]')});
   const input = {...drawDraft(),participantIds:[...drawDraft().participantIds]};
-  drawUi.busy = true; const submit = event.target.querySelector('[type="submit"]'); submit.disabled = true;
+  const revision = interfaceDialogRevision, training = Boolean(snapshot.training?.active);
+  drawUi.busy = true; renderShell();
   const result = await run(() => window.counter.createDraw(input),null,{undo:false});
-  drawUi.busy = false;
-  if (result) { drawUi.resultId = result.id; drawUi.draft.previousDrawId = result.id; drawUi.draft.rerollReason = ''; renderShell(); appRoot.querySelector('.draw-result')?.scrollIntoView({block:'start'}); showToast(`Жеребкування №${result.number} збережено.`); }
-  else { renderShell(); const notice = appRoot.querySelector('[data-draw-error]'); if (notice) { notice.hidden = false; notice.textContent = toastRoot.querySelector('.toast.error span')?.textContent || 'Не вдалося зберегти результат. Перевірте дані.'; } }
+  if (training !== Boolean(snapshot.training?.active)) { drawUi.busy = false; renderShell(); return true; }
+  if (result) {
+    drawUi.resultId = result.id;
+    drawUi.draft = {...input,previousDrawId:result.id,rerollReason:''};
+    if (ui.tab === 'draws' && ui.mode !== 'widget' && revision === interfaceDialogRevision && startDrawReveal(result)) return true;
+    drawUi.busy = false; renderShell();
+    if (ui.tab === 'draws' && !modalRoot.childElementCount) appRoot.querySelector('.draw-result')?.scrollIntoView({block:'start'});
+    showToast(`Жеребкування №${result.number} збережено.`);
+  } else { drawUi.busy = false; renderShell(); const notice = appRoot.querySelector('[data-draw-error]'); if (notice) { notice.hidden = false; notice.textContent = toastRoot.querySelector('.toast.error span')?.textContent || 'Не вдалося зберегти результат. Перевірте дані.'; } }
   return true;
 }

@@ -1373,6 +1373,7 @@ function queueWidgetWindowMode(mode) {
 }
 
 function openModal(content, wide = false) {
+  finishDrawReveal({close:false,focus:false});
   interfaceDialogRevision += 1;
   ui.profileRevision += 1;
   ui.analyticsDetailRevision += 1;
@@ -1393,6 +1394,7 @@ function openModal(content, wide = false) {
 
 function closeModal(owner = null) {
   if (owner && !modalRoot.contains(owner)) return;
+  finishDrawReveal({close:false,focus:false});
   interfaceDialogRevision += 1;
   ui.analyticsDetailRevision += 1;
   ui.profileRevision += 1;
