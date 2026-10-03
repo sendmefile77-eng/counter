@@ -44,6 +44,8 @@ async function run(reportPath) {
       const batch={cells:[{employeeId:scenario.employeeId,date:scenario.date}],action:'status',status:'vacation',note:'Самоперевірка масового табеля',includeWeekends:true,replaceExisting:true};
       const preview=await api.previewJournalBatch(batch);if(!preview.canApply||!preview.duties.length)throw Error('Немає спільної перевірки табеля.');await api.applyJournalBatch({...batch,expectedToken:preview.token});await api.undo();checks.push('unified-journal-availability-and-undo');
       await startLadGuide('tour');if(!document.querySelector('.guide-card'))throw Error('Навчання не відкривається.');await finishLadGuide();checks.push('guided-onboarding');
+      await navigateToTab('employees');let input=document.querySelector('#employee-form [name="name"]');input.value='Незбережена чернетка';input.focus();input.setSelectionRange(3,8);await refresh();input=document.querySelector('#employee-form [name="name"]');if(input.value!=='Незбережена чернетка'||document.activeElement!==input||input.selectionStart!==3||input.selectionEnd!==8)throw Error('Фонове оновлення втратило чернетку або курсор.');input.value='';checks.push('page-draft-and-caret-preservation');
+      openQuickSearch();const footer=document.querySelector('.modal-foot').getBoundingClientRect(),dialog=document.querySelector('.modal').getBoundingClientRect();if(footer.bottom>dialog.bottom+1||footer.bottom>innerHeight)throw Error('Нижню підказку пошуку обрізано.');closeModal();checks.push('quick-search-footer-layout');
       return checks;
     })()`);
     report.checks.push(...result);

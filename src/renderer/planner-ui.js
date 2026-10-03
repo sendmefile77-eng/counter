@@ -181,7 +181,7 @@ async function handleManagementSubmit(event) {
   if (form.id === 'task-form') {
     const input = taskFormInput(form), id = form.dataset.taskId, submit = form.querySelector('[type="submit"]'); submit.disabled = true;
     const result = await run(() => id ? window.counter.updateTask(id,input) : form.dataset.drawId ? window.counter.createTaskFromDraw(form.dataset.drawId,input) : window.counter.createTask(input),null);
-    if (result) { openTaskModal(result.id); showToast('Завдання збережено.',{undo:true}); }
+    if (result) { if (form.isConnected) openTaskModal(result.id); showToast('Завдання збережено.',{undo:true}); }
     else if (submit.isConnected) {
       submit.disabled = false;
       const notice = form.querySelector('[data-task-error]'), toast = toastRoot.querySelector('.toast.error:last-child');
@@ -191,7 +191,7 @@ async function handleManagementSubmit(event) {
   }
   if (form.id === 'task-status-form') {
     const result = await run(() => window.counter.setTaskStatus(form.dataset.taskId,{ status:form.dataset.status, reason:String(new FormData(form).get('reason') || ''), expectedRevision:Number(form.dataset.taskRevision) }),null);
-    if (result) { openTaskModal(form.dataset.taskId); showToast('Стан і пояснення збережено.',{undo:true}); } return true;
+    if (result) { if (form.isConnected) openTaskModal(form.dataset.taskId); showToast('Стан і пояснення збережено.',{undo:true}); } return true;
   }
   if (form.id === 'planner-filter-form') { const data = new FormData(form); ui.plannerQuery = String(data.get('query') || ''); ui.plannerEmployee = String(data.get('employeeId') || ''); ui.plannerStatus = String(data.get('status') || 'active'); ui.plannerPriority = String(data.get('priority') || ''); renderShell(); return true; }
   if (form.id === 'profile-range-form') { const data = new FormData(form); await openEmployeeProfile(form.dataset.employeeId,{startDate:String(data.get('startDate')), endDate:String(data.get('endDate')),view:ui.profileView}); return true; }

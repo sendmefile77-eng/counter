@@ -95,7 +95,7 @@ async function handleChangesClick(event) {
     form.querySelectorAll('input,select,textarea,[type="submit"]').forEach(input=>input.disabled=true);
     const result=await run(()=>window.counter.applyStaffChange({change:effectsUi.staffReport.change,expectedToken:effectsUi.staffReport.token}),null);
     effectsUi.staffBusy=false;
-    if(result){effectsUi.staffReport=null;closeModal();ui.tab='consequences';effectsUi.employeeId=result.change.employeeId;effectsUi.page=0;renderShell();showToast('Зміну збережено. Оберіть заміни та перевірте завдання.',{undo:true});}
+    if(result){effectsUi.staffReport=null;if(form.isConnected){closeModal(form);ui.tab='consequences';effectsUi.employeeId=result.change.employeeId;effectsUi.page=0;renderShell();}showToast('Зміну збережено. Оберіть заміни та перевірте завдання.',{undo:true});}
     else if(button.isConnected){form.querySelectorAll('input,select,textarea,[type="submit"]').forEach(input=>input.disabled=false);effectsUi.staffReport=null;button.disabled=true;modalRoot.querySelector('[data-staff-error]').hidden=false;modalRoot.querySelector('[data-staff-error]').textContent='Не вдалося зберегти. Перевірте наслідки ще раз.';}
     return true;
   }
@@ -128,7 +128,7 @@ async function handleChangesSubmit(event) {
   if(form.id==='replacement-apply-form'){
     const report=effectsUi.replacementReport,data=new FormData(form),submit=form.querySelector('[type="submit"]');if(submit.disabled)return true;submit.disabled=true;
     const result=await run(()=>window.counter.applyDutyReplacement({query:report.query,proposalId:form.dataset.proposalId,expectedToken:report.token,reason:String(data.get('reason') || ''),acknowledgeWarnings:data.get('acknowledgeWarnings')==='on'}),null);
-    if(result){closeModal();ui.tab='consequences';effectsUi.page=0;renderShell();showToast('Зміну складу збережено з причиною та поясненням.',{undo:true});}
+    if(result){if(form.isConnected){closeModal(form);ui.tab='consequences';effectsUi.page=0;renderShell();}showToast('Зміну складу збережено з причиною та поясненням.',{undo:true});}
     else if(form.isConnected){const notice=form.querySelector('[data-replacement-error]');notice.hidden=false;notice.textContent=toastRoot.querySelector('.toast.error span')?.textContent || 'Не вдалося застосувати. Оновіть варіанти.';submit.disabled=false;}
     return true;
   }

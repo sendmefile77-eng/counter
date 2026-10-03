@@ -357,7 +357,8 @@ function applyAppearance() {
   document.documentElement.dataset.textSize = settings.interfaceTextSize === 'large' ? 'large' : 'standard';
 }
 
-function renderShell() {
+function renderShell({ preserveDrafts = false } = {}) {
+  const pageDrafts = preserveDrafts ? rememberPageDrafts() : [];
   rememberScrollPositions();
   applyAppearance();
   document.body.className = `mode-${ui.mode}`;
@@ -396,6 +397,9 @@ function renderShell() {
   appRoot.querySelectorAll('[data-legend-status]').forEach((swatch) => { swatch.style.backgroundColor = statusColor(swatch.dataset.legendStatus); });
   updateDutyScrollExtent();
   updateDrawOdds();
+  appRoot.dataset.training = String(Boolean(snapshot.training?.active));
+  restorePageDrafts(pageDrafts);
+  applyInterfacePendingForms();
   restoreScrollPositions();
 }
 
@@ -531,7 +535,7 @@ async function navigateToTab(tab) {
 }
 
 function renderDashboard() {
-  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label}${index < 10 ? ` (Ctrl+${index === 9 ? 0 : index + 1})` : ''}" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}${id === 'consequences' && snapshot.consequences?.total ? `<span class="count-pill">${snapshot.consequences.total}</span>` : ''}</span></button>`;
+  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" ${id === 'consequences' && snapshot.consequences?.total ? `data-notification-count="${snapshot.consequences.total > 99 ? '99+' : snapshot.consequences.total}"` : ''} title="${label}${index < 10 ? ` (Ctrl+${index === 9 ? 0 : index + 1})` : ''}" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}${id === 'consequences' && snapshot.consequences?.total ? `<span class="count-pill">${snapshot.consequences.total}</span>` : ''}</span></button>`;
   return `
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
@@ -1197,19 +1201,20 @@ function renderEmployeesPage() {
   const archived = snapshot.employees.filter((employee) => !employee.active);
   return `
     <div class="page-header">
-      <div><h1>Працівники</h1><p>У круглому віджеті може бути до 15 активних секторів.</p></div>
+      <div><h1>Працівники</h1><p>До 15 активних працівників. Картка відкривається натисканням імені; архів зберігає історію.</p></div>
       <span class="status-badge" data-status="submitted">${active.length}/15 активних</span>
     </div>
     <form id="employee-form" class="panel">
       <div class="form-grid">
-        <label class="field"><span>ПІБ або коротке ім’я</span><input name="name" maxlength="80" autocomplete="off" placeholder="Наприклад, Іваненко О. В." required></label>
-        <div class="field"><span>&nbsp;</span><button class="button primary" type="submit">Додати працівника</button></div>
+        <label class="field"><span>ПІБ або коротке ім’я</span><input name="name" maxlength="80" autocomplete="off" placeholder="Наприклад, Іваненко О. В." ${active.length >= 15 ? 'disabled' : ''} required></label>
+        <div class="field"><span>&nbsp;</span><button class="button primary" type="submit" ${active.length >= 15 ? 'disabled' : ''}>Додати працівника</button></div>
       </div>
+      ${active.length >= 15 ? '<p class="employee-capacity" role="status">Усі 15 місць зайняті. Щоб додати іншу людину, спочатку переведіть когось до архіву через перевірку доступності.</p>' : ''}
     </form>
     <section class="panel">
       <h2>Активні</h2>
       <div class="employee-list">
-        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
+        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Перемістити вище у списку та віджеті" aria-label="Перемістити ${h(employee.name)} вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Перемістити нижче у списку та віджеті" aria-label="Перемістити ${h(employee.name)} нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Змінити ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">До архіву</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
       </div>
     </section>
     ${archived.length && snapshot.settings.showArchivedEmployees ? `
@@ -1368,6 +1373,7 @@ function queueWidgetWindowMode(mode) {
 }
 
 function openModal(content, wide = false) {
+  interfaceDialogRevision += 1;
   ui.profileRevision += 1;
   ui.analyticsDetailRevision += 1;
   toastRoot.querySelectorAll('.toast:not(.error)').forEach((toast) => toast.remove());
@@ -1385,7 +1391,9 @@ function openModal(content, wide = false) {
   }
 }
 
-function closeModal() {
+function closeModal(owner = null) {
+  if (owner && !modalRoot.contains(owner)) return;
+  interfaceDialogRevision += 1;
   ui.analyticsDetailRevision += 1;
   ui.profileRevision += 1;
   modalRoot.innerHTML = '';
@@ -1417,6 +1425,7 @@ function renderQuickSearchResults(query = '') {
 
 function openQuickSearch() {
   openModal(`<header class="modal-head"><div><h2>Знайти або перейти</h2><p>Розділ програми, працівник або завдання. Стрілки — вибір, Enter — відкрити.</p></div><button class="icon-button" data-close-modal>×</button></header><div class="quick-search-body"><label class="quick-search-input"><span class="sr-only">Назва розділу або ім’я</span>${NAV_ICONS.search}<input type="search" data-quick-query placeholder="Наприклад, чергування або Іваненко" autocomplete="off"></label><div class="quick-results" data-quick-results>${renderQuickSearchResults()}</div></div><footer class="modal-foot"><small>Esc — закрити</small></footer>`);
+  modalRoot.querySelector('.modal').classList.add('quick-search-modal');
   modalRoot.querySelector('[data-quick-query]').focus();
 }
 
@@ -1619,8 +1628,12 @@ function dutyExplanationText(explanation, employeeId = null) {
 }
 
 async function openDutyPreviewModal(startDate, endDate, pinnedAssignments = []) {
+  let revision = null;
   try {
+    const scheduleId = snapshot.activeDutyScheduleId;
+    revision = openInterfaceLoading('Попередній перегляд графіка', `${formatDate(startDate)} — ${formatDate(endDate)}`);
     const preview = await window.counter.previewDuties({ startDate, endDate, pinnedAssignments });
+    if (revision !== interfaceDialogRevision || scheduleId !== snapshot.activeDutyScheduleId) return false;
     ui.dutyPreview = {
       scheduleId: snapshot.activeDutyScheduleId,
       startDate,
@@ -1660,6 +1673,8 @@ async function openDutyPreviewModal(startDate, endDate, pinnedAssignments = []) 
     `, true);
     return true;
   } catch (error) {
+    if (revision !== interfaceDialogRevision) return false;
+    closeModal();
     showToast(error.message || String(error), { error: true });
     return false;
   }
@@ -1706,7 +1721,10 @@ function dutyRestrictionText(employeeId, date) {
 }
 
 async function openDutyDayModal(date) {
+  const scheduleId = snapshot.activeDutyScheduleId;
+  const revision = openInterfaceLoading('Склад чергових', formatDate(date));
   const explanation = await loadDutyExplanation(date);
+  if (revision !== interfaceDialogRevision || scheduleId !== snapshot.activeDutyScheduleId) return;
   const assignment = snapshot.duties.assignments[date] || { employeeIds: [], singleApproved: false };
   const requiredCount = dutyRequiredCount(date);
   const missing = Math.max(0, requiredCount - assignment.employeeIds.length);
@@ -1987,9 +2005,15 @@ function openStatusModal(employeeId, date) {
 function showToast(message, { error = false, undo = false } = {}) {
   const toast = document.createElement('div');
   toast.className = `toast ${error ? 'error' : ''}`;
-  toast.innerHTML = `<span>${h(message)}</span>${undo ? '<button data-toast-undo>Скасувати</button>' : ''}`;
+  toast.setAttribute('role',error ? 'alert' : 'status');
+  toast.innerHTML = `<span>${h(message)}</span>${undo ? '<button data-toast-undo>Скасувати</button>' : ''}<button class="toast-dismiss" data-toast-dismiss aria-label="Закрити повідомлення">×</button>`;
   toastRoot.appendChild(toast);
-  setTimeout(() => toast.remove(), error ? 6500 : 4200);
+  let remaining = error ? 10000 : 5000, started = Date.now(), timer;
+  const pause = () => { if (timer) { clearTimeout(timer); timer = null; remaining = Math.max(0,remaining - (Date.now() - started)); } };
+  const resume = () => { if (timer || toast.matches(':hover') || toast.contains(document.activeElement)) return; started = Date.now(); timer = setTimeout(() => toast.remove(),remaining); };
+  toast.addEventListener('mouseenter',pause); toast.addEventListener('mouseleave',resume);
+  toast.addEventListener('focusin',pause); toast.addEventListener('focusout',() => queueMicrotask(resume));
+  resume();
 }
 
 async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab === 'duties' } = {}) {
@@ -2009,7 +2033,7 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
   }
   if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   if (ui.tab === 'data') ui.backups = await window.counter.listBackups();
-  renderShell();
+  renderShell({preserveDrafts:true});
 }
 
 async function run(action, successMessage, { undo = true, refreshAnalytics = false } = {}) {
@@ -2621,8 +2645,7 @@ appRoot.addEventListener('keydown', (event) => {
   next.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
 });
 
-appRoot.addEventListener('submit', async (event) => {
-  event.preventDefault();
+appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
   if (await handleChangesSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
@@ -2666,7 +2689,7 @@ appRoot.addEventListener('submit', async (event) => {
     );
     if (result) {
       ui.timeOffMonth = result.date.slice(0, 7);
-      event.target.reset();
+      appRoot.querySelector('#time-off-form')?.reset();
       renderShell();
     }
     return;
@@ -2681,10 +2704,10 @@ appRoot.addEventListener('submit', async (event) => {
   if (event.target.id === 'employee-form') {
     const form = new FormData(event.target);
     const employee = await run(() => window.counter.addEmployee(form.get('name')), 'Працівника додано.');
-    if (employee) event.target.reset();
+    if (employee) appRoot.querySelector('#employee-form')?.reset();
   }
   if (event.target.id === 'analytics-form') { await loadAnalytics(analyticsFormFilter(event.target)); }
-});
+}));
 
 appRoot.addEventListener('input', (event) => {
   if (handleChangesInput(event)) return;
@@ -2805,6 +2828,7 @@ modalRoot.addEventListener('input', (event) => {
   if (event.target.closest('#duty-rules-form')) updateDutyRulesSummary();
   const form = event.target.closest('#submission-form, #receipt-correction-form');
   if (!form) return;
+  form.dataset.receiptPreviewRevision = String(Number(form.dataset.receiptPreviewRevision || 0) + 1);
   form.querySelector('[type="submit"]').disabled = true;
   const notice = form.querySelector('[data-submission-preview], [data-period-preview]');
   if (notice) notice.textContent = 'Дані змінено. Перевірте дати ще раз.';
@@ -2849,17 +2873,26 @@ modalRoot.addEventListener('click', async (event) => {
   const previewSubmissionButton = event.target.closest('[data-preview-submission]');
   if (previewSubmissionButton) {
     const form = previewSubmissionButton.closest('form');
-    if (!form?.reportValidity()) return;
+    if (previewSubmissionButton.disabled || !form?.reportValidity()) return;
+    const revision = Number(form.dataset.receiptPreviewRevision || 0) + 1;
+    form.dataset.receiptPreviewRevision = String(revision);
+    previewSubmissionButton.disabled = true;
+    form.querySelector('[type="submit"]').disabled = true;
+    const input = receiptFormInput(form);
+    const submitted = JSON.stringify(input);
     try {
-      const input = receiptFormInput(form);
       const result = form.id === 'receipt-correction-form'
         ? await window.counter.previewReceiptCorrection(form.dataset.receiptId, input)
         : await window.counter.previewSubmission({ ...input, employeeId: form.dataset.employeeId });
+      if (!form.isConnected || Number(form.dataset.receiptPreviewRevision) !== revision || JSON.stringify(receiptFormInput(form)) !== submitted) return;
       showReceiptPreview(form.querySelector('[data-submission-preview]'), result);
       form.querySelector('[type="submit"]').disabled = false;
     } catch (error) {
+      if (!form.isConnected || Number(form.dataset.receiptPreviewRevision) !== revision) return;
       form.querySelector('[type="submit"]').disabled = true;
       showToast(error.message || String(error), { error: true });
+    } finally {
+      if (previewSubmissionButton.isConnected) previewSubmissionButton.disabled = false;
     }
     return;
   }
@@ -3109,15 +3142,14 @@ modalRoot.addEventListener('click', async (event) => {
   }
 });
 
-modalRoot.addEventListener('submit', async (event) => {
-  event.preventDefault();
+modalRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
   if (await handleChangesSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'employee-rename-form') {
     const result = await run(() => window.counter.renameEmployee(event.target.dataset.employeeId,
       new FormData(event.target).get('name')), 'Ім’я працівника виправлено.');
-    if (result) closeModal();
+    if (result) closeModal(event.target);
     return;
   }
   if (event.target.id === 'time-off-edit-form') {
@@ -3131,7 +3163,7 @@ modalRoot.addEventListener('submit', async (event) => {
       ui.timeOffMonth = result.date.slice(0, 7);
       ui.timeOffFrom = `${ui.timeOffMonth}-01`;
       ui.timeOffTo = `${ui.timeOffMonth}-${String(daysInMonth(ui.timeOffMonth)).padStart(2, '0')}`;
-      closeModal();
+      closeModal(event.target);
       renderShell();
     }
     return;
@@ -3143,7 +3175,7 @@ modalRoot.addEventListener('submit', async (event) => {
     form.querySelector('[type="submit"]').disabled = true;
     const result = await run(() => window.counter.applyJournalBatch(payload), null);
     if (result) {
-      clearJournalSelection(); closeModal(); renderShell();
+      clearJournalSelection(); closeModal(event.target); renderShell();
       showToast(`Оновлено ${result.count} клітинок. Пропущено: ${result.skipped.length + result.blocked.length}.${result.duties?.length ? ' Відкрийте «Наслідки змін», щоб обрати підміни.' : ''}`, { undo: true });
     } else if (form.isConnected) invalidateJournalPreview(form);
     return;
@@ -3151,7 +3183,7 @@ modalRoot.addEventListener('submit', async (event) => {
   if (event.target.id === 'receipt-correction-form') {
     const result = await run(() => window.counter.correctReceipt(event.target.dataset.receiptId,
       receiptFormInput(event.target)), 'Документ виправлено.');
-    if (result) { closeModal(); if (result.unallocatedCredit > 0) openFutureApproval(result); }
+    if (result && modalRoot.contains(event.target)) { closeModal(event.target); if (result.unallocatedCredit > 0) openFutureApproval(result); }
     return;
   }
   if (event.target.id === 'duty-copy-form') {
@@ -3166,7 +3198,7 @@ modalRoot.addEventListener('submit', async (event) => {
     if (result) {
       ui.dutyStats = null;
       ui.dutyFairness = null;
-      closeModal();
+      closeModal(event.target);
     }
     return;
   }
@@ -3175,7 +3207,7 @@ modalRoot.addEventListener('submit', async (event) => {
       () => window.counter.updateDutyScheduleRules(event.target.dataset.scheduleId, dutyRulesFormInput(event.target)),
       'Правила цього графіка збережено.',
     );
-    if (result) closeModal();
+    if (result) closeModal(event.target);
     return;
   }
   if (event.target.id === 'duty-schedule-form') {
@@ -3190,7 +3222,7 @@ modalRoot.addEventListener('submit', async (event) => {
     );
     if (result) {
       ui.dutyStats = null;
-      closeModal();
+      closeModal(event.target);
     }
     return;
   }
@@ -3199,7 +3231,7 @@ modalRoot.addEventListener('submit', async (event) => {
       () => window.counter.initializeDuties(dutyHistoryEntries(event.target), dutyParticipantIds(event.target)),
       'Початкові підсумки чергувань оновлено.',
     );
-    if (result) closeModal();
+    if (result) closeModal(event.target);
     return;
   }
   if (event.target.id === 'duty-day-form') {
@@ -3213,21 +3245,24 @@ modalRoot.addEventListener('submit', async (event) => {
       }),
       'Склад чергових збережено.',
     );
-    if (result) closeModal();
+    if (result) closeModal(event.target);
     return;
   }
   if (event.target.id !== 'submission-form') return;
   const payload = { ...receiptFormInput(event.target), employeeId: event.target.dataset.employeeId };
   const receipt = await run(() => window.counter.recordSubmission(payload), 'Запити зараховано.');
-  if (!receipt) return;
-  closeModal();
+  if (!receipt || !modalRoot.contains(event.target)) return;
+  closeModal(event.target);
   if (receipt.unallocatedCredit > 0) openFutureApproval(receipt);
-});
+}));
 
 toastRoot.addEventListener('click', async (event) => {
-  if (!event.target.matches('[data-toast-undo]')) return;
-  await run(() => window.counter.undo(), 'Останню дію скасовано.', { undo: false });
-  event.target.closest('.toast')?.remove();
+  if (event.target.closest('[data-toast-dismiss]')) { event.target.closest('.toast')?.remove(); return; }
+  const button = event.target.closest('[data-toast-undo]');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  const result = await run(() => window.counter.undo(), 'Останню дію скасовано.', { undo: false });
+  if (result) button.closest('.toast')?.remove(); else button.disabled = false;
 });
 
 window.counter.onChanged(async (nextSnapshot) => {
@@ -3245,7 +3280,7 @@ window.counter.onChanged(async (nextSnapshot) => {
       showToast(error.message || String(error), { error: true });
     }
   }
-  renderShell();
+  renderShell({preserveDrafts:true});
 });
 
 window.addEventListener('resize', updateDutyScrollExtent);
