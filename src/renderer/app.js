@@ -471,6 +471,7 @@ function renderWidget() {
           </div>
         ` : ''}
         ${attentionCount ? `<button class="widget-task-alert" data-planner-attention title="Завдання, що потребують уваги" aria-label="Потребує уваги: ${attentionCount} завдань">! ${attentionCount}</button>` : ''}
+        ${snapshot.recovery ? '<button class="widget-recovery-alert" data-tab="data" title="Базу відновлено з копії. Перевірте останні зміни.">Базу відновлено · перевірити</button>' : ''}
         <div class="widget-controls">
           <button data-action="toggle-widget-list" title="${ui.widgetList ? 'Показати сектори' : 'Показати список'}" aria-label="${ui.widgetList ? 'Показати сектори' : 'Показати список'}">${ui.widgetList ? '◉' : '☷'}</button>
           <button data-action="resize-decrease" title="Зменшити">−</button>
@@ -545,7 +546,7 @@ function renderDashboard() {
         </div>
       </aside>
       <section class="dashboard-content" data-scroll-key="page-${ui.tab}" aria-label="${h(NAV_ITEMS.find(([id]) => id === ui.tab)?.[1] || 'Огляд дня')}">
-        <div class="page-view">${renderActivePage()}</div>
+        <div class="page-view">${renderLearningIntro()}${renderRecoveryNotice()}${renderActivePage()}</div>
       </section>
     </div>
   `;
@@ -1294,7 +1295,7 @@ function renderDataPage() {
           <label class="field"><span>Ширина колонки імен, px</span><input name="dutyNameWidth" type="number" min="130" max="320" value="${settings.dutyNameWidth}" required></label>
           <label class="field"><span>Висота рядка графіка, px</span><input name="dutyRowHeight" type="number" min="34" max="72" value="${settings.dutyRowHeight}" required></label>
           <label class="field"><span>Товщина кольорової лінії</span><select name="dutyLineStrength"><option value="1" ${settings.dutyLineStrength === 1 ? 'selected' : ''}>Тонка</option><option value="2" ${settings.dutyLineStrength === 2 ? 'selected' : ''}>Середня</option><option value="3" ${settings.dutyLineStrength === 3 ? 'selected' : ''}>Помітна</option></select></label>
-          <label class="field"><span>Кількість щоденних копій</span><input name="backupRetention" type="number" min="1" max="30" value="${settings.backupRetention}" required></label>
+          <label class="field"><span>Кількість копій кожного типу</span><input name="backupRetention" type="number" min="1" max="30" value="${settings.backupRetention}" required><small>Окремо щоденні та перед імпортом / відновленням; попереднє збереження — додатково.</small></label>
         </div>
       </section>
       <section class="panel" id="settings-colors">
@@ -1312,7 +1313,7 @@ function renderDataPage() {
         <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
       </div>
       <div class="backup-list"><h3>Доступні локальні копії</h3>
-        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань, ${backup.draws || 0} жеребкувань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
+        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.kind === 'checkpoint' ? 'Перед імпортом / відновленням' : backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань, ${backup.draws || 0} жеребкувань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
       </div>
       <p class="panel-copy data-file-path"><strong>Локальний файл:</strong> ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
@@ -1331,6 +1332,7 @@ function renderHelpPage() {
   const closeTime = `${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}`;
   return `
     <div class="page-header"><div><h1>Довідка та позначення</h1><p>Пояснення роботи програми без зміни її параметрів.</p></div></div>
+    <section class="panel"><h2>Навчання з підказками</h2><p>Екскурсія підсвічує справжні кнопки. Навчальний приклад відкриває окрему базу з вигаданими працівниками: пройдіть лікарняний, підміну, пояснення та передачу завдання. Після виходу повернуться ваші дані.</p><div class="button-row"><button class="button" data-start-guide="tour">Показати кнопки</button><button class="button primary" data-start-guide="practice">Пройти навчальний приклад</button></div></section>
     <section class="panel help-navigation"><h2>Швидка робота з ЛАД</h2><p class="panel-copy">Почніть з огляду дня. У планувальнику записуйте завдання, строки й нагадування; у тижневому зведенні перевіряйте виконане та потрібні рішення. У табелі змінюйте статуси, у чергуваннях — плануйте склад і перевіряйте пояснення. В аналітиці натискайте показник, щоб побачити дати й документи.</p><div class="help-shortcuts"><span><kbd>Ctrl K</kbd> Знайти розділ, працівника або завдання</span><span><kbd>Ctrl 1–9 / 0</kbd> Перейти до розділу</span><span><kbd>Esc</kbd> Закрити діалог</span><span><kbd>F11</kbd> Повний екран</span></div><p class="panel-copy">У діалозі можна пересуватися клавішею Tab. Теми, щільність і збільшений текст доступні в налаштуваннях.</p><button class="button small" data-tab="data">Налаштувати вигляд</button></section>
     <section class="panel"><h2>Наслідки змін і пошук заміни</h2><p>Запишіть зміну доступності та перевірте зачеплені графіки й завдання. Після збереження відкрийте «Наслідки змін», заповніть вільні місця або знайдіть підміну чи обмін. Пошук перевіряє обидві дати, обов’язковий відпочинок, ліміти й інші графіки. Для застосування вкажіть причину та врахуйте попередження. Заблоковані й виконані чергування автоматично не змінюються.</p></section>
     <section class="panel"><h2>Тягнути сірник</h2><p>1. Назвіть роботу, виберіть усіх або окремих активних працівників і кількість виконавців. 2. Натисніть «Тягнути сірники»: короткі сірники визначають виконавців, протокол зберігається одразу. 3. Створіть завдання з обраними людьми або скопіюйте повний протокол. Повторний розіграш потребує пояснення та зберігає попередній результат.</p><p class="muted">Після розіграшу можна скасовувати лише подальші дії. Імена в протоколі залишаються такими, якими були на момент вибору.</p></section>
@@ -1869,7 +1871,7 @@ function openJournalBatchModal(cells = null, action = 'status') {
           <label class="check-row"><input name="includeWeekends" type="checkbox"><span>Включити неробочі дні та зробити їх робочими для цих працівників</span></label>
           <label class="check-row"><input name="replaceExisting" type="checkbox" checked><span>Замінювати наявні позначки, крім записів за документами</span></label>
         </div>
-        <label class="field"><span>Примітка до зміни</span><textarea name="note" maxlength="500" placeholder="Причина або підстава"></textarea></label>
+        <label class="field"><span>Причина зміни · обов’язкова для відсутності</span><textarea name="note" maxlength="500" placeholder="Причина або підстава"></textarea></label>
         <label class="check-row"><input name="skipBlocked" type="checkbox"><span><strong>Пропустити заблоковані клітинки</strong><span>За замовчуванням будь-який конфлікт зупиняє всю операцію. Причини буде показано до збереження.</span></span></label>
         <p class="confirm-box">Документи захищені. Очищення прибирає ручні позначки; автоматичні пропуски виправляйте новим статусом. Минулі незакриті робочі дні після очищення можуть знову стати пропусками. Повернення вихідного прибирає його окремий робочий режим і позначку дня. Усі зміни зберігаються одним кроком скасування.</p>
         <div data-journal-batch-preview aria-live="polite">Перевірте клітинки перед застосуванням.</div>
@@ -1905,7 +1907,7 @@ function invalidateJournalPreview(form) {
 function renderJournalBatchPreview(result) {
   const labels = { ...STATUS_LABELS, workday: 'Робочий день', weekend: 'Вихідний', pending: 'Очікується' };
   const section = (title, items, changed) => `<details ${items.length && !changed ? 'open' : ''}><summary>${title}: ${items.length}</summary><div class="table-scroll"><table class="data-table"><thead><tr><th>Працівник</th><th>Дата</th><th>${changed ? 'Зміна' : 'Причина'}</th></tr></thead><tbody>${items.slice(0, 250).map((item) => `<tr><td>${h(item.name)}</td><td>${h(formatDate(item.date))}</td><td>${changed ? `${h(labels[item.from] || item.from)} → ${h(labels[item.to] || item.to)}${item.madeWorkday ? ' · стане робочим днем' : ''}` : h(item.reason)}</td></tr>`).join('')}</tbody></table></div>${items.length > 250 ? '<p>Показано перші 250 клітинок; кількість враховує всі.</p>' : ''}</details>`;
-  return `<div class="confirm-box ${result.canApply ? 'success-box' : ''}"><strong>Буде змінено: ${result.count}. Заблоковано: ${result.blocked.length}. Пропущено: ${result.skipped.length}.</strong><p>${result.canApply ? 'Можна застосувати перевірені зміни.' : result.blocked.length ? 'Операція зупинена. Усуньте конфлікти або явно дозволіть пропуск заблокованих клітинок.' : 'Немає клітинок для зміни.'}</p></div>${section('Зміни', result.changes, true)}${section('Конфлікти', result.blocked, false)}${section('Пропуски', result.skipped, false)}`;
+  return `<div class="confirm-box ${result.canApply ? 'success-box' : ''}"><strong>Буде змінено: ${result.count}. Заблоковано: ${result.blocked.length}. Пропущено: ${result.skipped.length}.</strong><p>${result.canApply ? 'Можна застосувати перевірені зміни.' : result.blocked.length ? 'Операція зупинена. Усуньте конфлікти або явно дозволіть пропуск заблокованих клітинок.' : 'Немає клітинок для зміни.'}</p></div>${renderBatchEffects(result)}${section('Зміни', result.changes, true)}${section('Конфлікти', result.blocked, false)}${section('Пропуски', result.skipped, false)}`;
 }
 
 function openEmployeeRenameModal(employeeId) {
@@ -2126,6 +2128,7 @@ function updateAnalyticsDraftNotice(form) {
 }
 
 appRoot.addEventListener('click', async (event) => {
+  if (await handleLearningClick(event)) return;
   if (await handleChangesClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
@@ -3082,9 +3085,7 @@ modalRoot.addEventListener('click', async (event) => {
   if (statusButton) {
     const note = modalRoot.querySelector('#status-note')?.value || '';
     const { employeeId, date, setStatus:status } = statusButton.dataset;
-    const affected = snapshot.dutySchedules.some(schedule => (schedule.id===snapshot.activeDutyScheduleId?snapshot.duties:schedule.data).assignments[date]?.employeeIds.includes(employeeId))
-      || snapshot.tasks.some(task=>LadPlanner.active(task)&&task.assigneeIds.includes(employeeId)&&task.dueDate===date);
-    if (Object.hasOwn(STAFF_STATUSES,status) && affected) { openStaffChange({employeeId,startDate:date,endDate:date,status,reason:note}); return; }
+    if (Object.hasOwn(STAFF_STATUSES,status)) { openStaffChange({employeeId,startDate:date,endDate:date,status,reason:note}); return; }
     const result = await run(
       () => window.counter.setStatus({
         employeeId: statusButton.dataset.employeeId,
@@ -3143,7 +3144,7 @@ modalRoot.addEventListener('submit', async (event) => {
     const result = await run(() => window.counter.applyJournalBatch(payload), null);
     if (result) {
       clearJournalSelection(); closeModal(); renderShell();
-      showToast(`Оновлено ${result.count} клітинок. Пропущено: ${result.skipped.length + result.blocked.length}.`, { undo: true });
+      showToast(`Оновлено ${result.count} клітинок. Пропущено: ${result.skipped.length + result.blocked.length}.${result.duties?.length ? ' Відкрийте «Наслідки змін», щоб обрати підміни.' : ''}`, { undo: true });
     } else if (form.isConnected) invalidateJournalPreview(form);
     return;
   }

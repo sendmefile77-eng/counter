@@ -15,7 +15,7 @@ async function fixture(t, { secondBeforeReady = false } = {}) {
   const handlers = new Map(), calls = [];
   const app = new EventEmitter();
   Object.assign(app, { whenReady: () => Promise.resolve(), getPath: () => directory,
-    getAppPath: () => directory, getVersion: () => '0.13.0', isPackaged: false, quit() {} });
+    getAppPath: () => directory, getVersion: () => '0.14.0', isPackaged: false, quit() {} });
   class Window extends EventEmitter {
     constructor() { super(); Window.instances.push(this); this.events=[]; this.minimized=false; this.webContents = { send() {}, on() {} }; }
     loadFile() {} setAlwaysOnTop() {} isDestroyed() { return false; } center() { this.events.push('center'); }
@@ -37,7 +37,7 @@ async function fixture(t, { secondBeforeReady = false } = {}) {
   const context = vm.createContext({ require:name => name === 'electron' ? electron : localRequire(name),
     __dirname:path.dirname(mainPath), process:{ ...process, platform:'win32', env:{ ...process.env,
       PORTABLE_EXECUTABLE_DIR:directory, PORTABLE_EXECUTABLE_FILE:'' } },
-    console, Buffer, Date, setTimeout, clearTimeout, setInterval:() => 1, clearInterval() {} });
+    module:{exports:{}}, console, Buffer, Date, setTimeout, clearTimeout, setInterval:() => 1, clearInterval() {} });
   vm.runInContext(fs.readFileSync(mainPath,'utf8'), context);
   if (secondBeforeReady) app.emit('second-instance');
   await new Promise(resolve => setImmediate(resolve));
@@ -166,6 +166,16 @@ test('a stale replacement proposal cannot partially write the database or consum
   assert.throws(()=>f.call('duties:apply-replacement',{query:report.query,expectedToken:report.token,proposalId:plan.id,reason:'Підміна'}),/Дані змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),changed);
   await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),beforeSettings);
 });
+test('training sessions preserve real data and undo history and cannot import over the working team',async t=>{
+ const f=await fixture(t),before=fs.readFileSync(f.database,'utf8');await f.call('training:enter');const demo=await f.call('snapshot:get');assert.equal(demo.training.active,true);assert.equal(demo.employees.length,6);
+ await f.call('employee:add',{name:'Лише навчання'});assert.equal(fs.readFileSync(f.database,'utf8'),before);await assert.rejects(f.call('data:import'),/Вийдіть із навчання/);
+ await f.call('training:exit');assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal((await f.call('snapshot:get')).training.active,false);await f.call('history:undo');assert.equal(JSON.parse(fs.readFileSync(f.database)).employees.length,0);
+});
+test('legacy direct absence and archive IPC cannot bypass consequence review',async t=>{
+ const f=await fixture(t),state=JSON.parse(fs.readFileSync(f.database)),before=fs.readFileSync(f.database,'utf8');
+ assert.throws(()=>f.call('record:set-status',{employeeId:state.employees[0].id,date:'2026-10-06',status:'sick'}),/Зміну доступності/);
+ assert.throws(()=>f.call('employee:archive',{employeeId:state.employees[0].id}),/перевірте наслідки/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
 
 test('cancelling the picker or the confirmation leaves the working database unchanged', async t => {
   const f = await fixture(t), before = fs.readFileSync(f.database,'utf8');
@@ -235,4 +245,12 @@ if (process.env.LAD_TEST_BACKUP) test('the complete supplied demonstration backu
   assert.deepEqual(JSON.parse(fs.readFileSync(f.database)),expected);
   assert.equal(expected.receipts.length,2254);
   assert.equal(expected.tasks.length,127);
+});
+
+test('production mass availability IPC removes both selected crew members, retains the task and undoes the operation atomically',async t=>{
+ const f=await fixture(t);await f.call('employee:add',{name:'Другий працівник'});const state=JSON.parse(fs.readFileSync(f.database)),ids=state.employees.map(person=>person.id),date='2026-10-07';
+ await f.call('duties:initialize',{entries:ids.map(employeeId=>({employeeId,total:0,realized:0})),participantIds:ids});await f.call('duties:schedule-rules',{scheduleId:state.activeDutyScheduleId,rules:{weekdayDutyCount:2,weekendDutyCount:2}});await f.call('duties:set-assignment',{date,employeeIds:ids});const task=await f.call('tasks:create',{title:'Спільний звіт',dueDate:date,assigneeIds:ids});
+ const input={cells:ids.map(employeeId=>({employeeId,date})),action:'status',status:'sick',note:'Обидва повідомили про лікарняний',replaceExisting:true},before=fs.readFileSync(f.database,'utf8'),report=await f.call('journal:preview-batch',input);
+ assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(report.tasks.length,1);assert.ok(report.duties.every(item=>item.after.length===0));await f.call('journal:apply-batch',{...input,expectedToken:report.token});const snapshot=await f.call('snapshot:get');assert.deepEqual(snapshot.duties.assignments[date].employeeIds,[]);assert.deepEqual(snapshot.tasks[0],task);assert.equal(snapshot.records[ids[0]+'|'+date].status,'sick');assert.equal(snapshot.records[ids[1]+'|'+date].status,'sick');
+ await f.call('history:undo');assert.deepEqual(JSON.parse(fs.readFileSync(f.database,'utf8')),JSON.parse(before));
 });

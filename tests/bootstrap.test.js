@@ -10,3 +10,12 @@ for (const lock of [false,true]) test(`bootstrap ${lock ? 'loads the main proces
   vm.runInNewContext(source,{process:{platform:'win32'},require(name){if(name==='electron')return{app};assert.equal(name,'./main');calls.push('main');}});
   assert.deepEqual(calls,lock?['lock','disable-gpu','main']:['lock','quit']);
 });
+
+test('explicit packaged self-test routes to an isolated runner without starting the work database or taking its lock',()=>{
+  const calls=[],report='C:\\Temp\\ЛАД перевірка.json';
+  const app={disableHardwareAcceleration(){calls.push('disable-gpu');},requestSingleInstanceLock(){throw Error('Work lock must not be used');}};
+  vm.runInNewContext(source,{process:{platform:'win32',argv:['Counter.exe',`--lad-self-test=${report}`]},require(name){
+    if(name==='electron')return{app};assert.equal(name,'./packaged-check');return{run(value){calls.push(value);}};
+  }});
+  assert.deepEqual(calls,['disable-gpu',report]);
+});

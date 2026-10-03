@@ -74,6 +74,6 @@ function createReminderService({ Notification, store, broadcast, openTask, act, 
     notice.on('failed', () => { status.lastError = 'Windows не показала тестове сповіщення. Перевірте дозвіл для ЛАД у налаштуваннях Windows.'; broadcast(); });
     notice.show(); return { sent: true };
   }
-  return { check, reconcile, test, status: () => ({ ...status }), disable: message => { status.supported = false; status.lastError = message; }, enable: () => { status.supported = Notification.isSupported(); status.lastError = ''; } };
+  return { check, reconcile, test, status: () => ({ ...status }), disable: message => { status.supported = false; status.lastError = message; for(const notice of live.values())notice.close();live.clear(); }, enable: () => { status.supported = Notification.isSupported(); status.lastError = ''; } };
 }
 module.exports = { createReminderService, setupWindowsNotifications };

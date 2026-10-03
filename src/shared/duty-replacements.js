@@ -94,6 +94,17 @@ function changedMetrics(fairness, changes) {
   const values = rows.map(row=>row.total);
   return { rows, spread:values.length ? Math.max(...values)-Math.min(...values) : 0, squares:values.reduce((sum,value)=>sum+value*value,0) };
 }
+function replacementGuidance(blocked,rejected,peopleCount) {
+  const reasons=[...blocked,...rejected.flatMap(person=>[...person.reasons,...(person.swapRejections || []).flatMap(item=>item.reasons)])].join(' '),tips=[];
+  if(/заблокован/.test(reasons))tips.push('Відкрийте склад відповідного дня й розблокуйте тиждень, якщо зміну погоджено. Після цього оновіть пошук.');
+  if(/виконано|минуле/.test(reasons))tips.push('Перевірте факт виконання у складі дня. Заміна працює із запланованими датами; виконану роботу не слід переписувати як підміну.');
+  if(/відпочинок|попереднього дня|наступного дня|уікенд/.test(reasons))tips.push('Перегляньте обміни на віддаленіші дати. Обмін прибирає обидва старі призначення перед перевіркою відпочинку.');
+  if(/тижневий ліміт/.test(reasons))tips.push('Розширте пошук на інший тиждень або оберіть працівника з вільним місцем у тижневому ліміті.');
+  if(/графіку|лікарнян|відпуст|недоступ|позначка|напередодні/.test(reasons))tips.push('Перевірте доступність та інші графіки кандидата. Виправляйте помилкову позначку лише за фактичними даними.');
+  if(!peopleCount)tips.push('Додайте активних працівників до учасників цього графіка через «Учасники й підсумки».');
+  if(!tips.length)tips.push('Перевірте склад дня, список учасників і період обміну. Якщо допустимого варіанта немає, залиште місце незаповненим до погодженого рішення.');
+  return tips;
+}
 function getReplacementOptions(state, input, now = new Date()) {
   const query = cleanQuery(state,input,now), view = scheduleView(state,query.scheduleId), current = view.duties.assignments[query.date];
   const before = current?.employeeIds || [], replacing = before.includes(query.employeeId);
@@ -127,7 +138,7 @@ function getReplacementOptions(state, input, now = new Date()) {
         `Різниця кількості чергувань у періоді: ${fairness.spread} → ${metrics.spread}.`,
         `Черговому ${person.name} за ${query.date.slice(0,4)} рік у цьому графіку: ${originalTotal} → ${originalTotal+delta} (разом із початковим підсумком).`,
         lastDuty ? `Попереднє чергування в цьому графіку: ${lastDuty}; відпочинок до дня заміни: ${rest} дн.` : 'Попередніх дат чергування в цьому графіку немає.',
-        kind === 'swap' ? `Обмін двома датами: ${query.date} і ${changes[1].date}. Кількість призначень у кожному дні збережено.` : replacing ? 'Зміниться одна людина в одному дні.' : 'Буде заповнено одне вільне місце.'],
+        kind === 'swap' ? `Обмін двома датами. Кількість чергових: ${changes.map(change=>`${change.date}: ${change.before.length} → ${change.after.length}`).join('; ')}.` : replacing ? 'Зміниться одна людина в одному дні.' : 'Буде заповнено одне вільне місце.'],
       metrics:{ period,beforeSpread:fairness.spread,afterSpread:metrics.spread,rows:metrics.rows,year:query.date.slice(0,4),yearBefore:originalTotal,yearAfter:originalTotal+delta } });
     return [];
   };
@@ -145,7 +156,8 @@ function getReplacementOptions(state, input, now = new Date()) {
   }
   plans.sort((a,b)=>{for(let i=0;i<a.score.length;i++)if(a.score[i]!==b.score[i])return a.score[i]-b.score[i];return a.changes.length-b.changes.length || a.candidateName.localeCompare(b.candidateName,'uk') || a.id.localeCompare(b.id);});
   return { query,token:fingerprint(state),scheduleName:d.dutySchedules(state).find(schedule=>schedule.id===query.scheduleId).name,
-    employeeName:oldPerson?.name || '', vacancy:!replacing, priority:rules.planningPriority, period, blocked, plans:plans.slice(0,100), totalPlans:plans.length, rejected };
+    employeeName:oldPerson?.name || '', vacancy:!replacing, priority:rules.planningPriority, period, blocked, plans:plans.slice(0,100), totalPlans:plans.length, rejected,
+    guidance:replacementGuidance(blocked,rejected,people.length) };
 }
 function applyReplacement(state,input,now = new Date()) {
   if (!input.expectedToken || fingerprint(state)!==input.expectedToken) throw new Error('Дані змінилися. Оновіть варіанти заміни перед застосуванням.');

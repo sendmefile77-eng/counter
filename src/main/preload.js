@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
+  acknowledgeRecovery: () => ipcRenderer.invoke('data:ack-recovery'),
+  enterTraining: () => ipcRenderer.invoke('training:enter'),
+  exitTraining: () => ipcRenderer.invoke('training:exit'),
+  completeOnboarding: () => ipcRenderer.invoke('training:seen'),
   previewStaffChange: input => ipcRenderer.invoke('staff:preview-change',input),
   applyStaffChange: input => ipcRenderer.invoke('staff:apply-change',input),
   getConsequences: input => ipcRenderer.invoke('staff:consequences',input),

@@ -29,6 +29,19 @@ jobs:
       - name: Build portable application
         run: npm run dist:win
 
+      - name: Check packaged Windows application
+        shell: powershell
+        run: ./scripts/Test-Portable.ps1 -Executable dist/Counter.exe -Report dist/windows-checks.json
+
+      - name: Upload Windows check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-checks
+          path: dist/windows-checks.json
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

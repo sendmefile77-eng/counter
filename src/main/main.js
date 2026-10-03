@@ -5,8 +5,6 @@ const {
   STATUS_LABELS,
   allocateReceiptBackward,
   allocateReceiptForward,
-  applyJournalBatch,
-  archiveEmployee,
   calculateDutyFairness,
   calculateDutyStatistics,
   calculateJournalReport,
@@ -33,8 +31,6 @@ const {
   normalizeState,
   previewDutySchedule,
   previewReceiptCorrection,
-  previewManualStatuses,
-  previewJournalBatch,
   previewSubmission,
   removeDutyAssignment,
   recordSubmission,
@@ -42,7 +38,6 @@ const {
   renameDutySchedule,
   restoreEmployee,
   setManualStatus,
-  setManualStatuses,
   setDutyAssignment,
   setDutyDayException,
   setDutyRealized,
@@ -60,6 +55,10 @@ const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
 const staffChanges = require('../shared/staff-changes');
 const dutyReplacements = require('../shared/duty-replacements');
+const availability = require('../shared/availability');
+const runtimeOptions = require('./runtime-options');
+const os = require('node:os');
+const {createTrainingState} = require('../shared/training');
 const planner = require('../shared/planner');
 const { employeeOverview, weeklySummary, buildWeeklyCsv, buildWeeklyHtml } = require('../shared/management');
 const { createReminderService, setupWindowsNotifications } = require('./task-reminders');
@@ -74,6 +73,7 @@ let lastBroadcastDate = null;
 let reminders = null;
 let dataImportPending = false;
 let activationRequested = false;
+let trainingSession = null;
 const undoStack = [];
 
 function clampWidgetSize(value) {
@@ -81,6 +81,7 @@ function clampWidgetSize(value) {
 }
 
 function applicationDataDirectory() {
+  if (runtimeOptions.selfTestDirectory) return runtimeOptions.selfTestDirectory;
   const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR
     || (process.env.PORTABLE_EXECUTABLE_FILE
       ? path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
@@ -219,6 +220,8 @@ function currentSnapshot() {
     dataFilePath: store.filePath,
     reminderStatus: reminders?.status() || { supported: false, lastError: '' },
     consequences: staffChanges.getConsequences(store.state,{},now),
+    recovery: store.recovery,
+    training: trainingSession ? {active:true,...trainingSession.scenario} : {active:false},
   };
 }
 
@@ -366,6 +369,28 @@ function buildCsv(state) {
 
 function registerIpc() {
   ipcMain.handle('snapshot:get', () => currentSnapshot());
+  ipcMain.handle('training:enter', () => {
+    if(trainingSession)return {entered:true};
+    if(dataImportPending)throw new Error('Дочекайтеся завершення імпорту.');
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'lad-training-')),demo=createTrainingState(),practice=new DataStore(directory);
+    practice.state=demo.state;
+    try { practice.save(); } catch(error){fs.rmSync(directory,{recursive:true,force:true});throw error;}
+    trainingSession={original:store,history:[...undoStack],directory,scenario:demo.scenario};
+    store=practice;undoStack.length=0;reminders?.disable('Навчальний режим: системні сповіщення вимкнені.');broadcast();return {entered:true};
+  });
+  ipcMain.handle('training:exit', () => {
+    if(!trainingSession)return {exited:true};
+    const session=trainingSession;store=session.original;undoStack.splice(0,undoStack.length,...session.history);trainingSession=null;
+    try { fs.rmSync(session.directory,{recursive:true,force:true}); } catch(_error) { /* Returning to work data must not fail because a temporary file is still open. */ }
+    if(store.state.settings.taskRemindersEnabled){const setup=setupWindowsNotifications({app,shell});if(setup.supported)reminders?.enable();else reminders?.disable(setup.error);}
+    else reminders?.enable();
+    broadcast();return {exited:true};
+  });
+  ipcMain.handle('training:seen', () => {
+    if(trainingSession)return true;
+    const previous=store.state.settings.onboardingSeen;store.state.settings.onboardingSeen=true;
+    try{store.save();}catch(error){store.state.settings.onboardingSeen=previous;throw error;}broadcast();return true;
+  });
   ipcMain.handle('staff:preview-change', (_event, input) => staffChanges.previewStaffChange(store.state,input));
   ipcMain.handle('staff:apply-change', (_event, input) => mutate('staff:apply-change',state => staffChanges.applyStaffChange(state,input)));
   ipcMain.handle('staff:consequences', (_event, input) => staffChanges.getConsequences(store.state,input));
@@ -398,6 +423,7 @@ function registerIpc() {
   ipcMain.handle('tasks:archive', (_event, { id, archived }) => mutate('tasks:archive', state => tasks.archiveTask(state, id, archived)));
   ipcMain.handle('tasks:snooze', (_event, { id, minutes }) => mutate('tasks:snooze', state => tasks.snoozeTask(state, id, minutes)));
   ipcMain.handle('tasks:test-reminder', () => {
+    if(trainingSession)throw new Error('У навчанні системні сповіщення вимкнені. Перевірте їх після повернення до своїх даних.');
     const setup = setupWindowsNotifications({ app, shell });
     if (!setup.supported) throw new Error(setup.error);
     reminders.enable(); return reminders.test();
@@ -426,7 +452,7 @@ function registerIpc() {
     mutate('employee:add', (state) => createEmployee(state, name))
   ));
   ipcMain.handle('employee:archive', (_event, { employeeId }) => (
-    mutate('employee:archive', (state) => archiveEmployee(state, employeeId))
+    (()=>{throw new Error('Перед переведенням до архіву відкрийте «Доступність» і перевірте наслідки.');})()
   ));
   ipcMain.handle('employee:restore', (_event, { employeeId }) => (
     mutate('employee:restore', (state) => restoreEmployee(state, employeeId))
@@ -454,14 +480,17 @@ function registerIpc() {
     mutate('submission:allocate-forward', (state) => allocateReceiptForward(state, receiptId, units))
   ));
   ipcMain.handle('record:set-status', (_event, payload) => (
-    mutate('record:set-status', (state) => setManualStatus(state, payload))
+    mutate('record:set-status', (state) => {
+      if(staffChanges.ABSENCES.has(payload.status))throw new Error('Відсутність записуйте через «Зміну доступності»: спочатку перевірте зачеплені графіки та завдання.');
+      return setManualStatus(state,payload);
+    })
   ));
   ipcMain.handle('record:set-period', (_event, payload) => (
-    mutate('record:set-period', (state) => setManualStatuses(state, payload))
+    mutate('record:set-period', (state) => availability.applyPeriod(state, payload))
   ));
-  ipcMain.handle('record:preview-period', (_event, payload) => previewManualStatuses(store.state, payload));
-  ipcMain.handle('journal:preview-batch', (_event, payload) => previewJournalBatch(store.state, payload));
-  ipcMain.handle('journal:apply-batch', (_event, payload) => mutate('journal:apply-batch', (state) => applyJournalBatch(state, payload)));
+  ipcMain.handle('record:preview-period', (_event, payload) => availability.previewPeriod(store.state, payload));
+  ipcMain.handle('journal:preview-batch', (_event, payload) => availability.previewBatch(store.state, payload));
+  ipcMain.handle('journal:apply-batch', (_event, payload) => mutate('journal:apply-batch', (state) => availability.applyBatch(state, payload)));
   ipcMain.handle('journal:export', async (_event, filter) => {
     const report = calculateJournalReport(store.state, filter);
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -590,7 +619,7 @@ function registerIpc() {
   ipcMain.handle('settings:update', (_event, settings) => {
     const result = mutate('settings:update', (state) => updateSettings(state, settings));
     mainWindow?.setAlwaysOnTop(result.alwaysOnTop);
-    if (result.taskRemindersEnabled) {
+    if (result.taskRemindersEnabled && !trainingSession) {
       const setup = setupWindowsNotifications({ app, shell });
       if (setup.supported) reminders.enable(); else reminders.disable(setup.error);
     }
@@ -625,6 +654,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('data:import', async () => {
+    if(trainingSession)throw new Error('Вийдіть із навчання, щоб імпортувати свою робочу базу.');
     if (dataImportPending) return { canceled: true, busy: true };
     dataImportPending = true;
     try {
@@ -668,6 +698,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('data:backups', () => store.listBackups());
+  ipcMain.handle('data:ack-recovery', () => {store.recovery=null;broadcast();return true;});
   ipcMain.handle('data:restore-backup', (_event, { id }) => {
     const before = store.snapshot();
     store.restoreBackup(id);
@@ -777,10 +808,18 @@ function revealMainWindow() {
 }
 app.on('second-instance', revealMainWindow);
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
-  store = new DataStore(applicationDataDirectory(), app.getPath('userData'));
-  store.load();
+  store = new DataStore(applicationDataDirectory(), runtimeOptions.selfTestDirectory ? null : app.getPath('userData'));
+  try { store.load(); }
+  catch(error) {
+    const answer=await dialog.showMessageBox({type:'error',title:'ЛАД · відновлення бази',message:'Не вдалося відкрити робочу базу',detail:error.message,buttons:['Вибрати резервну копію','Закрити'],defaultId:1,cancelId:1,noLink:true});
+    if(answer.response!==0){app.quit();return;}
+    const selected=await dialog.showOpenDialog({title:'Вибрати справну копію ЛАД',properties:['openFile'],filters:[{name:'Резервна копія JSON',extensions:['json']}]});
+    if(selected.canceled||!selected.filePaths[0]){app.quit();return;}
+    store.replace(store.readBackup(selected.filePaths[0]));
+    store.recovery={source:'selected',restoredAt:new Date().toISOString(),message:'Відновлено вибрану копію. Перевірте її дату та останні зміни.'};
+  }
   ensureAutomaticMisses(store.state, new Date());
   store.save();
   const notificationSetup = store.state.settings.taskRemindersEnabled ? setupWindowsNotifications({ app, shell }) : { supported: true };
@@ -808,14 +847,19 @@ app.whenReady().then(() => {
   }, 30_000);
 
   app.on('activate', revealMainWindow);
+}).catch(async error => {
+  await dialog.showMessageBox({type:'error',title:'ЛАД · запуск',message:'ЛАД не вдалося запустити',detail:error.message,buttons:['Закрити']});
+  app.quit();
 });
 
 app.on('before-quit', () => {
   if (closeTimer) clearInterval(closeTimer);
   if (positionSaveTimer) clearTimeout(positionSaveTimer);
   saveWidgetBounds();
+  if(trainingSession){try{fs.rmSync(trainingSession.directory,{recursive:true,force:true});}catch(_error){/* Temporary cleanup must not block closing the app. */}}
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+module.exports={getMainWindow:()=>mainWindow,getStore:()=>store};

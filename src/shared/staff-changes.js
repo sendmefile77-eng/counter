@@ -20,13 +20,8 @@ function cleanInput(state,input,now) {
   if(scheduleId)replacements.scheduleView(state,scheduleId);
   return {kind,employeeId,startDate,endDate,status:status || null,type:kind==='restriction'?status:null,reason,scheduleId,workdaysOnly:kind==='status'&&input.workdaysOnly===true};
 }
-function previewStaffChange(state,input,now=new Date()) {
-  const change = cleanInput(state,input,now), person = d.getEmployee(state,change.employeeId), today=planner.dateKey(now);
-  const dates=[];
-  if(change.kind!=='archive')for(let date=change.startDate;date<=change.endDate;date=d.addDays(date,1)) {
-    if (!d.employeeExistsOnDate(person,date) || change.workdaysOnly&&!d.isEmployeeWorkday(state,person.id,date))continue;
-    dates.push(date);
-  }
+function inspectStaffEffects(state,change,dates,now=new Date()) {
+  const person=d.getEmployee(state,change.employeeId),today=planner.dateKey(now);
   const affectedDates=new Set(dates);
   const markedDates=new Set(dates);
   if(change.type==='a')dates.forEach(date=>affectedDates.add(d.addDays(date,-1)));
@@ -44,14 +39,36 @@ function previewStaffChange(state,input,now=new Date()) {
       ||change.kind==='restriction'&&!['planning_block'].includes(change.type)&&markedDates.has(task.dueDate)))
     .map(task=>({id:task.id,title:task.title,dueDate:task.dueDate,dueTime:task.dueTime,priority:task.priority,status:task.status}));
   const blockers=[];
-  if(change.kind!=='archive'&&!dates.length)blockers.push('У періоді немає доступних дат обліку цього працівника.');
   for(const duty of duties) {
     if(duty.locked)blockers.push(`${duty.scheduleName}, ${duty.date}: тиждень заблоковано. Розблокуйте його перед зміною.`);
     if(duty.realized||duty.past)blockers.push(`${duty.scheduleName}, ${duty.date}: є виконане або минуле чергування. Перевірте фактичний облік окремо.`);
   }
   if(change.kind==='status')for(const date of dates)if(state.records[d.recordKey(person.id,date)]?.receiptId)blockers.push(`${date}: день пов’язаний із документом. Спочатку виправте його зарахування.`);
   if(change.kind==='restriction')for(const date of dates)if(d.dutyDateLocked(replacements.scheduleView(state,change.scheduleId),date))blockers.push(`${date}: тиждень графіка заблоковано.`);
+  return {duties,tasks,blockers:[...new Set(blockers)]};
+}
+function previewStaffChange(state,input,now=new Date()) {
+  const change = cleanInput(state,input,now), person = d.getEmployee(state,change.employeeId), today=planner.dateKey(now);
+  const dates=[];
+  if(change.kind!=='archive')for(let date=change.startDate;date<=change.endDate;date=d.addDays(date,1)) {
+    if (!d.employeeExistsOnDate(person,date) || change.workdaysOnly&&!d.isEmployeeWorkday(state,person.id,date))continue;
+    dates.push(date);
+  }
+  const {duties,tasks,blockers}=inspectStaffEffects(state,change,dates,now);
+  if(change.kind!=='archive'&&!dates.length)blockers.push('У періоді немає доступних дат обліку цього працівника.');
   return {change,employeeName:person.name,dates,duties,tasks,blockers:[...new Set(blockers)],canApply:blockers.length===0,token:replacements.fingerprint(state)};
+}
+function removeAffectedDuties(draft,duties,employeeId,reason,now=new Date()) {
+  for(const duty of duties) {
+    const view=replacements.scheduleView(draft,duty.scheduleId), previous=view.duties.assignments[duty.date];
+    const after=previous.employeeIds.filter(id=>id!==employeeId);
+    view.duties.assignments[duty.date]={...previous,employeeIds:after,singleApproved:false,
+      realizedEmployeeIds:(previous.realizedEmployeeIds || []).filter(id=>after.includes(id)),
+      manualEmployeeIds:(previous.manualEmployeeIds || []).filter(id=>after.includes(id)),
+      source:'availability_change',updatedAt:now.toISOString(),
+      replacementNeeds:[...(previous.replacementNeeds || []).filter(item=>item.employeeId!==employeeId),
+        {employeeId:employeeId,name:d.getEmployee(draft,employeeId).name,reason:reason,at:now.toISOString()}]};
+  }
 }
 function applyStaffChange(state,input,now=new Date()) {
   if(!input.expectedToken || replacements.fingerprint(state)!==input.expectedToken)throw new Error('Дані змінилися. Перевірте наслідки ще раз перед збереженням.');
@@ -60,15 +77,7 @@ function applyStaffChange(state,input,now=new Date()) {
   const draft=d.clone(state), active=draft.dutySchedules.find(schedule=>schedule.id===draft.activeDutyScheduleId);
   if(active)active.data=draft.duties;
   const {change}=report;
-  for(const duty of report.duties) {
-    const view=replacements.scheduleView(draft,duty.scheduleId), previous=view.duties.assignments[duty.date];
-    view.duties.assignments[duty.date]={...previous,employeeIds:[...duty.after],singleApproved:false,
-      realizedEmployeeIds:(previous.realizedEmployeeIds || []).filter(id=>duty.after.includes(id)),
-      manualEmployeeIds:(previous.manualEmployeeIds || []).filter(id=>duty.after.includes(id)),
-      source:'availability_change',updatedAt:now.toISOString(),
-      replacementNeeds:[...(previous.replacementNeeds || []).filter(item=>item.employeeId!==change.employeeId),
-        {employeeId:change.employeeId,name:report.employeeName,reason:change.reason,at:now.toISOString()}]};
-  }
+  removeAffectedDuties(draft,report.duties,change.employeeId,change.reason,now);
   if(change.kind==='archive')d.archiveEmployee(draft,change.employeeId,now);
   else for(const date of report.dates) {
     if(change.kind==='status')d.setManualStatus(draft,{employeeId:change.employeeId,date,status:change.status,note:change.reason},now);
@@ -133,4 +142,4 @@ function getConsequences(state,input={},now=new Date()) {
   issues.sort((a,b)=>a.date.localeCompare(b.date)||a.kind.localeCompare(b.kind)||a.id.localeCompare(b.id));
   return {startDate:from,endDate:to,generatedAt:now.toISOString(),total:issues.length,actionCount:issues.filter(issue=>issue.severity==='action').length,reviewCount:issues.filter(issue=>issue.severity==='review').length,issues};
 }
-module.exports={ABSENCES,previewStaffChange,applyStaffChange,getConsequences};
+module.exports={ABSENCES,inspectStaffEffects,removeAffectedDuties,previewStaffChange,applyStaffChange,getConsequences};

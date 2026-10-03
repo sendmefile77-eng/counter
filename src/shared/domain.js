@@ -236,6 +236,7 @@ function normalizeGlobalSettings(input = {}) {
     interfaceTextSize: source.interfaceTextSize === 'large' ? 'large' : 'standard',
     taskRemindersEnabled: source.taskRemindersEnabled !== false,
     taskAttentionDays: clampInteger(source.taskAttentionDays, 1, 14, 3),
+    onboardingSeen: source.onboardingSeen === true,
     operatorName: String(source.operatorName || 'Керівник').trim().slice(0, 80) || 'Керівник',
     statusColors,
   };
@@ -3152,6 +3153,7 @@ module.exports = {
   employeeExistsOnDate,
   explainDutyAssignment,
   normalizeDutyRules,
+  journalBatchTargets,
   calculateJournalReport,
   calculateStatistics,
   calculateAnalyticsTrend,

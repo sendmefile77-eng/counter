@@ -15,6 +15,20 @@ function fixture(count=1) {
   return {state,people,put,query:{scheduleId:state.activeDutyScheduleId,date:'2026-10-08',employeeId:people[0].id}};
 }
 function apply(state,report,plan,extra={}) {return r.applyReplacement(state,{query:report.query,proposalId:plan.id,expectedToken:report.token,reason:'Погоджена підміна',...extra},now);}
+test('saved vacancy exchange arguments show the real count change for both dates',()=>{
+  const {state,people,put,query}=fixture();put(query.date,[people[0].id]);put('2026-10-09',[people[1].id]);
+  const absence=staff.previewStaffChange(state,{employeeId:people[0].id,startDate:query.date,endDate:query.date,status:'sick',reason:'Лікарняний'},now);
+  staff.applyStaffChange(state,{change:absence.change,expectedToken:absence.token},now);
+  const report=r.getReplacementOptions(state,query,now),plan=report.plans.find(item=>item.kind==='swap'&&item.candidateId===people[1].id);assert.ok(plan);
+  apply(state,report,plan);
+  const reasons=state.duties.assignments[query.date].explanation.replacement.reasons.join(' ');
+  assert.match(reasons,/2026-10-08: 0 → 1/);assert.match(reasons,/2026-10-09: 1 → 1/);
+});
+test('a blocked replacement offers a next step tied to the actual locked week',()=>{
+  const {state,people,put,query}=fixture();put(query.date,[people[0].id]);d.setDutyWeekLocked(state,query.date,true,now);
+  const report=r.getReplacementOptions(state,query,now);assert.equal(report.plans.length,0);
+  assert.ok(report.guidance.some(tip=>tip.includes('розблокуйте тиждень')));
+});
 test('direct replacement previews without mutation and preserves everyone else and their realization',()=>{
   const {state,people,put,query}=fixture(2);put(query.date,[people[0].id,people[1].id],[people[1].id]);
   const before=d.clone(state), report=r.getReplacementOptions(state,query,now);assert.deepEqual(state,before);

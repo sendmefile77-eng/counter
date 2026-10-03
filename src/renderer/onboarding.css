@@ -1,0 +1,12 @@
+#guide-root { position:fixed; inset:0; z-index:10000; pointer-events:none; }
+.guide-mask { position:fixed; background:rgb(0 8 16 / .72); pointer-events:auto; }
+.guide-with-modal .guide-mask { pointer-events:none; }
+.guide-focus { position:fixed; border:2px solid var(--accent); border-radius:10px; box-shadow:0 0 0 3px rgb(227 184 103 / .2); pointer-events:none; }
+.guide-card { position:fixed; pointer-events:auto; padding:20px; border:1px solid var(--accent); border-radius:14px; color:var(--text); background:var(--panel); box-shadow:0 15px 60px rgb(0 0 0 / .4); overflow:auto; }
+.guide-card h2 { font-size:20px; line-height:1.3; margin:12px 0; }
+.guide-card p { font-size:14px; line-height:1.65; margin:10px 0 18px; }
+.guide-card footer { display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; }
+.guide-card .guide-wait { color:var(--accent); font-size:12px; }
+.training-banner { border:2px solid var(--accent); }
+.recovery-banner { border-color:var(--accent); }
+.widget-recovery-alert { position:absolute; top:16%; left:50%; transform:translateX(-50%); z-index:4; max-width:75%; padding:4px 10px; border:1px solid var(--accent); border-radius:20px; background:var(--panel); color:var(--accent); font-size:12px; cursor:pointer; }
