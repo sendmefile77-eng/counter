@@ -1,0 +1,25 @@
+.effect-banner { display:flex; align-items:center; gap:16px; justify-content:space-between; padding:18px; margin:18px 0; border:1px solid var(--line-strong); border-left:3px solid var(--accent); border-radius:12px; background:var(--panel); }
+.effect-banner p { color:var(--muted); font-size:12px; line-height:1.6; margin:7px 0 0; }
+.effect-banner .button { flex:none; }
+.effect-filters { display:grid; grid-template-columns:1.4fr repeat(3,minmax(120px,1fr)); gap:12px; }
+.effect-filters .field { min-width:0; }
+.effect-row { border-top:1px solid var(--line); padding:20px 0; display:flex; flex-direction:column; gap:12px; }
+.effect-row h3 { overflow-wrap:anywhere; margin:10px 0 6px; }
+.effect-row ul,.staff-impact ul,.replacement-body ul { line-height:1.7; padding-left:22px; overflow-wrap:anywhere; }
+.effect-row p { margin:6px 0; }
+.effect-empty { padding:28px 0; text-align:center; color:var(--muted); }
+.staff-impact { border-top:1px solid var(--line); padding-top:16px; line-height:1.7; }
+.staff-impact h3 { margin:14px 0; }
+.replacement-body { display:flex; flex-direction:column; gap:16px; }
+.replacement-filters { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.replacement-card { padding:18px; border:1px solid var(--line-strong); border-radius:12px; background:var(--panel); }
+.replacement-card h3 { margin:5px 0 0; overflow-wrap:anywhere; }
+.replacement-dates { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin:14px 0; }
+.replacement-dates article { padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel-raised); min-width:0; }
+.replacement-dates p { margin:10px 0 0; overflow-wrap:anywhere; line-height:1.5; }
+.replacement-dates small { display:block; color:var(--muted); margin-bottom:3px; }
+.replacement-proof { margin-bottom:16px; padding:14px; border:1px solid var(--accent); border-radius:10px; background:var(--accent-soft); }
+.replacement-proof p { margin:8px 0; line-height:1.6; }
+.nav-label .count-pill { margin-left:5px; font-size:10px; }
+@media(max-width:1100px) { .effect-filters { grid-template-columns:1fr 1fr; } }
+@media(max-width:700px) { .effect-banner { flex-wrap:wrap; } .effect-filters,.replacement-filters { grid-template-columns:1fr; } .replacement-card .rules-heading { flex-wrap:wrap; } }

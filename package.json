@@ -1,6 +1,6 @@
 {
   "name": "counter-widget",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "ЛАД — Люди. Аналітика. Документи. Локальний облік і планування чергувань",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",

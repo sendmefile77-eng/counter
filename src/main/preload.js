@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
+  previewStaffChange: input => ipcRenderer.invoke('staff:preview-change',input),
+  applyStaffChange: input => ipcRenderer.invoke('staff:apply-change',input),
+  getConsequences: input => ipcRenderer.invoke('staff:consequences',input),
+  getDutyReplacements: input => ipcRenderer.invoke('duties:replacements',input),
+  applyDutyReplacement: input => ipcRenderer.invoke('duties:apply-replacement',input),
   createDraw: input => ipcRenderer.invoke('draws:create', input),
   createTaskFromDraw: (id, input) => ipcRenderer.invoke('draws:create-task', { id, input }),
   confirmAction: message => ipcRenderer.invoke('dialog:confirm', message),

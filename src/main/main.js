@@ -58,6 +58,8 @@ const {
 const { DataStore } = require('./store');
 const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
+const staffChanges = require('../shared/staff-changes');
+const dutyReplacements = require('../shared/duty-replacements');
 const planner = require('../shared/planner');
 const { employeeOverview, weeklySummary, buildWeeklyCsv, buildWeeklyHtml } = require('../shared/management');
 const { createReminderService, setupWindowsNotifications } = require('./task-reminders');
@@ -216,6 +218,7 @@ function currentSnapshot() {
     appVersion: app.getVersion(),
     dataFilePath: store.filePath,
     reminderStatus: reminders?.status() || { supported: false, lastError: '' },
+    consequences: staffChanges.getConsequences(store.state,{},now),
   };
 }
 
@@ -363,6 +366,11 @@ function buildCsv(state) {
 
 function registerIpc() {
   ipcMain.handle('snapshot:get', () => currentSnapshot());
+  ipcMain.handle('staff:preview-change', (_event, input) => staffChanges.previewStaffChange(store.state,input));
+  ipcMain.handle('staff:apply-change', (_event, input) => mutate('staff:apply-change',state => staffChanges.applyStaffChange(state,input)));
+  ipcMain.handle('staff:consequences', (_event, input) => staffChanges.getConsequences(store.state,input));
+  ipcMain.handle('duties:replacements', (_event, input) => dutyReplacements.getReplacementOptions(store.state,input));
+  ipcMain.handle('duties:apply-replacement', (_event, input) => mutate('duties:apply-replacement',state => dutyReplacements.applyReplacement(state,input)));
   ipcMain.handle('draws:create', (_event, input) => {
     const result = mutate('draws:create', state => draws.createDraw(state,input));
     // A saved draw is a checkpoint: undoing earlier edits must not erase its result.

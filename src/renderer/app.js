@@ -490,6 +490,7 @@ const NAV_ICONS = {
   restore: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="11" height="11" rx="1"></rect><path d="M9 8V5h10v10h-3"></path></svg>',
   planner: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h3M15 13v5M13 15.5h4"></path></svg>',
   weekly: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM15 3v4h3M9 11h6M9 15h6M9 18h4"></path></svg>',
+  consequences: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19L12 3zM12 9v5M12 17h.01"></path></svg>',
   draws: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9v12M17 14v7"></path><ellipse cx="7" cy="6" rx="2.5" ry="3"></ellipse><ellipse cx="17" cy="11" rx="2.5" ry="3"></ellipse></svg>',
   search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>',
   today: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><path d="m9.4 12 1.7 1.8 3.8-4"></path></svg>',
@@ -514,6 +515,7 @@ const NAV_ITEMS = [
   ['planner', 'Планувальник', 'Завдання, календар, строки й нагадування'],
   ['weekly', 'Тижневе зведення', 'Виконане, затримки й рішення для керівника'],
   ['draws', 'Тягнути сірник', 'Випадковий вибір виконавців та збережені протоколи'],
+  ['consequences', 'Наслідки змін', 'Зачеплені чергування й завдання; заміни та обміни'],
 ];
 
 async function navigateToTab(tab) {
@@ -528,12 +530,12 @@ async function navigateToTab(tab) {
 }
 
 function renderDashboard() {
-  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label}${index < 10 ? ` (Ctrl+${index === 9 ? 0 : index + 1})` : ''}" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}</span></button>`;
+  const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" title="${label}${index < 10 ? ` (Ctrl+${index === 9 ? 0 : index + 1})` : ''}" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}${id === 'consequences' && snapshot.consequences?.total ? `<span class="count-pill">${snapshot.consequences.total}</span>` : ''}</span></button>`;
   return `
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
-        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','planner','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees','draws'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
+        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','planner','consequences','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees','draws'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
         <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6,8).map((item, i) => navButton(item, i + 6)).join('')}</nav>
         <div class="sidebar-note">
@@ -550,6 +552,7 @@ function renderDashboard() {
 }
 
 function renderActivePage() {
+  if (ui.tab === 'consequences') return renderConsequencesPage();
   if (ui.tab === 'draws') return renderDrawPage();
   if (ui.tab === 'planner') return renderPlannerPage();
   if (ui.tab === 'weekly') return renderWeeklyPage();
@@ -580,11 +583,12 @@ function renderTodayPage() {
         <span class="page-eyebrow">Огляд дня</span><h1>${h(formatDate(localDateKey(), { weekday: 'long', day: 'numeric', month: 'long' }))}</h1>
         <p>Статуси команди, чергові та щоденні дії. ${snapshot.settings.automaticClose ? `Закриття робочого дня о ${closeTimeText()}.` : 'Автоматичне закриття вимкнено.'}</p>
       </div>
-      <button class="button" data-tab="journal">Відкрити табель →</button>
+      <div class="button-row"><button class="button" data-staff-change>Зміна доступності</button><button class="button" data-tab="journal">Відкрити табель →</button></div>
     </div>
     <section class="today-hero" aria-label="Стан роботи сьогодні"><div><span class="page-eyebrow">Люди. Аналітика. Документи.</span><h2>День під контролем</h2><p>${snapshot.settings.automaticClose ? `Робочі дні без позначки закриваються о ${closeTimeText()}.` : 'Автоматичне закриття вимкнено. Статуси можна змінити вручну.'}</p><div class="button-row"><button class="button primary" data-tab="duties">Графік чергувань</button><button class="button" data-tab="analytics">Перевірити показники</button></div></div><img src="lad-mark.svg" alt="" class="today-hero-mark"></section>
     <div class="today-summary" aria-label="Підсумки сьогодні"><button data-today-filter="all" aria-pressed="${ui.todayFilter === 'all'}"><span>У команді</span><strong>${employees.length}</strong><small>активних працівників</small></button><button data-today-filter="submitted" aria-pressed="${ui.todayFilter === 'submitted'}"><span>День зараховано</span><strong>${submitted}</strong><small>працівників, зокрема наперед</small></button><button data-today-filter="pending" aria-pressed="${ui.todayFilter === 'pending'}"><span>Без позначки</span><strong>${pending}</strong><small>лише робочі дні</small></button><button data-today-filter="missed" aria-pressed="${ui.todayFilter === 'missed'}"><span>Пропуски</span><strong>${missed}</strong><small>робочі дні без запиту</small></button></div>
     <div class="today-context"><section class="today-duty"><span class="nav-icon">${NAV_ICONS.duties}</span><div><small>Чергування сьогодні · ${h(activeDutySchedule().name)}</small><strong>${dutyNames.length ? h(dutyNames.join(' · ')) : 'Призначень на сьогодні немає'}</strong></div>${dutyNames.length ? `<button class="button small" data-duty-day="${localDateKey()}">Чому цей склад?</button>` : '<button class="button small" data-tab="duties">Відкрити графік</button>'}</section><section class="today-received"><strong>${received}</strong><div>отриманих запитів сьогодні<small>За документами; це окремо від зарахованих днів.</small></div></section></div>
+    ${renderConsequenceBanner()}
     ${renderAttentionPanel()}
     ${employees.length ? `
       <div class="today-people-header"><div><h2>Команда сьогодні</h2><span>${visible.length} з ${employees.length} працівників</span></div><label class="today-search"><span class="sr-only">Знайти працівника</span>${NAV_ICONS.search}<input type="search" data-today-search value="${h(ui.todayQuery)}" placeholder="Знайти працівника"></label></div>
@@ -848,6 +852,7 @@ function renderDutyPage() {
       <button class="button" data-duty-history>Учасники й підсумки</button>
     </div>
     ${scheduleToolbar}
+    ${renderConsequenceBanner()}
     <div class="metrics-grid duty-metrics">
       <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон за ${dutyYear} рік</span></div>
       <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>чергувань за ${dutyYear} рік</span></div>
@@ -1203,7 +1208,7 @@ function renderEmployeesPage() {
     <section class="panel">
       <h2>Активні</h2>
       <div class="employee-list">
-        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Ім’я</button><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
+        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">Прибрати</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
       </div>
     </section>
     ${archived.length && snapshot.settings.showArchivedEmployees ? `
@@ -1327,6 +1332,7 @@ function renderHelpPage() {
   return `
     <div class="page-header"><div><h1>Довідка та позначення</h1><p>Пояснення роботи програми без зміни її параметрів.</p></div></div>
     <section class="panel help-navigation"><h2>Швидка робота з ЛАД</h2><p class="panel-copy">Почніть з огляду дня. У планувальнику записуйте завдання, строки й нагадування; у тижневому зведенні перевіряйте виконане та потрібні рішення. У табелі змінюйте статуси, у чергуваннях — плануйте склад і перевіряйте пояснення. В аналітиці натискайте показник, щоб побачити дати й документи.</p><div class="help-shortcuts"><span><kbd>Ctrl K</kbd> Знайти розділ, працівника або завдання</span><span><kbd>Ctrl 1–9 / 0</kbd> Перейти до розділу</span><span><kbd>Esc</kbd> Закрити діалог</span><span><kbd>F11</kbd> Повний екран</span></div><p class="panel-copy">У діалозі можна пересуватися клавішею Tab. Теми, щільність і збільшений текст доступні в налаштуваннях.</p><button class="button small" data-tab="data">Налаштувати вигляд</button></section>
+    <section class="panel"><h2>Наслідки змін і пошук заміни</h2><p>Запишіть зміну доступності та перевірте зачеплені графіки й завдання. Після збереження відкрийте «Наслідки змін», заповніть вільні місця або знайдіть підміну чи обмін. Пошук перевіряє обидві дати, обов’язковий відпочинок, ліміти й інші графіки. Для застосування вкажіть причину та врахуйте попередження. Заблоковані й виконані чергування автоматично не змінюються.</p></section>
     <section class="panel"><h2>Тягнути сірник</h2><p>1. Назвіть роботу, виберіть усіх або окремих активних працівників і кількість виконавців. 2. Натисніть «Тягнути сірники»: короткі сірники визначають виконавців, протокол зберігається одразу. 3. Створіть завдання з обраними людьми або скопіюйте повний протокол. Повторний розіграш потребує пояснення та зберігає попередній результат.</p><p class="muted">Після розіграшу можна скасовувати лише подальші дії. Імена в протоколі залишаються такими, якими були на момент вибору.</p></section>
     <section class="panel rules-panel">
       <div class="rules-grid">
@@ -1586,6 +1592,7 @@ function renderDutyExplanation(explanation, employeeId = null) {
       <div class="confirm-box">${explanation.reconstructed
         ? 'Пояснення відновлено за поточними даними. Початкові правила й оцінку старого призначення не було збережено.'
         : `Збережено разом із призначенням: ${h(new Date(explanation.createdAt).toLocaleString('uk-UA'))}. Наведено дані на той момент.`}</div>
+      ${explanation.replacement ? `<section class="replacement-proof"><strong>${explanation.replacement.kind==='swap'?'Збережений обмін двома датами':'Збережена підміна'}</strong><p>Причина: ${h(explanation.replacement.reason)}. Автор: ${h(explanation.replacement.actor)} · ${h(new Date(explanation.replacement.createdAt).toLocaleString('uk-UA'))}</p>${replacementChangeHtml(explanation.replacement)}<ul>${explanation.replacement.reasons.map(reason=>`<li>${h(reason)}</li>`).join('')}</ul>${explanation.replacement.warnings.length?`<p>Враховані попередження: ${h(explanation.replacement.warnings.join('; '))}</p>`:''}</section>` : ''}
       <p class="muted">Потрібно чергових: ${explanation.requiredCount}. Пріоритет: ${h(priority)}. Відпочинок: ${rules.minimumRestDays} днів (${rules.minimumRestMode === 'require' ? 'обов’язковий' : 'бажаний'}). Тижневий ліміт: ${rules.maximumDutiesPerWeek || 'без окремого ліміту'}.</p>
       ${exceptions?.length ? `<div class="confirm-box">Разовий дозвіл: ${h(exceptions.join(', '))}. Причина: ${h(exception.note || 'не вказана')}.</div>` : ''}
       ${selected.map((item) => `<article><strong>${h(item.name || employeeById(item.employeeId)?.name || '—')}</strong><ul>${item.reasons.map((reason) => `<li>${h(reason)}</li>`).join('')}</ul>
@@ -1604,6 +1611,7 @@ function dutyExplanationText(explanation, employeeId = null) {
     ? 'Відновлено за поточними даними; первісну оцінку не збережено.' : `Дані на момент призначення: ${explanation.createdAt}`,
     ...selected.flatMap((item) => [item.name, ...item.reasons.map((reason) => `• ${reason}`),
       ...(item.alternatives || []).map((other) => `${other.name}: ${other.reasons.join('; ')}`)]),
+    explanation.replacement ? `Зміна складу: ${explanation.replacement.kind==='swap'?'обмін двома датами':'підміна'}. Причина: ${explanation.replacement.reason}. Автор: ${explanation.replacement.actor}. Дати: ${explanation.replacement.changes.map(change=>change.date).join(', ')}. ${explanation.replacement.reasons.join(' ')}` : '',
     explanation.exception?.note ? `Причина разового винятку: ${explanation.exception.note}` : '',
   ].filter(Boolean).join('\n');
 }
@@ -1717,6 +1725,7 @@ async function openDutyDayModal(date) {
           return `<label class="duty-pick ${restriction ? 'restricted' : ''}"><input type="checkbox" name="employeeIds" value="${h(employee.id)}" ${checked ? 'checked' : ''} ${restriction || locked ? 'disabled' : ''}><span><strong>${h(employee.name)}</strong>${restriction ? `<small>${h(restriction)}</small>` : '<small>Доступний</small>'}</span></label>`;
         }).join('')}</div>
         ${requiredCount > 1 ? `<label class="check-row"><input type="checkbox" name="singleApproved" ${assignment.singleApproved ? 'checked' : ''} ${locked ? 'disabled' : ''}><span><strong>Дозволяю чергування однієї людини</strong><span>Потрібно лише тоді, коли в списку залишено одного працівника.</span></span></label>` : ''}
+        <button class="button" type="button" data-find-replacement="${date}">Знайти підміну або обмін</button>
         <label class="field"><span>Причина ручного призначення</span><textarea name="note" maxlength="500" placeholder="Наприклад, підміна на прохання працівника" ${locked ? 'disabled' : ''}>${h(assignment.note || '')}</textarea></label>
         <details class="modal-details" open><summary>Чому обрано саме цих працівників</summary>${renderDutyExplanation(explanation)}<button class="button small" type="button" data-copy-duty-explanation="${date}">Скопіювати пояснення дня</button></details>
         <section class="day-exception-box">
@@ -1759,7 +1768,7 @@ async function openDutyEmployeeModal(employeeId, date) {
         <details class="modal-details" open><summary>Чому я чергую цього дня</summary>${renderDutyExplanation(explanation, employeeId)}<button class="button small" type="button" data-copy-duty-explanation="${date}" data-explanation-employee="${h(employeeId)}">Скопіювати пояснення</button></details>
         <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-realized="${realized ? 'false' : 'true'}" data-date="${date}" data-employee-id="${h(employeeId)}">${realized ? 'Скасувати позначку виконання' : 'Позначити виконаним'}</button>
         <button class="button danger" data-remove-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
-        <div class="confirm-box">Щоб установити «А» або відсутність, спочатку змініть склад чергових на цей день.</div>
+        <div class="button-row"><button class="button primary" data-find-replacement="${date}" data-replacement-employee="${h(employeeId)}">Знайти підміну / обмін</button><button class="button" data-staff-change="${h(employeeId)}" data-staff-date="${date}">Записати відсутність</button></div>
       ` : `
         <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || planningBlock?.note || '')}</textarea></label>
         <div class="status-grid duty-status-grid">
@@ -2117,6 +2126,7 @@ function updateAnalyticsDraftNotice(form) {
 }
 
 appRoot.addEventListener('click', async (event) => {
+  if (await handleChangesClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   if (handleAnalyticsClick(event)) return;
@@ -2178,7 +2188,7 @@ appRoot.addEventListener('click', async (event) => {
             dutyFocusedEmployeeId:'', dutySelectedWeek:'', journalFocusedEmployeeId:'', journalQuery:'',
             plannerEmployee:'', plannerQuery:'', plannerFocus:'', timeOffEmployee:'',
             weekly:null, weeklyError:'', weeklyLoading:false, profile:null });
-          drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0;
+          drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0; effectsUi.staffDraft=null; effectsUi.staffReport=null; effectsUi.employeeId=''; effectsUi.scheduleId=''; effectsUi.page=0; effectsUi.replacementReport=null;
           ui.analyticsRevision += 1; ui.analyticsDetailRevision += 1;
           ui.weeklyRevision += 1; ui.profileRevision += 1;
           clearJournalSelection();
@@ -2201,7 +2211,7 @@ appRoot.addEventListener('click', async (event) => {
       );
       if (result?.reset) {
         ui.tab = 'today';
-        ui.settingsDraft = null; drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0;
+        ui.settingsDraft = null; drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0; effectsUi.staffDraft=null; effectsUi.staffReport=null; effectsUi.employeeId=''; effectsUi.scheduleId=''; effectsUi.page=0; effectsUi.replacementReport=null;
         ui.todayQuery = ''; ui.todayFilter = 'all';
         ui.weekly = null; ui.weeklyRevision += 1; ui.weeklyError = ''; ui.profile = null; ui.profileRevision += 1;
         ui.plannerQuery = ''; ui.plannerEmployee = ''; ui.plannerStatus = 'active'; ui.plannerPriority = ''; ui.plannerFocus = ''; ui.plannerArchived = false;
@@ -2479,8 +2489,7 @@ appRoot.addEventListener('click', async (event) => {
 
   const archiveButton = event.target.closest('[data-archive-employee]');
   if (archiveButton) {
-    if (!(await confirmAction('Прибрати працівника з активного віджета? Історія залишиться в архіві.'))) return;
-    await run(() => window.counter.archiveEmployee(archiveButton.dataset.archiveEmployee), 'Працівника переміщено до архіву.');
+    openStaffChange({kind:'archive',employeeId:archiveButton.dataset.archiveEmployee,reason:'Працівника переведено до архіву'});
     return;
   }
 
@@ -2611,6 +2620,7 @@ appRoot.addEventListener('keydown', (event) => {
 
 appRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (await handleChangesSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'journal-range-form') {
@@ -2674,6 +2684,7 @@ appRoot.addEventListener('submit', async (event) => {
 });
 
 appRoot.addEventListener('input', (event) => {
+  if (handleChangesInput(event)) return;
   captureDrawInput(event);
   if (event.target.matches('[data-draw-search]')) {
     const cursor = event.target.selectionStart; drawUi.query = event.target.value; drawUi.page = 0; renderShell();
@@ -2697,6 +2708,7 @@ appRoot.addEventListener('input', (event) => {
 });
 
 appRoot.addEventListener('change', async (event) => {
+  if (handleChangesChange(event)) return;
   if (handleManagementChange(event)) return;
   const settingsForm = event.target.closest('#settings-form');
   if (settingsForm) { captureSettingsDraft(settingsForm); return; }
@@ -2748,6 +2760,7 @@ appRoot.addEventListener('change', async (event) => {
 });
 
 modalRoot.addEventListener('input', (event) => {
+  if (handleChangesInput(event)) return;
   if (event.target.matches('[data-quick-query]')) modalRoot.querySelector('[data-quick-results]').innerHTML = renderQuickSearchResults(event.target.value);
 });
 
@@ -2772,6 +2785,7 @@ modalRoot.addEventListener('keydown', (event) => {
 });
 
 modalRoot.addEventListener('change', (event) => {
+  if (handleChangesChange(event)) return;
   if (handleManagementChange(event)) return;
   const batchForm = event.target.closest('#journal-batch-form');
   if (batchForm) invalidateJournalPreview(batchForm);
@@ -2794,6 +2808,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (await handleChangesClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   const quick = event.target.closest('[data-quick-type]');
@@ -3025,6 +3040,10 @@ modalRoot.addEventListener('click', async (event) => {
   const dutyRestrictionButton = event.target.closest('[data-set-duty-restriction]');
   if (dutyRestrictionButton) {
     const note = modalRoot.querySelector('#duty-restriction-note')?.value || '';
+    const {employeeId,date,setDutyRestriction:type}=dutyRestrictionButton.dataset;
+    const affected = snapshot.duties.assignments[date]?.employeeIds.includes(employeeId) || type==='a'&&snapshot.duties.assignments[shiftDate(date,-1)]?.employeeIds.includes(employeeId)
+      || snapshot.tasks.some(task=>LadPlanner.active(task)&&task.assigneeIds.includes(employeeId)&&task.dueDate===date);
+    if (affected) { openStaffChange({kind:'restriction',employeeId,startDate:date,endDate:date,type,scheduleId:snapshot.activeDutyScheduleId,reason:note}); return; }
     const result = await run(
       () => window.counter.setDutyRestriction({
         employeeId: dutyRestrictionButton.dataset.employeeId,
@@ -3062,6 +3081,10 @@ modalRoot.addEventListener('click', async (event) => {
   const statusButton = event.target.closest('[data-set-status]');
   if (statusButton) {
     const note = modalRoot.querySelector('#status-note')?.value || '';
+    const { employeeId, date, setStatus:status } = statusButton.dataset;
+    const affected = snapshot.dutySchedules.some(schedule => (schedule.id===snapshot.activeDutyScheduleId?snapshot.duties:schedule.data).assignments[date]?.employeeIds.includes(employeeId))
+      || snapshot.tasks.some(task=>LadPlanner.active(task)&&task.assigneeIds.includes(employeeId)&&task.dueDate===date);
+    if (Object.hasOwn(STAFF_STATUSES,status) && affected) { openStaffChange({employeeId,startDate:date,endDate:date,status,reason:note}); return; }
     const result = await run(
       () => window.counter.setStatus({
         employeeId: statusButton.dataset.employeeId,
@@ -3087,6 +3110,7 @@ modalRoot.addEventListener('click', async (event) => {
 
 modalRoot.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (await handleChangesSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'employee-rename-form') {
