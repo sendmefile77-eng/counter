@@ -54,6 +54,7 @@ async function submitInterfaceForm(event, callback) {
   event.preventDefault();
   const form = event.target;
   const guarded = new Set(['employee-form','time-off-form','settings-form','submission-form','employee-rename-form',
+    'work-form','work-progress-form','widget-options-form',
     'time-off-edit-form','receipt-correction-form','duty-copy-form','duty-rules-form','duty-schedule-form','duty-history-form','duty-day-form','task-form','task-status-form']);
   if (!guarded.has(form.id)) return callback();
   if (interfacePendingForms.has(form.id) || form.querySelector('button[type="submit"]')?.disabled) return;

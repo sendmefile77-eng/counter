@@ -1,20 +1,7 @@
-const STATUS_LABELS = {
-  pending: 'Очікується',
-  submitted: 'Подав вчасно',
-  submitted_late: 'Подав із запізненням',
-  submitted_advance: 'Зараховано наперед',
-  missed: 'Не подав',
-  other_tasks: 'Залучений до інших завдань',
-  personal_permission: 'Відпущений в особистих справах',
-  sick: 'Лікарняний',
-  vacation: 'Відпустка',
-  day_off: 'Відгул',
-  holiday: 'Вихідний або святковий день',
-  weekend: 'Календарний вихідний',
-  outside: 'Поза періодом роботи',
-};
+const STATUS_LABELS = LadWork.labels;
 
 const STATUS_COLORS = {
+  working: '#36a8b7', planned_work: '#668ac9',
   pending: '#586b85',
   submitted: '#36bf76',
   submitted_late: '#82c967',
@@ -29,6 +16,7 @@ const STATUS_COLORS = {
 };
 
 const STATUS_SYMBOLS = {
+  working:'Р', planned_work:'П',
   pending: '·',
   submitted: '✓',
   submitted_late: '◷',
@@ -260,7 +248,7 @@ function employeeById(employeeId) {
 }
 
 function recordFor(employeeId, date = localDateKey()) {
-  return snapshot.records[`${employeeId}|${date}`] || null;
+  return LadWork.recordForDay(snapshot,employeeId,date,localDateKey());
 }
 
 function statusFor(employeeId, date = localDateKey()) {
@@ -431,6 +419,7 @@ function annularSectorPath(index, count, outerRadius = 270, innerRadius = 116) {
 }
 
 function renderRadial(employees) {
+  const labels=employees.map(person=>employees.length>11?person.name.trim().split(/\s+/).slice(0,2).map(word=>word[0]).join('.')+'.':shortName(person.name));
   const sectors = employees.map((employee, index) => {
     const status = statusFor(employee.id, localDateKey());
     const sweep = 360 / employees.length;
@@ -438,10 +427,10 @@ function renderRadial(employees) {
     const dotPoint = polar(300, 300, employees.length > 11 ? 232 : 238, (index + 0.5) * sweep);
     return `
       <g class="sector" data-employee-id="${h(employee.id)}" tabindex="0" role="button" aria-label="${h(employee.name)}: ${h(STATUS_LABELS[status])}">
-        <title>${h(employee.name)} · ${h(STATUS_LABELS[status])}\nЛівий клік — зарахувати 1 запит. Правий — інші дії.</title>
+        <title>${h(employee.name)} · ${h(STATUS_LABELS[status])}\nКлік — дії з роботою. Правий клік — статус дня.</title>
         <path d="${annularSectorPath(index, employees.length)}" fill="${statusColor(status)}" opacity="0.91"></path>
         <circle class="status-dot" cx="${dotPoint.x}" cy="${dotPoint.y}" r="5" fill="${statusColor(status)}"></circle>
-        <text x="${labelPoint.x}" y="${labelPoint.y}" text-anchor="middle" dominant-baseline="central">${h(shortName(employee.name))}</text>
+        <text x="${labelPoint.x}" y="${labelPoint.y}" text-anchor="middle" dominant-baseline="central">${h(labels.filter(label=>label===labels[index]).length>1?labels[index]+(index+1):labels[index])}</text>
       </g>
     `;
   }).join('');
@@ -453,44 +442,7 @@ function renderRadial(employees) {
 }
 
 function renderWidget() {
-  const employees = activeEmployees();
-  const statuses = employees.map((employee) => statusFor(employee.id));
-  const submitted = statuses.filter((status) => SUBMITTED_STATUSES.has(status)).length;
-  const attentionCount = LadPlanner.attention(snapshot).tasks.length;
-  return `
-    <section class="widget-view">
-      <div class="widget-circle">
-        <div class="radial-wrap ${ui.widgetList ? 'widget-list-mode' : ''}">
-          ${employees.length && ui.widgetList ? `<div class="widget-person-list" aria-label="Список працівників">${employees.map((employee) => `<div class="widget-person"><button data-status-modal="${h(employee.id)}" data-date="${localDateKey()}" title="Відкрити дії для ${h(employee.name)}">${h(shortName(employee.name))}</button><span class="widget-person-status">${h(STATUS_LABELS[statusFor(employee.id)] || 'Очікується')}</span></div>`).join('')}</div>` : employees.length ? renderRadial(employees) : `
-            <div class="empty-widget">
-              <h2>Немає працівників</h2>
-              <p>Відкрийте журнал і додайте до 15 людей.</p>
-              <button class="button primary small" data-action="open-employees">Додати</button>
-            </div>
-          `}
-        </div>
-        ${employees.length && !ui.widgetList ? `
-          <div class="widget-center" data-widget-drag title="Перетягніть, щоб перемістити">
-            <b class="widget-brand">ЛАД</b>
-            <span>${h(formatDate(localDateKey(), { day: 'numeric', month: 'long' }))}</span>
-            <strong>${submitted}/${employees.length}</strong>
-            <small>подали запит</small>
-          </div>
-        ` : ''}
-        ${attentionCount ? `<button class="widget-task-alert" data-planner-attention title="Завдання, що потребують уваги" aria-label="Потребує уваги: ${attentionCount} завдань">! ${attentionCount}</button>` : ''}
-        ${snapshot.recovery ? '<button class="widget-recovery-alert" data-tab="data" title="Базу відновлено з копії. Перевірте останні зміни.">Базу відновлено · перевірити</button>' : ''}
-        <div class="widget-controls">
-          <button data-action="toggle-widget-list" title="${ui.widgetList ? 'Показати сектори' : 'Показати список'}" aria-label="${ui.widgetList ? 'Показати сектори' : 'Показати список'}">${ui.widgetList ? '◉' : '☷'}</button>
-          <button data-action="resize-decrease" title="Зменшити">−</button>
-          <button data-action="resize-increase" title="Збільшити">+</button>
-          <button data-action="undo" title="Скасувати останнє">↶</button>
-          <button data-action="toggle-mode" title="Відкрити журнал">▦</button>
-          <button data-action="close" title="Закрити">×</button>
-        </div>
-        <div class="widget-resize-handle" data-widget-resize title="Потягніть, щоб змінити розмір">⌟</div>
-      </div>
-    </section>
-  `;
+  return renderWorkWidget();
 }
 
 const NAV_ICONS = {
@@ -516,7 +468,7 @@ const NAV_ITEMS = [
   ['journal', 'Табель', 'Позначки за днями та масові зміни'],
   ['duties', 'Чергування', 'Графіки, правила й пояснення призначень'],
   ['timeoff', 'Відлучення', 'Короткі відлучення з часом і причиною'],
-  ['analytics', 'Аналітика', 'Статистика, показники, працівники та документи'],
+  ['analytics', 'Аналітика', 'Робочі дні, проєкти та співробітники'],
   ['employees', 'Працівники', 'Склад команди, порядок та архів'],
   ['data', 'Налаштування', 'Вигляд, робочі дні та резервні копії'],
   ['help', 'Довідка', 'Позначення й пояснення роботи'],
@@ -575,59 +527,7 @@ function renderActivePage() {
 }
 
 function renderTodayPage() {
-  const employees = activeEmployees();
-  const statuses = employees.map((employee) => statusFor(employee.id));
-  const submitted = statuses.filter((status) => SUBMITTED_STATUSES.has(status)).length;
-  const pending = statuses.filter((status) => status === 'pending').length;
-  const missed = statuses.filter((status) => status === 'missed').length;
-  const matches = (status) => ui.todayFilter === 'all' || (ui.todayFilter === 'submitted' ? SUBMITTED_STATUSES.has(status) : ui.todayFilter === 'other' ? !SUBMITTED_STATUSES.has(status) && !['pending', 'missed'].includes(status) : status === ui.todayFilter);
-  const visible = employees.filter((employee) => employee.name.toLocaleLowerCase('uk-UA').includes(ui.todayQuery.toLocaleLowerCase('uk-UA')) && matches(statusFor(employee.id)));
-  const assignment = snapshot.duties?.assignments?.[localDateKey()];
-  const dutyNames = (assignment?.employeeIds || []).map((id) => employeeById(id)?.name || 'Працівник з історії');
-  const received = (snapshot.receipts || []).filter((receipt) => receipt.receivedDate === localDateKey()).reduce((sum, receipt) => sum + receipt.actualRequestCount, 0);
-  return `
-    <div class="page-header">
-      <div>
-        <span class="page-eyebrow">Огляд дня</span><h1>${h(formatDate(localDateKey(), { weekday: 'long', day: 'numeric', month: 'long' }))}</h1>
-        <p>Статуси команди, чергові та щоденні дії. ${snapshot.settings.automaticClose ? `Закриття робочого дня о ${closeTimeText()}.` : 'Автоматичне закриття вимкнено.'}</p>
-      </div>
-      <div class="button-row"><button class="button" data-staff-change>Зміна доступності</button><button class="button" data-tab="journal">Відкрити табель →</button></div>
-    </div>
-    <section class="today-hero" aria-label="Стан роботи сьогодні"><div><span class="page-eyebrow">Люди. Аналітика. Документи.</span><h2>День під контролем</h2><p>${snapshot.settings.automaticClose ? `Робочі дні без позначки закриваються о ${closeTimeText()}.` : 'Автоматичне закриття вимкнено. Статуси можна змінити вручну.'}</p><div class="button-row"><button class="button primary" data-tab="duties">Графік чергувань</button><button class="button" data-tab="analytics">Перевірити показники</button></div></div><img src="lad-mark.svg" alt="" class="today-hero-mark"></section>
-    <div class="today-summary" aria-label="Підсумки сьогодні"><button data-today-filter="all" aria-pressed="${ui.todayFilter === 'all'}"><span>У команді</span><strong>${employees.length}</strong><small>активних працівників</small></button><button data-today-filter="submitted" aria-pressed="${ui.todayFilter === 'submitted'}"><span>День зараховано</span><strong>${submitted}</strong><small>працівників, зокрема наперед</small></button><button data-today-filter="pending" aria-pressed="${ui.todayFilter === 'pending'}"><span>Без позначки</span><strong>${pending}</strong><small>лише робочі дні</small></button><button data-today-filter="missed" aria-pressed="${ui.todayFilter === 'missed'}"><span>Пропуски</span><strong>${missed}</strong><small>робочі дні без запиту</small></button></div>
-    <div class="today-context"><section class="today-duty"><span class="nav-icon">${NAV_ICONS.duties}</span><div><small>Чергування сьогодні · ${h(activeDutySchedule().name)}</small><strong>${dutyNames.length ? h(dutyNames.join(' · ')) : 'Призначень на сьогодні немає'}</strong></div>${dutyNames.length ? `<button class="button small" data-duty-day="${localDateKey()}">Чому цей склад?</button>` : '<button class="button small" data-tab="duties">Відкрити графік</button>'}</section><section class="today-received"><strong>${received}</strong><div>отриманих запитів сьогодні<small>За документами; це окремо від зарахованих днів.</small></div></section></div>
-    ${renderConsequenceBanner()}
-    ${renderAttentionPanel()}
-    ${employees.length ? `
-      <div class="today-people-header"><div><h2>Команда сьогодні</h2><span>${visible.length} з ${employees.length} працівників</span></div><label class="today-search"><span class="sr-only">Знайти працівника</span>${NAV_ICONS.search}<input type="search" data-today-search value="${h(ui.todayQuery)}" placeholder="Знайти працівника"></label></div>
-      <div class="today-filters button-row">${[['all', 'Усі'], ['pending', 'Без позначки'], ['submitted', 'Зараховано'], ['missed', 'Пропуски'], ['other', 'Інші статуси']].map(([key, label]) => `<button class="button small ${ui.todayFilter === key ? 'selected' : ''}" data-today-filter="${key}" aria-pressed="${ui.todayFilter === key}">${label}</button>`).join('')}</div>
-      <div class="cards-grid today-cards">
-        ${visible.map((employee) => {
-          const status = statusFor(employee.id);
-          return `
-            <article class="employee-card">
-              <div class="employee-card-head">
-                <h3><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></h3>
-                ${statusBadge(status)}
-              </div>
-              <button class="button success" data-submit-one="${h(employee.id)}">+ Зарахувати запит</button>
-              <div class="button-row">
-                <button class="button small" data-submission-modal="${h(employee.id)}">Кількість і документ</button>
-                <button class="button small ghost" data-status-modal="${h(employee.id)}" data-date="${localDateKey()}">Інший статус</button>
-              </div>
-            </article>
-          `;
-        }).join('')}
-      </div>
-      ${!visible.length ? '<div class="empty-state panel"><h3>За цими умовами нікого не знайдено</h3><p>Змініть ім’я або вибраний статус.</p><button class="button" data-today-reset>Показати всіх</button></div>' : ''}
-    ` : `
-      <div class="panel">
-        <h2>Почнімо з команди</h2>
-        <p class="panel-copy">Додайте працівників, щоб вести табель. Потім відкрийте «Чергування», оберіть учасників і налаштуйте правила графіка.</p>
-        <button class="button primary" data-action="open-employees">Додати працівника</button>
-      </div>
-    `}
-  `;
+  return renderWorkTodayPage();
 }
 
 function journalRange() {
@@ -661,7 +561,7 @@ function renderJournalPage() {
   ui.journalSelected = ui.journalSelected.filter((cell) => visibleIds.has(cell.employeeId) && visibleDates.has(cell.date));
   const selected = new Set(ui.journalSelected.map((cell) => `${cell.employeeId}|${cell.date}`));
   const range = journalRange();
-  const metricLabels = [['submitted', 'Подав'], ['missed', 'Пропуски'], ['other', 'ІЗ'], ['absent', 'Відсутність'], ['pending', 'Очікує']];
+  const metricLabels = [['submitted', 'Відпрацьовано'], ['working', 'У роботі'], ['missed', 'Без обліку'], ['other', 'ІЗ'], ['absent', 'Відсутність'], ['pending', 'Очікує']];
   return `
     <div class="page-header"><div><h1>Табель виконання</h1><p>Натисніть клітинку, щоб відкрити статус дня. Для кількох днів скористайтеся масовою зміною або виділенням.</p></div><div class="button-row"><button class="button primary small" data-status-period>Масова зміна</button><button class="button small" data-export-journal ${!report.rows.length ? 'disabled' : ''}>Експорт CSV</button></div></div>
     <div class="journal-view-bar">
@@ -681,13 +581,13 @@ function renderJournalPage() {
         <tbody>${report.rows.map((row, rowIndex) => `<tr class="${ui.journalFocusedEmployeeId === row.employeeId ? 'journal-row-focused' : ''}"><td class="sticky-name"><button data-journal-row="${h(row.employeeId)}" title="${h(row.name)} · у режимі виділення вибирає всі показані дні">${h(row.name)}</button></td>${report.dates.map((date, colIndex) => {
           const cell = row.cells.find((item) => item.date === date);
           const chosen = selected.has(`${row.employeeId}|${date}`);
-          const tooltip = `${row.name}\n${formatDate(date)}\n${cell.status === 'outside' ? 'Поза періодом роботи' : STATUS_LABELS[cell.status] || 'Очікується'}${cell.override ? '\nОкремий робочий вихідний' : ''}${cell.protected ? '\nПов’язано з документом' : ''}${cell.documentRef ? `\n${cell.documentRef}` : ''}${cell.note ? `\n${cell.note}` : ''}`;
+          const tooltip = `${row.name}\n${formatDate(date)}\n${cell.status === 'outside' ? 'Поза періодом роботи' : STATUS_LABELS[cell.status] || 'Очікується'}${cell.override ? '\nОкремий робочий вихідний' : ''}${cell.protected ? '\nЗапис попереднього обліку' : ''}${cell.documentRef ? `\n${cell.documentRef}` : ''}${cell.note ? `\n${cell.note}` : ''}`;
           return `<td class="matrix-cell cell-${cell.status}${cell.override && cell.status === 'pending' ? ' cell-workday-override' : ''}${chosen ? ' journal-cell-selected' : ''}${cell.protected ? ' journal-cell-protected' : ''}${date === localDateKey() ? ' is-today' : ''}${dateFromKey(date).getDay() === 1 ? ' journal-week-start' : ''}" data-cell-employee="${h(row.employeeId)}" data-date="${date}" role="button" tabindex="${rowIndex === 0 && colIndex === 0 ? '0' : '-1'}" aria-pressed="${chosen}" aria-label="${h(tooltip.replaceAll('\n', ' · '))}" title="${h(tooltip)}">${cell.symbol}</td>`;
         }).join('')}${metricLabels.map(([key]) => `<td class="journal-total" title="${h(row.name)} · за показаний період">${row.totals[key]}</td>`).join('')}</tr>`).join('')}</tbody>
       </table>
       ${!report.rows.length ? '<div class="empty-state">За цими умовами працівників немає. Змініть пошук або фільтр.</div>' : ''}
     </div>
-    <details class="journal-legend"><summary>Позначення та керування</summary><div>${Object.entries(STATUS_SYMBOLS).map(([key, symbol]) => `<span><strong>${symbol}</strong> ${h(STATUS_LABELS[key])}</span>`).join('')}<span><strong>ВХ</strong> Вихідний</span><span><strong>РД</strong> Окремий робочий вихідний</span><span><strong>—</strong> Поза періодом роботи</span><span><strong>Крапка в кутку</strong> Запис за документом</span></div><p>У режимі виділення натискайте клітинки, імена та заголовки днів. Shift вибирає прямокутник. Звичайний клік поза цим режимом відкриває окремий день.</p></details>
+    <details class="journal-legend"><summary>Позначення та керування</summary><div>${Object.entries(STATUS_SYMBOLS).map(([key, symbol]) => `<span><strong>${symbol}</strong> ${h(STATUS_LABELS[key])}</span>`).join('')}<span><strong>ВХ</strong> Вихідний</span><span><strong>РД</strong> Окремий робочий вихідний</span><span><strong>—</strong> Поза періодом роботи</span><span><strong>Крапка в кутку</strong> Запис попереднього обліку</span></div><p>У режимі виділення натискайте клітинки, імена та заголовки днів. Shift вибирає прямокутник. Звичайний клік поза цим режимом відкриває окремий день.</p></details>
   `;
 }
 
@@ -959,7 +859,7 @@ function renderTimeOffPage() {
         <p>Окремий журнал коротких відлучень: коли, куди та на скільки відпускали працівника.</p>
       </div>
     </div>
-    <div class="confirm-box time-off-notice">Цей журнал не змінює табель, колір віджета, норму запитів або кількість відпрацьованих днів. Повноденну відсутність, як і раніше, позначайте в табелі.</div>
+    <div class="confirm-box time-off-notice">Цей журнал не змінює табель, колір віджета, періоди роботи або кількість відпрацьованих днів. Повноденну відсутність, як і раніше, позначайте в табелі.</div>
     <form id="time-off-form" class="panel">
       <div class="form-grid time-off-form-grid">
         <label class="field"><span>Працівник</span><select name="employeeId" required><option value="">Оберіть працівника</option>${employees.map((employee) => `<option value="${h(employee.id)}">${h(employee.name)}</option>`).join('')}</select></label>
@@ -1074,7 +974,7 @@ function renderAnalyticsPage() {
   const selected = draft.employeeIds;
   const count = selected ? selected.length : people.length;
   return `
-    <div class="page-header"><div><h1>Статистика й аналітика</h1><p>Оберіть період і працівників. Натисніть показник, щоб перевірити його за датами та документами.</p></div></div>
+    <div class="page-header"><div><h1>Статистика й аналітика</h1><p>Оберіть період і працівників. Натисніть показник, щоб перевірити його за датами та роботою.</p></div></div>
     <form id="analytics-form" data-scope="${draft.scope}" class="panel analytics-filter-panel">
       <div class="analytics-presets button-row">${[['today', 'Сьогодні'], ['week', 'Цей тиждень'], ['month', 'Цей місяць'], ['last_month', 'Минулий місяць'], ['30days', 'Останні 30 днів'], ['year', 'Цей рік']].map(([key, label]) => `<button class="button small" type="button" data-analytics-preset="${key}">${label}</button>`).join('')}</div>
       <div class="analytics-filter-grid"><label class="field"><span>Від дати</span><input type="date" name="startDate" value="${h(draft.startDate)}" required></label><label class="field"><span>До дати</span><input type="date" name="endDate" value="${h(draft.endDate)}" required></label><button class="button primary" type="submit" ${ui.analyticsLoading ? 'disabled' : ''}>Показати статистику</button></div>
@@ -1090,25 +990,7 @@ function analyticsMetricButton(key, value, employeeId = '', extra = '') {
   return `<button class="analytics-number-button" ${!ui.analytics?.rows.length ? 'disabled' : ''} data-analytics-metric="${key}" ${employeeId ? `data-employee-id="${h(employeeId)}"` : ''} title="Переглянути розрахунок: ${h(ANALYTICS_LABELS[key])}">${analyticsValue(key, value)}${extra}</button>`;
 }
 function renderAnalyticsResult(report) {
-  const total = report.total;
-  const count = report.rows.length;
-  const cards = [
-    ['workedDays', `${total.requestDays} дн. запитів + ${total.otherTasks} дн. інших завдань`],
-    ['actualRequestsReceived', `У ${total.documentsReceived} документах, отриманих у періоді`],
-    ['requestDays', `${total.documentDays} за документами · ${total.manualDays} без документа`],
-    ['missed', 'Дні зі статусом «Не подав»'],
-    ['absent', 'Відпустка, лікарняний, відгул та інші звільнення'],
-    ['completionPercent', total.requestRequiredDays ? `${total.requestDays} із ${total.requestRequiredDays} днів норми` : 'У цьому періоді немає норми запитів'],
-  ];
-  return `
-    <div class="analytics-report-heading"><div><strong>Показаний звіт: ${h(formatDate(report.startDate))} — ${h(formatDate(report.endDate))}</strong><p>${count === 1 ? h(report.rows[0].name) : `${count} працівників. Підсумки днів підсумовано для всіх вибраних людей.`}</p>${report.futureCalendarDays ? `<p class="analytics-notice">Результати лише до ${h(formatDate(report.asOfDate))}. Майбутні ${report.futureWorkdays} робочих дн. не додаються до норми, пропусків чи «Без позначки».</p>` : ''}</div><div class="button-row">${[['workers', 'CSV працівників'], ['trend', 'CSV динаміки'], ['documents', 'CSV документів']].map(([view, label]) => `<button class="button small" data-export-analytics-view="${view}" ${ui.analyticsError || !count ? 'disabled' : ''}>${label}</button>`).join('')}</div></div>
-    ${!count ? '<div class="confirm-box">У вибраній групі немає працівників. Змініть групу або додайте працівників.</div>' : ''}
-    <div class="analytics-metric-grid">${cards.map(([key, description]) => `<button class="metric-card analytics-metric-card" ${!count ? 'disabled' : ''} data-analytics-metric="${key}"><span>${h(ANALYTICS_LABELS[key])}</span><strong>${analyticsValue(key, total[key])}</strong><small>${h(description)}</small>${analyticsDelta(key, report)}<span class="analytics-card-hint">Показати розрахунок →</span></button>`).join('')}</div>
-    ${report.comparison ? `<p class="analytics-comparison-note">Порівняння: ${h(formatDate(report.comparison.startDate))} — ${h(formatDate(report.comparison.endDate))}, ті самі працівники. Кількість робочих днів може відрізнятися. Зміна відсотка — у відсоткових пунктах.</p>` : ''}
-    <div class="analytics-attention">${analyticsMetricButton('pending', total.pending, '', '<span> дн. без позначки</span>')}${analyticsMetricButton('unallocatedCredit', total.unallocatedCredit, '', '<span> од. залишку документів</span>')}</div>
-    <div class="button-row analytics-view-tabs">${[['overview', 'Огляд'], ['workers', 'Працівники'], ['documents', 'Документи']].map(([key, label]) => `<button class="button ${ui.analyticsView === key ? 'primary' : ''}" data-analytics-view="${key}" aria-pressed="${ui.analyticsView === key}">${label}</button>`).join('')}</div>
-    ${ui.analyticsView === 'workers' ? renderAnalyticsWorkers(report) : ui.analyticsView === 'documents' ? renderAnalyticsDocuments(report) : `${renderAnalyticsChart(report)}${renderAnalyticsExplanation(report)}`}
-  `;
+  return renderWorkAnalytics(report);
 }
 function renderAnalyticsChart(report) {
   const isRequests = ui.analyticsChart === 'requests';
@@ -1266,8 +1148,8 @@ function renderDataPage() {
     [1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [0, 'Нд'],
   ];
   const colorLabels = {
-    pending: 'Очікується', submitted: 'Подав', submitted_late: 'Із запізненням',
-    submitted_advance: 'Наперед', missed: 'Не подав', other_tasks: 'Інші завдання',
+    working:'У роботі', planned_work:'Запланована робота', pending:'Без позначки',submitted:'Відпрацьовано',submitted_late:'Роботу зараховано',
+    submitted_advance:'Раніше зараховано',missed:'Роботу не позначено',other_tasks:'Інша робота',
     personal_permission: 'Особисті справи', sick: 'Лікарняний', vacation: 'Відпустка',
     day_off: 'Відгул', holiday: 'Свято / вихідний',
   };
@@ -1289,13 +1171,13 @@ function renderDataPage() {
           <label class="field"><span>Час автоматичного закриття</span><input name="closeTime" type="time" value="${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}" required></label>
           <label class="field"><span>Формат дати</span><select name="dateStyle"><option value="long" ${settings.dateStyle === 'long' ? 'selected' : ''}>24 серпня 2026</option><option value="short" ${settings.dateStyle === 'short' ? 'selected' : ''}>24 серп. 2026</option><option value="numeric" ${settings.dateStyle === 'numeric' ? 'selected' : ''}>24.08.2026</option></select></label>
         </div>
-        <label class="check-row"><input name="automaticClose" type="checkbox" ${settings.automaticClose ? 'checked' : ''}><span><strong>Автоматично позначати пропуск</strong><span>Після заданого часу робочий день без позначки отримує статус «Не подав».</span></span></label>
+        <label class="check-row"><input name="automaticClose" type="checkbox" ${settings.automaticClose ? 'checked' : ''}><span><strong>Автоматично позначати дні без обліку</strong><span>Після заданого часу день без роботи чи позначки буде виділено для перевірки. Активний період роботи не створює пропусків.</span></span></label>
         <div class="weekday-settings">${weekdays.map(([value, label]) => `<label><input type="checkbox" name="workdays" value="${value}" ${settings.workdays.includes(value) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div>
       </section>
       <section class="panel" id="settings-table">
-        <h2>Віджет і таблиця</h2>
+        <h2>Віджет і таблиця</h2><p class="panel-copy">Команда, чергування або завдання · круглий вигляд чи панель.</p><button class="button" type="button" data-widget-options>Налаштувати віджет</button>
         <div class="settings-grid">
-          <label class="check-row"><input name="alwaysOnTop" type="checkbox" ${settings.alwaysOnTop ? 'checked' : ''}><span><strong>Завжди поверх інших вікон</strong><span>Круглий віджет не ховається за програмами.</span></span></label>
+          <label class="check-row"><input name="alwaysOnTop" type="checkbox" ${settings.alwaysOnTop ? 'checked' : ''}><span><strong>Завжди поверх інших вікон</strong><span>Віджет залишається видимим поверх програм.</span></span></label>
           <label class="check-row"><input name="confirmDestructiveActions" type="checkbox" ${settings.confirmDestructiveActions ? 'checked' : ''}><span><strong>Підтверджувати небезпечні дії</strong><span>Видалення графіків, записів та імпорт бази потребують підтвердження.</span></span></label>
           <label class="check-row"><input name="showArchivedEmployees" type="checkbox" ${settings.showArchivedEmployees ? 'checked' : ''}><span><strong>Показувати архів працівників</strong><span>Архів залишається доступним на сторінці працівників.</span></span></label>
         </div>
@@ -1316,19 +1198,19 @@ function renderDataPage() {
       <h2>Резервні копії</h2>
       <p class="panel-copy settings-privacy">Програма не передає дані в інтернет. Усі записи зберігаються поруч із застосунком.</p>
       <div class="data-actions">
-        <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, усі графіки, відлучення та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
+        <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, робота співробітників, статуси, усі графіки, відлучення та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
         <div class="data-action"><h3>Таблиця CSV</h3><p>Плоска таблиця для відкриття в Excel або іншій програмі.</p><button class="button" data-export="csv">Експортувати таблицю</button></div>
         <div class="data-action backup-drop-zone" data-backup-drop aria-busy="${ui.dataImportPending}"><h3>Відновлення</h3><p>Виберіть JSON-копію або перетягніть один файл у цей блок. Перед заміною бази файл буде перевірено.</p><button class="button danger" data-action="import-data" ${ui.dataImportPending ? 'disabled' : ''}>${ui.dataImportPending ? 'Перевіряємо копію…' : 'Імпортувати копію'}</button><small data-import-status role="status">${ui.dataImportPending ? 'Дочекайтеся завершення імпорту.' : h(ui.dataImportError) || 'Якщо вибір файла не відкривається, перетягніть копію сюди.'}</small></div>
       </div>
       <div class="backup-list"><h3>Доступні локальні копії</h3>
-        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.kind === 'checkpoint' ? 'Перед імпортом / відновленням' : backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань, ${backup.draws || 0} жеребкувань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
+        ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.kind === 'checkpoint' ? 'Перед імпортом / відновленням' : backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.workEntries||0} робіт, ${backup.tasks || 0} завдань, ${backup.draws || 0} жеребкувань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
       </div>
       <p class="panel-copy data-file-path"><strong>Локальний файл:</strong> ${h(snapshot.dataFilePath || 'системний каталог програми')}</p>
     </section>
     <section class="panel danger-zone">
       <div>
         <h2>Повне очищення</h2>
-        <p class="panel-copy">Видаляє всіх працівників, табель, документи, усі графіки чергувань, журнал «Відлучення», обмеження, підсумки та внутрішню резервну копію. Застосунок повернеться до першого запуску.</p>
+        <p class="panel-copy">Видаляє всіх працівників, табель, роботу, усі графіки чергувань, журнал «Відлучення», обмеження, підсумки та внутрішню резервну копію. Застосунок повернеться до першого запуску.</p>
       </div>
       <button class="button danger" data-action="reset-all-data">Обнулити всі дані</button>
     </section>
@@ -1336,35 +1218,11 @@ function renderDataPage() {
 }
 
 function renderHelpPage() {
-  const settings = snapshot.settings;
-  const closeTime = `${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}`;
-  return `
-    <div class="page-header"><div><h1>Довідка та позначення</h1><p>Пояснення роботи програми без зміни її параметрів.</p></div></div>
-    <section class="panel"><h2>Навчання з підказками</h2><p>Екскурсія підсвічує справжні кнопки. Навчальний приклад відкриває окрему базу з вигаданими працівниками: пройдіть лікарняний, підміну, пояснення та передачу завдання. Після виходу повернуться ваші дані.</p><div class="button-row"><button class="button" data-start-guide="tour">Показати кнопки</button><button class="button primary" data-start-guide="practice">Пройти навчальний приклад</button></div></section>
-    <section class="panel help-navigation"><h2>Швидка робота з ЛАД</h2><p class="panel-copy">Почніть з огляду дня. У планувальнику записуйте завдання, строки й нагадування; у тижневому зведенні перевіряйте виконане та потрібні рішення. У табелі змінюйте статуси, у чергуваннях — плануйте склад і перевіряйте пояснення. В аналітиці натискайте показник, щоб побачити дати й документи.</p><div class="help-shortcuts"><span><kbd>Ctrl K</kbd> Знайти розділ, працівника або завдання</span><span><kbd>Ctrl 1–9 / 0</kbd> Перейти до розділу</span><span><kbd>Esc</kbd> Закрити діалог</span><span><kbd>F11</kbd> Повний екран</span></div><p class="panel-copy">У діалозі можна пересуватися клавішею Tab. Теми, щільність і збільшений текст доступні в налаштуваннях.</p><button class="button small" data-tab="data">Налаштувати вигляд</button></section>
-    <section class="panel"><h2>Наслідки змін і пошук заміни</h2><p>Запишіть зміну доступності та перевірте зачеплені графіки й завдання. Після збереження відкрийте «Наслідки змін», заповніть вільні місця або знайдіть підміну чи обмін. Пошук перевіряє обидві дати, обов’язковий відпочинок, ліміти й інші графіки. Для застосування вкажіть причину та врахуйте попередження. Заблоковані й виконані чергування автоматично не змінюються.</p></section>
-    <section class="panel"><h2>Тягнути сірник</h2><p>1. Назвіть роботу, виберіть усіх або окремих активних працівників і кількість виконавців. 2. Натисніть «Тягнути сірники»: короткі сірники визначають виконавців, протокол зберігається одразу. 3. Створіть завдання з обраними людьми або скопіюйте повний протокол. Повторний розіграш потребує пояснення та зберігає попередній результат.</p><p class="muted">Після розіграшу можна скасовувати лише подальші дії. Імена в протоколі залишаються такими, якими були на момент вибору.</p></section>
-    <section class="panel rules-panel">
-      <div class="rules-grid">
-        <article class="rule-card"><div class="rule-time">00:00</div><div><strong>Новий день</strong><p>Віджет переходить до поточної дати; попередня історія зберігається.</p></div></article>
-        <article class="rule-card"><div class="rule-time danger">${closeTime}</div><div><strong>Автоматичне закриття</strong><p>${settings.automaticClose ? 'Незаповнений робочий день стає червоним.' : 'Зараз вимкнено в налаштуваннях.'}</p></div></article>
-        <article class="rule-card"><div class="rule-icon">↶</div><div><strong>Додаткові одиниці</strong><p>Закривають найближчі попередні пропуски; наперед — лише після дозволу.</p></div></article>
-        <article class="rule-card"><div class="rule-icon">◫</div><div><strong>Окремі графіки</strong><p>Кожен має власні правила, учасників, історію, блокування та підсумки.</p></div></article>
-      </div>
-      <h3 class="rules-subtitle">Кольори щоденного обліку</h3>
-      <div class="legend-grid">${Object.entries(STATUS_LABELS).filter(([key]) => !['weekend', 'outside'].includes(key)).map(([key, label]) => `<div class="legend-item"><span class="legend-swatch" data-legend-status="${key}"></span><span><strong>${h(label)}</strong><small>${key === 'missed' ? 'Незаповнений день після часу закриття' : key === 'other_tasks' ? 'Зараховується як відпрацьований день' : 'Статус щоденного обліку'}</small></span></div>`).join('')}</div>
-      <h3 class="rules-subtitle">Позначення чергувань</h3>
-      <div class="legend-grid duty-legend-grid">
-        <div class="legend-item"><span class="legend-duty duty"></span><span><strong>Синя «1»</strong><small>Призначене чергування</small></span></div>
-        <div class="legend-item"><span class="legend-duty realized"></span><span><strong>Зелена «1»</strong><small>Реалізоване чергування</small></span></div>
-        <div class="legend-item"><span class="legend-duty a-mark"></span><span><strong>«А»</strong><small>Залучення; після чергування наступного дня не ставиться</small></span></div>
-        <div class="legend-item"><span class="legend-duty planning">—</span><span><strong>Не планувати</strong><small>Жовта заборона без впливу на статистику</small></span></div>
-        <div class="legend-item"><span class="legend-duty unavailable">ВП</span><span><strong>Відсутність</strong><small>Працівник не бере участі в розподілі</small></span></div>
-        <div class="legend-item"><span class="legend-duty unavailable">🔒</span><span><strong>Заблокований тиждень</strong><small>Зміни дозволені лише після розблокування</small></span></div>
-      </div>
-      <div class="workday-note"><strong>До відпрацьованих днів входять:</strong> дні, закриті запитами, та «Інші завдання». Особисті справи, лікарняний, відпустка, відгул, свято, вихідний і пропуск не зараховуються.</div>
-    </section>
-  `;
+  return `<div class="page-header"><div><h1>Як працює ЛАД</h1><p>Облік роботи, доступності, чергувань і завдань команди.</p></div></div>
+  <section class="panel"><h2>Навчання з підказками</h2><p>Екскурсія підсвічує кнопки. Окремий навчальний приклад із вигаданими людьми допомагає перевірити відсутність, підміну й передачу завдання; після виходу повертаються ваші дані.</p><div class="button-row"><button class="button" data-start-guide="tour">Показати кнопки</button><button class="button primary" data-start-guide="practice">Пройти навчальний приклад</button></div></section><section class="panel"><h2>Почніть із роботи співробітника</h2><p>Вкажіть, над чим він працює, кількість проєктів, початок і орієнтовний строк. Наприклад, 5 проєктів можуть зайняти 7 робочих днів: кількість проєктів і тривалість можна змінювати незалежно.</p><p>Оновлюйте загальний прогрес, а після виконання підтвердьте завершення фактичною датою. Зміна обсягу, строку або зменшення прогресу потребує пояснення; воно залишається в історії.</p><button class="button primary" data-work-new>+ Додати роботу</button></section>
+  <section class="panel"><h2>Табель і статистика</h2><p>Активна робота враховується за робочими днями від початку до фактичного завершення. Вихідні, відсутність і ручні позначки мають пріоритет. Орієнтовний строк лише нагадує перевірити роботу; після нього робота триває.</p><p>Кілька робіт в один день не множать робочі дні. Проєкти у завершених роботах рахуються за фактичною датою завершення. Майбутні дні не входять до фактичної статистики.</p><p>Для роботи без проєктів достатньо позначки «У роботі» або «Відпрацьовано» у табелі. Старі дані з резервних копій зберігаються.</p><div class="button-row"><button class="button" data-tab="journal">Табель</button><button class="button" data-tab="analytics">Статистика</button></div></section>
+  <section class="panel"><h2>Ваш віджет</h2><p>Перемикайте «Команда», «Чергування» і «Завдання». Клік по співробітнику відкриває дії. Швидке зарахування дня вмикається окремо в налаштуваннях.</p><p>Круглий віджет можна замінити панеллю зі списком. Положення можна зафіксувати; перетягування доступне за заголовок. «Сховати» залишає програму й нагадування працювати, «Вийти» закриває ЛАД. Ctrl+Shift+L повертає віджет, якщо комбінація доступна.</p><button class="button" data-widget-options>Налаштувати віджет</button></section>
+  <section class="panel"><h2>Чергування, строки й резервні копії</h2><p>Пояснення кожного чергування відкривається з дати графіка. Зміни доступності перевіряють потребу в підміні. Завдання мають строки й нагадування. Зберігайте JSON-копію перед перенесенням на інший комп’ютер.</p><button class="button" data-tab="data">Налаштування та резервні копії</button></section>`;
 }
 
 function queueWidgetWindowMode(mode) {
@@ -1419,7 +1277,7 @@ function closeModal(owner = null) {
 function quickSearchItems(query = '') {
   const needle = query.trim().toLocaleLowerCase('uk-UA');
   const items = NAV_ITEMS.map(([id, label, description]) => ({ type: 'tab', id, label, description, icon: NAV_ICONS[id] }));
-  for (const employee of activeEmployees()) items.push({ type: 'employee', id: employee.id, label: employee.name, description: 'Картка: завдання, чергування, документи й табель', icon: NAV_ICONS.employees });
+  for (const employee of activeEmployees()) items.push({ type: 'employee', id: employee.id, label: employee.name, description: 'Робота, завдання, чергування й табель', icon: NAV_ICONS.employees });
   for (const task of (snapshot.tasks || []).filter(LadPlanner.active)) items.push({ type:'task', id:task.id, label:task.title, description:`Завдання · ${taskDeadlineText(task)} · ${taskPeople(task)}`, searchText:`${task.title} ${task.description} ${task.documentRef} ${taskPeople(task)}`, icon:NAV_ICONS.planner });
   return items.filter((item) => (item.searchText || (item.type === 'employee' ? item.label : `${item.label} ${item.description}`)).toLocaleLowerCase('uk-UA').includes(needle));
 }
@@ -1816,26 +1674,7 @@ async function openDutyEmployeeModal(employeeId, date) {
 }
 
 function openSubmissionModal(employeeId) {
-  const employee = employeeById(employeeId);
-  openModal(`
-    <form id="submission-form" data-employee-id="${h(employeeId)}">
-      <header class="modal-head"><div><h2>Зарахувати запити</h2><p>${h(employee?.name || '')}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
-      <div class="modal-body">
-        <div class="form-grid">
-          <label class="field"><span>Фактична кількість запитів</span><input name="requestCount" type="number" min="1" max="100" value="1" required></label>
-          <label class="field"><span>Номер або назва документа</span><input name="documentRef" maxlength="120" placeholder="Необов’язково"></label>
-        </div>
-        <label class="check-row">
-          <input name="complexTwoDay" type="checkbox">
-          <span><strong>Дозволити зарахувати один складний запит за 2 робочі дні</strong><span>До фактичної кількості запитів додасться одна залікова одиниця. В аналітиці вони залишаться розділеними.</span></span>
-        </label>
-        <label class="field"><span>Примітка</span><textarea name="note" maxlength="500" placeholder="Причина складності або інше пояснення"></textarea></label>
-        <div class="confirm-box">Поточний день закривається першим. Решта одиниць закриває найближчі попередні пропуски: від учора назад. Для майбутніх днів програма попросить окремий дозвіл.</div>
-        <div class="confirm-box" data-submission-preview>Натисніть «Перевірити дати», щоб побачити розподіл до збереження.</div>
-      </div>
-      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-submission>Перевірити дати</button><button class="button primary" type="submit" disabled>Зарахувати</button></footer>
-    </form>
-  `);
+  return openWorkForm(employeeId);
 }
 
 function receiptFormInput(form) {
@@ -1852,22 +1691,8 @@ function showReceiptPreview(container, result) {
   container.innerHTML = `Буде зараховано ${result.creditUnits} од.: <strong>${h(result.dates.map((date) => formatDate(date)).join(', ') || 'жодної дати')}</strong>. Нерозподілений залишок: <strong>${result.unallocatedCredit}</strong>.`;
 }
 
-function openReceiptCorrectionModal(receiptId) {
-  const receipt = snapshot.receipts.find((item) => item.id === receiptId);
-  if (!receipt) return;
-  openModal(`
-    <form id="receipt-correction-form" data-receipt-id="${h(receiptId)}">
-      <header class="modal-head"><div><h2>Виправити документ</h2><p>${h(employeeById(receipt.employeeId)?.name || '')} · ${h(formatDate(receipt.receivedDate))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
-      <div class="modal-body">
-        <div class="form-grid"><label class="field"><span>Фактичні запити</span><input name="requestCount" type="number" min="1" max="100" value="${receipt.actualRequestCount}" required></label><label class="field"><span>Документ</span><input name="documentRef" maxlength="120" value="${h(receipt.documentRef || '')}"></label></div>
-        <label class="check-row"><input name="complexTwoDay" type="checkbox" ${receipt.complexTwoDay ? 'checked' : ''}><span>Складний запит за два дні</span></label>
-        <label class="field"><span>Примітка</span><textarea name="note" maxlength="500">${h(receipt.note || '')}</textarea></label>
-        <div class="confirm-box">Програма перерахує дні документа від його первісної дати. Раніше дозволений розподіл залишку наперед або назад потрібно буде підтвердити повторно.</div>
-        <div class="confirm-box" data-submission-preview>Перевірте новий розподіл перед збереженням.</div>
-      </div>
-      <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-submission>Перевірити дати</button><button class="button primary" type="submit" disabled>Зберегти виправлення</button></footer>
-    </form>
-  `, true);
+function openReceiptCorrectionModal() {
+  showToast('Облік документів замінено обліком роботи співробітників. Попередні записи збережено.');
 }
 
 function openStatusPeriodModal() { openJournalBatchModal(); }
@@ -1879,7 +1704,7 @@ function openJournalBatchModal(cells = null, action = 'status') {
   const defaultId = workers.some((row) => row.employeeId === ui.journalFocusedEmployeeId)
     ? ui.journalFocusedEmployeeId : workers[0]?.employeeId;
   const actions = [['status', 'Змінити статус'], ['clear', 'Очистити ручні'], ['make_workday', 'Зробити робочими'], ['restore_weekend', 'Повернути вихідні']];
-  const statuses = ['vacation', 'sick', 'day_off', 'other_tasks', 'personal_permission', 'holiday', 'missed', 'submitted'];
+  const statuses = ['vacation', 'sick', 'day_off', 'other_tasks', 'personal_permission', 'holiday', 'missed', 'working', 'submitted'];
   openModal(`
     <form id="journal-batch-form">
       <header class="modal-head"><div><h2>Масова зміна табеля</h2><p>${cells ? `${cells.length} вибраних клітинок · ${new Set(cells.map((cell) => cell.employeeId)).size} працівників` : 'Працівники, період та дні тижня'}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
@@ -1892,11 +1717,11 @@ function openJournalBatchModal(cells = null, action = 'status') {
         <div data-journal-status-options ${action !== 'status' ? 'hidden' : ''}>
           <fieldset class="journal-choice-group"><legend>Новий статус</legend>${statuses.map((status) => `<label><input name="status" type="radio" value="${status}" ${status === 'vacation' ? 'checked' : ''}>${h(STATUS_LABELS[status])}</label>`).join('')}</fieldset>
           <label class="check-row"><input name="includeWeekends" type="checkbox"><span>Включити неробочі дні та зробити їх робочими для цих працівників</span></label>
-          <label class="check-row"><input name="replaceExisting" type="checkbox" checked><span>Замінювати наявні позначки, крім записів за документами</span></label>
+          <label class="check-row"><input name="replaceExisting" type="checkbox" checked><span>Замінювати наявні позначки, крім захищених записів попереднього обліку</span></label>
         </div>
         <label class="field"><span>Причина зміни · обов’язкова для відсутності</span><textarea name="note" maxlength="500" placeholder="Причина або підстава"></textarea></label>
         <label class="check-row"><input name="skipBlocked" type="checkbox"><span><strong>Пропустити заблоковані клітинки</strong><span>За замовчуванням будь-який конфлікт зупиняє всю операцію. Причини буде показано до збереження.</span></span></label>
-        <p class="confirm-box">Документи захищені. Очищення прибирає ручні позначки; автоматичні пропуски виправляйте новим статусом. Минулі незакриті робочі дні після очищення можуть знову стати пропусками. Повернення вихідного прибирає його окремий робочий режим і позначку дня. Усі зміни зберігаються одним кроком скасування.</p>
+        <p class="confirm-box">Записи попереднього обліку захищені. Очищення прибирає ручні позначки; активна робота знову визначає статус. Автоматичну позначку без обліку виправляйте новим статусом. Минулі незакриті робочі дні після очищення можуть знову стати пропусками. Повернення вихідного прибирає його окремий робочий режим і позначку дня. Усі зміни зберігаються одним кроком скасування.</p>
         <div data-journal-batch-preview aria-live="polite">Перевірте клітинки перед застосуванням.</div>
       </div>
       <footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="button" data-preview-journal-batch>Перевірити клітинки</button><button class="button primary" type="submit" disabled>Застосувати</button></footer>
@@ -1962,49 +1787,14 @@ function openFutureApproval(receipt) {
 }
 
 function openStatusModal(employeeId, date) {
-  const employee = employeeById(employeeId);
-  const record = recordFor(employeeId, date);
-  const day = dateFromKey(date).getDay();
-  const calendarWeekend = !configuredWorkday(date);
-  const workdayOverride = hasWorkdayOverride(employeeId, date);
-  const canEditWorkday = !calendarWeekend || workdayOverride;
-  openModal(`
-    <header class="modal-head"><div><h2>Статус дня</h2><p>${h(employee?.name || '')} · ${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
-    <div class="modal-body">
-      <div>Поточний статус: ${calendarWeekend && !workdayOverride ? statusBadge('weekend') : statusBadge(record?.status || 'pending')}</div>
-      ${calendarWeekend && !workdayOverride ? `
-        <div class="confirm-box">Неробочі дні за налаштуваннями календаря позначаються «ВХ» і не входять до норми та відпрацьованих днів.</div>
-        <button class="button primary" type="button" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>
-      ` : ''}
-      ${calendarWeekend && workdayOverride ? `
-        <div class="confirm-box success-box">Цей календарний вихідний вручну зроблено робочим. Він входить у норму${snapshot.settings.automaticClose ? ` й закривається о ${closeTimeText()} як звичайний робочий день` : '; автоматичне закриття зараз вимкнено'}.</div>
-      ` : ''}
-      ${date === localDateKey() && canEditWorkday ? `
-        <div class="button-row">
-          <button class="button success" data-modal-submit-one="${h(employeeId)}">+ Зарахувати 1 запит</button>
-          <button class="button" data-modal-submission="${h(employeeId)}">Кілька / складний</button>
-        </div>
-      ` : ''}
-      ${canEditWorkday ? `<label class="field"><span>Примітка до нового статусу</span><textarea id="status-note" maxlength="500" placeholder="Необов’язково">${h(record?.note || '')}</textarea></label>` : ''}
-      ${canEditWorkday && record?.receiptId ? `
-        <div class="confirm-box">Цей день пов’язаний із зарахованим документом. Щоб не пошкодити розподіл запиту між датами, окреме ручне редагування заблоковано. За потреби скасуйте останнє зарахування.</div>
-      ` : canEditWorkday ? `<div class="status-grid">
-        ${date < localDateKey() ? `<button class="status-choice submitted-choice" data-set-status="submitted" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Подав</strong><span>Ручна відмітка за минулий день</span></button>` : ''}
-        <button class="status-choice" data-set-status="missed" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Не подав</strong><span>Утворює незакритий пропуск</span></button>
-        <button class="status-choice" data-set-status="other_tasks" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Інші завдання</strong><span>Рахується відпрацьованим днем</span></button>
-        <button class="status-choice" data-set-status="personal_permission" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Особисті справи</strong><span>Окремий дозвіл керівника</span></button>
-        <button class="status-choice" data-set-status="sick" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Лікарняний</strong><span>Не входить у норму</span></button>
-        <button class="status-choice" data-set-status="vacation" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпустка</strong><span>Не входить у норму</span></button>
-        <button class="status-choice" data-set-status="day_off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відгул</strong><span>Не входить у норму</span></button>
-        <button class="status-choice" data-set-status="holiday" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Святковий / вихідний</strong><span>Не входить у норму</span></button>
-      </div>` : ''}
-    </div>
-    <footer class="modal-foot">
-      ${calendarWeekend && workdayOverride && !record?.receiptId ? `<button class="button danger" type="button" data-clear-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Повернути «ВХ»</button>` : ''}
-      ${record && !record.receiptId ? `<button class="button danger" type="button" data-clear-status data-employee-id="${h(employeeId)}" data-date="${date}">Очистити</button>` : ''}
-      <button class="button" type="button" data-close-modal>Закрити</button>
-    </footer>
-  `, true);
+  const employee=employeeById(employeeId),record=recordFor(employeeId,date),override=hasWorkdayOverride(employeeId,date);
+  const weekend=!configuredWorkday(date),editable=!weekend||override;
+  openModal(`<header class="modal-head"><div><h2>Статус робочого дня</h2><p>${h(employee?.name||'')} · ${h(formatDate(date))}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Поточний статус: ${statusBadge(statusFor(employeeId,date))}</p>
+  ${weekend&&!override?`<p class="confirm-box">Це неробочий день календаря. Якщо людина працювала, спочатку зробіть його робочим.</p><button class="button primary" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>`:''}
+  ${editable?`<label class="field"><span>Пояснення нової позначки</span><textarea id="status-note" maxlength="500">${h(record?.source==='work'?'':record?.note||'')}</textarea></label>${record?.receiptId?'<p class="confirm-box">Позначку перенесено з попереднього обліку. Для ручного виправлення роботи вкажіть пояснення; попередня база залишається в резервній копії.</p>':''}<div class="status-grid">
+  ${date<=localDateKey()?`<button class="status-choice" data-work-mark="working" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>У роботі</strong><span>Робота триває цього дня</span></button><button class="status-choice submitted-choice" data-work-mark="submitted" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпрацьовано</strong><span>Підтверджена робота за день</span></button>`:''}
+  ${[['missed','Роботу не позначено'],['other_tasks','Інша робота'],['personal_permission','Особисті справи'],['sick','Лікарняний'],['vacation','Відпустка'],['day_off','Відгул'],['holiday','Неробочий день']].map(([status,label])=>`<button class="status-choice" data-set-status="${status}" data-employee-id="${h(employeeId)}" data-date="${date}" ${record?.receiptId?'disabled':''}><strong>${label}</strong><span>${['missed','other_tasks'].includes(status)?'Позначка табеля':'З перевіркою чергувань і завдань'}</span></button>`).join('')}</div>`:''}
+  ${record?.source==='work'?`<p class="muted">День пов’язано з роботою: ${h(record.note)}. Щоб змінити весь період, відкрийте відповідну роботу.</p>`:''}</div><footer class="modal-foot">${weekend&&override&&!record?.receiptId?`<button class="button danger" data-clear-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Повернути вихідний</button>`:''}${record&&record.source!=='work'&&!record.receiptId?`<button class="button danger" data-clear-status data-employee-id="${h(employeeId)}" data-date="${date}">Очистити ручну позначку</button>`:''}<button class="button" data-work-new="${h(employeeId)}">+ Робота</button><button class="button" data-close-modal>Закрити</button></footer>`,true);
 }
 
 function showToast(message, { error = false, undo = false } = {}) {
@@ -2054,17 +1844,8 @@ async function run(action, successMessage, { undo = true, refreshAnalytics = fal
 }
 
 async function submitOne(employeeId) {
-  const payload = { employeeId, requestCount: 1, complexTwoDay: false };
-  let preview;
-  try { preview = await window.counter.previewSubmission(payload); }
-  catch (error) { showToast(error.message || String(error), { error: true }); return; }
-  if ((preview.dates.length !== 1 || preview.dates[0] !== localDateKey() || preview.unallocatedCredit)
-    && !(await confirmAction(`Один запит закриє: ${preview.dates.map((date) => formatDate(date)).join(', ') || 'жодного дня'}. Залишок: ${preview.unallocatedCredit}. Зарахувати?`, true))) return;
-  const receipt = await run(
-    () => window.counter.recordSubmission(payload),
-    'Один запит зараховано.',
-  );
-  if (receipt?.unallocatedCredit > 0) openFutureApproval(receipt);
+  if(snapshot.settings.widgetQuickMode) return markEmployeeWork(employeeId,'submitted');
+  return openWorkActions(employeeId);
 }
 
 async function resizeWidgetBy(delta) {
@@ -2157,6 +1938,7 @@ function updateAnalyticsDraftNotice(form) {
 }
 
 function resetImportedViews() {
+  workUi.filter='active';workUi.query='';
   Object.assign(ui, { settingsDraft:null, todayQuery:'', todayFilter:'all',
     analytics:null, analyticsEmployeeIds:null, analyticsDraft:null, analyticsDetail:null,
     analyticsError:'', analyticsLoading:false, dutyStats:null, dutyFairness:null, dutyPreview:null,
@@ -2245,6 +2027,7 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
   if (await handleLearningClick(event)) return;
+  if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
@@ -2295,7 +2078,7 @@ appRoot.addEventListener('click', async (event) => {
     }
     if (action === 'reset-all-data') {
       if (!(await confirmAction('Це назавжди видалить УСІ дані застосунку. Продовжити?', true))) return;
-      if (!(await confirmAction('Останнє підтвердження: видалити працівників, табель, документи, усі графіки чергувань, завдання, жеребкування й журнал «Відлучення» без можливості скасування?', true))) return;
+      if (!(await confirmAction('Останнє підтвердження: видалити працівників, табель, роботу, усі графіки чергувань, завдання, жеребкування й журнал «Відлучення» без можливості скасування?', true))) return;
       const result = await run(
         () => window.counter.resetAllData(),
         null,
@@ -2678,7 +2461,7 @@ appRoot.addEventListener('keydown', (event) => {
   const sector = event.target.closest('.sector[data-employee-id]');
   if (sector && (event.key === 'Enter' || event.key === ' ')) {
     event.preventDefault();
-    openStatusModal(sector.dataset.employeeId, localDateKey());
+    openWorkActions(sector.dataset.employeeId);
     return;
   }
   const cell = event.target.closest('[data-cell-employee], [data-duty-cell]');
@@ -2711,6 +2494,7 @@ appRoot.addEventListener('keydown', (event) => {
 });
 
 appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleWorkSubmit(event)) return;
   if (await handleChangesSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
@@ -2783,6 +2567,7 @@ appRoot.addEventListener('input', (event) => {
   }
   const settingsForm = event.target.closest('#settings-form');
   if (settingsForm) { captureSettingsDraft(settingsForm); return; }
+  if(event.target.matches('[data-work-search]')) { workUi.query=event.target.value; const position=event.target.selectionStart; renderShell(); const next=appRoot.querySelector('[data-work-search]');next?.focus();if(position!=null)next?.setSelectionRange(position,position);return; }
   if (event.target.matches('[data-today-search]')) {
     const position = event.target.selectionStart;
     ui.todayQuery = event.target.value; renderShell();
@@ -2799,6 +2584,8 @@ appRoot.addEventListener('input', (event) => {
 });
 
 appRoot.addEventListener('change', async (event) => {
+  if(event.target.matches('[data-widget-schedule]')){await run(()=>window.counter.switchDutySchedule(event.target.value),null,{undo:false});return;}
+  if (handleWorkChange(event)) return;
   if (handleChangesChange(event)) return;
   if (handleManagementChange(event)) return;
   const settingsForm = event.target.closest('#settings-form');
@@ -2876,6 +2663,7 @@ modalRoot.addEventListener('keydown', (event) => {
 });
 
 modalRoot.addEventListener('change', (event) => {
+  if (handleWorkChange(event)) return;
   if (handleChangesChange(event)) return;
   if (handleManagementChange(event)) return;
   const batchForm = event.target.closest('#journal-batch-form');
@@ -2900,6 +2688,8 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if(event.target.closest('[data-action="close"]')){await window.counter.close();return;}
+  if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
@@ -3208,6 +2998,7 @@ modalRoot.addEventListener('click', async (event) => {
 });
 
 modalRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleWorkSubmit(event)) return;
   if (await handleChangesSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
@@ -3366,10 +3157,11 @@ window.addEventListener('keydown', async (event) => {
 });
 
 window.counter.onWindowModeChanged((mode) => {
-  if (mode === 'dashboard' && ui.mode === 'fullscreen') {
-    ui.mode = 'dashboard';
-    renderShell();
-  }
+  if(!['widget','dashboard','fullscreen'].includes(mode))return;
+  ui.mode=mode;
+  widgetDialogExpanded=mode==='widget'&&Boolean(modalRoot.childElementCount);
+  if(widgetDialogExpanded)queueWidgetWindowMode('dialog');
+  renderShell({preserveDrafts:true});
 });
 
 window.counter.onOpenTask?.(async id => { closeModal(); await navigateToTab('planner'); openTaskModal(id); });

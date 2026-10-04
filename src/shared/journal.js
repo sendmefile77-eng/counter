@@ -1,11 +1,12 @@
 (function installJournal(root, factory) {
-  const api = factory();
+  const api = factory(typeof module === 'object' && module.exports ? require('./work') : root.LadWork);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root?.document) root.CounterJournal = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, function journalFactory() {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function journalFactory(work) {
   const submitted = new Set(['submitted', 'submitted_late', 'submitted_advance']);
   const absent = new Set(['personal_permission', 'sick', 'vacation', 'day_off', 'holiday']);
   const symbols = { pending: '·', submitted: '✓', submitted_late: '◷', submitted_advance: '↗',
+    working: 'Р', planned_work: 'П',
     missed: '×', other_tasks: 'ІЗ', personal_permission: 'ОС', sick: 'ЛК', vacation: 'ВП',
     day_off: 'ВГ', holiday: 'СВ', weekend: 'ВХ', outside: '—' };
 
@@ -25,9 +26,9 @@
     return date >= employee.createdDate && (!employee.archivedDate || date < employee.archivedDate);
   }
 
-  function cell(state, employee, date) {
+  function cell(state, employee, date, today = work.dateKey()) {
     const key = `${employee.id}|${date}`;
-    const record = state.records[key];
+    const record = work.recordForDay(state,employee.id,date,today);
     const override = Boolean(state.workdayOverrides?.[key]);
     const working = (state.settings.workdays || [1, 2, 3, 4, 5]).includes(new Date(`${date}T12:00:00Z`).getUTCDay()) || override;
     const outside = !activeOn(employee, date) && !record && !override;
@@ -41,19 +42,20 @@
     const dates = datesBetween(startDate, endDate);
     const ids = employeeIds ? new Set(employeeIds) : null;
     const rows = state.employees.filter((employee) => ids ? ids.has(employee.id) : employee.active).map((employee) => {
-      const cells = dates.map((date) => cell(state, employee, date));
+      const cells = dates.map((date) => cell(state, employee, date, today));
       const count = (fn) => cells.filter(fn).length;
       return { employeeId: employee.id, name: employee.name, cells, totals: {
-        submitted: count((item) => submitted.has(item.status)), missed: count((item) => item.status === 'missed'),
-        other: count((item) => item.status === 'other_tasks'), absent: count((item) => absent.has(item.status)),
+        submitted: count((item) => item.date<=today&&submitted.has(item.status)), missed: count((item) => item.date<=today&&item.status === 'missed'),
+        other: count((item) => item.date<=today&&item.status === 'other_tasks'), absent: count((item) => item.date<=today&&absent.has(item.status)),
         pending: count((item) => item.status === 'pending' && item.date <= today),
-        worked: count((item) => submitted.has(item.status) || item.status === 'other_tasks'),
+        working: count((item) => item.status === 'working' && item.date <= today),
+        worked: count((item) => item.date <= today && (submitted.has(item.status) || item.status === 'other_tasks' || item.status === 'working')),
       } };
     });
     return { startDate, endDate, dates, rows, totals: rows.reduce((total, row) => {
       for (const [key, value] of Object.entries(row.totals)) total[key] = (total[key] || 0) + value;
       return total;
-    }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0, worked: 0 }) };
+    }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0, working: 0, worked: 0 }) };
   }
 
   function rectangle(rows, dates, anchor, target) {

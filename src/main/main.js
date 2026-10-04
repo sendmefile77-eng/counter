@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, screen, Notification, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, screen, Notification, shell, Tray, nativeImage, globalShortcut } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
@@ -51,6 +51,7 @@ const {
   updateTimeOffEntry,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
+const work = require('../shared/work');
 const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
 const staffChanges = require('../shared/staff-changes');
@@ -75,6 +76,10 @@ let dataImportPending = false;
 let activationRequested = false;
 let trainingSession = null;
 const undoStack = [];
+const widgetWindow = require('./widget-window');
+let tray = null, quitting = false, shortcutRegistered = false, widgetConfigKey = '';
+let windowTransition=Promise.resolve(),shortcutEnabled=null;
+const widgetShortcut = 'CommandOrControl+Shift+L';
 
 function clampWidgetSize(value) {
   return Math.max(260, Math.min(700, Math.round(Number(value) || 380)));
@@ -108,26 +113,51 @@ function buildCircularShape(size) {
 
 function applyWidgetShape(size) {
   if (process.platform === 'win32' && mainWindow && typeof mainWindow.setShape === 'function') {
-    mainWindow.setShape(buildCircularShape(size));
+    mainWindow.setShape(store.state.settings.widgetShape === 'panel' ? [] : buildCircularShape(size));
   }
 }
-
-function restoreWidgetPosition(size) {
-  const saved = store.state.settings.widgetPosition;
-  if (!saved || !Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return false;
-  const display = screen.getAllDisplays().find((candidate) => {
-    const area = candidate.workArea;
-    return saved.x + 80 < area.x + area.width
-      && saved.y + 80 < area.y + area.height
-      && saved.x + size - 80 > area.x
-      && saved.y + size - 80 > area.y;
-  });
-  if (!display) return false;
-  const area = display.workArea;
-  const x = Math.max(area.x, Math.min(Math.round(saved.x), area.x + area.width - size));
-  const y = Math.max(area.y, Math.min(Math.round(saved.y), area.y + area.height - size));
-  mainWindow.setPosition(x, y, false);
-  return true;
+function restoreWidgetPosition() {
+  const bounds=widgetWindow.savedBounds(store.state.settings,screen.getAllDisplays(),screen.getDisplayMatching(mainWindow.getBounds()));
+  mainWindow.setBounds(bounds,false);
+  return Boolean(store.state.settings.widgetPosition);
+}
+function updateTrayMenu() {
+  tray?.setContextMenu(Menu.buildFromTemplate([
+    {label:'Показати віджет',click:()=>void revealMode('widget')},
+    {label:'Відкрити ЛАД',click:()=>void revealMode('dashboard')},
+    {type:'separator'},
+    {label:'Зафіксувати положення',type:'checkbox',checked:store.state.settings.widgetLocked,
+      click:item=>{updateSettings(store.state,{widgetLocked:item.checked});store.save();broadcast();}},
+    {type:'separator'},{label:'Вийти з ЛАД',click:()=>app.quit()},
+  ]));
+}
+function configureWidget() {
+  const settings=store.state.settings;
+  const key=JSON.stringify([settings.widgetShape,settings.widgetSize,settings.widgetShortcutEnabled,settings.widgetLocked,settings.widgetSnap,settings.widgetPosition]);
+  if(key===widgetConfigKey)return;
+  widgetConfigKey=key;
+  if(shortcutEnabled!==settings.widgetShortcutEnabled){
+    globalShortcut.unregister(widgetShortcut);shortcutEnabled=settings.widgetShortcutEnabled;
+    shortcutRegistered=shortcutEnabled&&globalShortcut.register(widgetShortcut,()=>void revealMode('widget'));
+  }
+  updateTrayMenu();
+  if(mainWindow && windowMode==='widget'){restoreWidgetPosition();applyWidgetShape(mainWindow.getBounds().width);}
+}
+function createTray() {
+  try {
+    tray=new Tray(nativeImage.createFromBuffer(Buffer.from(require('./tray-icon'),'base64')));
+    tray.setToolTip('ЛАД · Люди. Аналітика. Документи.');
+    tray.on('double-click',()=>void revealMode('widget'));
+    updateTrayMenu();
+  } catch(error) { console.error('Tray unavailable:',error.message); tray=null; }
+  configureWidget();
+}
+async function revealMode(mode) {
+  if(!mainWindow || mainWindow.isDestroyed())createMainWindow();
+  if(mainWindow.isMinimized())mainWindow.restore();
+  await setWindowMode(mode);
+  mainWindow.webContents.send('window:mode-changed',mode);
+  mainWindow.show();mainWindow.focus();
 }
 
 function setWindowBoundsAndWait(bounds) {
@@ -156,9 +186,10 @@ function setWindowBoundsAndWait(bounds) {
 function saveWidgetBounds() {
   if (!mainWindow || windowMode !== 'widget') return;
   const bounds = mainWindow.getBounds();
-  store.state.settings.widgetSize = clampWidgetSize(Math.min(bounds.width, bounds.height));
+  store.state.settings.widgetSize = clampWidgetSize(bounds.width);
   store.state.settings.widgetPosition = { x: bounds.x, y: bounds.y };
   store.save();
+  widgetConfigKey='';
 }
 
 function createMainWindow() {
@@ -186,8 +217,8 @@ function createMainWindow() {
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   mainWindow.once('ready-to-show', () => {
-    applyWidgetShape(widgetSize);
-    if (!restoreWidgetPosition(widgetSize)) mainWindow.center();
+    restoreWidgetPosition();
+    applyWidgetShape(mainWindow.getBounds().width);
     mainWindow.show();
     if (activationRequested) { mainWindow.focus(); activationRequested = false; }
     reminders?.check();
@@ -195,7 +226,12 @@ function createMainWindow() {
   mainWindow.on('moved', () => {
     if (windowMode !== 'widget') return;
     clearTimeout(positionSaveTimer);
-    positionSaveTimer = setTimeout(saveWidgetBounds, 300);
+    positionSaveTimer = setTimeout(() => {
+      const bounds=mainWindow?.getBounds();if(!bounds||windowMode!=='widget')return;
+      const fitted=widgetWindow.fit(bounds,screen.getDisplayMatching(bounds).workArea,store.state.settings.widgetSnap);
+      if(fitted.x!==bounds.x||fitted.y!==bounds.y)mainWindow.setBounds(fitted,false);
+      saveWidgetBounds();
+    }, 300);
   });
   mainWindow.on('leave-full-screen', () => {
     if (windowMode === 'fullscreen') {
@@ -203,6 +239,7 @@ function createMainWindow() {
       mainWindow.webContents.send('window:mode-changed', 'dashboard');
     }
   });
+  mainWindow.on('close', event => {if(!quitting&&tray){event.preventDefault();saveWidgetBounds();mainWindow.hide();}});
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -218,6 +255,7 @@ function currentSnapshot() {
     generatedAt: now.toISOString(),
     appVersion: app.getVersion(),
     dataFilePath: store.filePath,
+    widgetWindowStatus: {shortcutRegistered:Boolean(shortcutRegistered),trayAvailable:Boolean(tray)},
     reminderStatus: reminders?.status() || { supported: false, lastError: '' },
     consequences: staffChanges.getConsequences(store.state,{},now),
     recovery: store.recovery,
@@ -226,6 +264,7 @@ function currentSnapshot() {
 }
 
 function broadcast() {
+  configureWidget();
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('counter:changed', currentSnapshot());
   }
@@ -254,117 +293,24 @@ function csvEscape(value) {
 }
 
 function buildCsv(state) {
-  const header = [
-    'Тип запису',
-    'Дата',
-    'Працівник',
-    'Статус',
-    'Дата надходження',
-    'Документ',
-    'Складний запит на 2 дні',
-    'Примітка',
-  ];
-  const requestRows = Object.values(state.records)
-    .sort((a, b) => a.date.localeCompare(b.date) || a.employeeId.localeCompare(b.employeeId))
-    .map((record) => {
-      const employee = state.employees.find((item) => item.id === record.employeeId);
-      return [
-        'Облік запитів',
-        record.date,
-        employee?.name || 'Невідомий працівник',
-        STATUS_LABELS[record.status] || record.status,
-        record.receivedDate || '',
-        record.documentRef || '',
-        record.complexTwoDay ? 'Так' : 'Ні',
-        record.note || '',
-      ];
-    });
-  const schedules = Array.isArray(state.dutySchedules) && state.dutySchedules.length
-    ? state.dutySchedules
-    : [{ name: 'Основний', data: state.duties }];
-  const dutyRows = schedules.flatMap((schedule) => (
-    Object.values(schedule.data.assignments).flatMap((assignment) => (
-      (assignment.employeeIds || []).map((employeeId) => {
-        const employee = state.employees.find((item) => item.id === employeeId);
-        return [
-          `Чергування · ${schedule.name}`,
-          assignment.date,
-          employee?.name || 'Невідомий працівник',
-          assignment.realizedEmployeeIds?.includes(employeeId) ? 'Реалізоване' : 'Заплановане',
-          '',
-          '',
-          '',
-          assignment.singleApproved ? 'Один черговий за дозволом' : '',
-        ];
-      })
-    ))
-  ));
-  const dutyRestrictionRows = schedules.flatMap((schedule) => ([
-    ...Object.values(schedule.data.aDays).map((item) => ({ ...item, label: 'А' })),
-    ...Object.values(schedule.data.unavailable).map((item) => ({ ...item, label: item.type })),
-    ...Object.values(schedule.data.planningBlocks || {})
-      .map((item) => ({ ...item, label: 'Не планувати (без статистики)' })),
-  ].map((item) => {
-    const employee = state.employees.find((candidate) => candidate.id === item.employeeId);
-    return [
-      `Обмеження чергувань · ${schedule.name}`,
-      item.date,
-      employee?.name || 'Невідомий працівник',
-      item.label,
-      '',
-      '',
-      '',
-      item.note || '',
-    ];
-  })));
-  const dutyBaselineRows = schedules.flatMap((schedule) => (
-    Object.entries(schedule.data.baselines).map(([employeeId, baseline]) => {
-      const employee = state.employees.find((item) => item.id === employeeId);
-      return [
-        `Початковий підсумок чергувань · ${schedule.name}`,
-        schedule.data.baselineYear || '',
-        employee?.name || 'Невідомий працівник',
-        `Усього: ${baseline.total || 0}; реалізованих: ${baseline.realized || 0}`,
-        '',
-        '',
-        '',
-        '',
-      ];
-    })
-  ));
-  const timeOffRows = (state.timeOffEntries || []).map((entry) => {
-    const employee = state.employees.find((item) => item.id === entry.employeeId);
-    return [
-      'Відпросився',
-      entry.date,
-      employee?.name || 'Невідомий працівник',
-      `${entry.startTime}–${entry.endTime} (${entry.durationMinutes} хв)`,
-      '',
-      entry.destination,
-      '',
-      entry.note || '',
-    ];
-  });
-  const taskRows = (state.tasks || []).map(task => [
-    `Завдання · ${task.title}${task.archived ? ' · архів' : ''}`, task.dueDate,
-    task.assigneeIds.map(id => state.employees.find(person => person.id === id)?.name || id).join(', ') || 'Керівник',
-    planner.STATUS_LABELS[task.status], task.dueTime || 'До кінця дня',
-    task.documentRef || '', task.recurrence === 'none' ? '' : planner.RECURRENCE_LABELS[task.recurrence], task.description || '',
-  ]);
-  const rows = [
-    ...(state.draws || []).flatMap(draw => draw.participants.map(person => [
-      `Жеребкування №${draw.number}`, draw.createdAt, person.name,
-      draw.selectedIds.includes(person.id) ? 'Короткий сірник · обрано' : 'Довгий сірник · не обрано',
-      '', draw.title, '', `${draw.description}${draw.rerollReason ? `; Повторне: ${draw.rerollReason}` : ''}; Автор: ${draw.createdBy}; Протокол: ${draw.id}`,
-    ])),
-    ...taskRows,
-    ...requestRows,
-    ...dutyRows,
-    ...dutyRestrictionRows,
-    ...dutyBaselineRows,
-    ...timeOffRows,
-  ];
-  return `\uFEFF${[header, ...rows].map((row) => row.map(csvEscape).join(';')).join('\r\n')}\r\n`;
+  const today=work.dateKey(),from=state.employees.reduce((start,person)=>person.createdDate<start?person.createdDate:start,today);
+  const oldest=work.addDays(today,-3659),startDate=from<oldest?oldest:from;
+  const report=work.report(state,{startDate,endDate:today,scope:'all',groupBy:'month'});
+  const rows=[['Облік роботи · період',startDate,today],['Робота','Співробітник','Стан','Проєктів','Виконано','Початок','Орієнтир','Фактичне завершення','Примітка'],
+    ...(state.workEntries||[]).map(entry=>[entry.title,state.employees.find(person=>person.id===entry.employeeId)?.name||entry.employeeId,
+      {active:'У роботі',done:'Завершено',cancelled:'Скасовано'}[entry.status],entry.projectCount,entry.completedProjects,entry.startDate,entry.estimatedEndDate,entry.finishedDate,entry.note]),
+    [],['Чергування','Дата','Працівник','Стан'],...(state.dutySchedules||[]).flatMap(schedule=>Object.values((schedule.id===state.activeDutyScheduleId?state.duties:schedule.data).assignments)
+      .flatMap(day=>(day.employeeIds||[]).map(id=>[schedule.name,day.date,state.employees.find(person=>person.id===id)?.name||id,day.realizedEmployeeIds?.includes(id)?'Реалізовано':'Заплановано']))),
+    [],['Жеребкування','Дата','Учасник','Результат','Завдання','Пояснення'],...(state.draws||[]).flatMap(draw=>draw.participants.map(person=>[
+      `Жеребкування №${draw.number}`,draw.createdAt,person.name,draw.selectedIds.includes(person.id)?'Короткий сірник · обрано':'Довгий сірник · не обрано',draw.title,
+      `${draw.description}${draw.rerollReason?`; Повторне: ${draw.rerollReason}`:''}; Автор: ${draw.createdBy}; Протокол: ${draw.id}`])),
+    [],['Відлучення','Дата','Працівник','Час','Куди','Пояснення'],...(state.timeOffEntries||[]).map(entry=>['Відлучення',entry.date,state.employees.find(person=>person.id===entry.employeeId)?.name||entry.employeeId,`${entry.startTime}–${entry.endTime}`,entry.destination,entry.note]),
+    [],['Обмеження чергувань','Дата','Працівник','Тип','Пояснення'],...(state.dutySchedules||[]).flatMap(schedule=>[
+      ...Object.values(schedule.data.aDays).map(item=>({...item,label:'А'})),...Object.values(schedule.data.unavailable).map(item=>({...item,label:item.type})),
+      ...Object.values(schedule.data.planningBlocks||{}).map(item=>({...item,label:'Не планувати'}))].map(item=>[schedule.name,item.date,state.employees.find(person=>person.id===item.employeeId)?.name||item.employeeId,item.label,item.note])),
+    [],['Початкові підсумки','Рік','Працівник','Усього','Реалізовано'],...(state.dutySchedules||[]).flatMap(schedule=>Object.entries(schedule.data.baselines).map(([id,value])=>[schedule.name,schedule.data.baselineYear,state.employees.find(person=>person.id===id)?.name||id,value.total||0,value.realized||0])),
+    [],['Завдання','Строк','Відповідальні','Статус','Пояснення'],...(state.tasks||[]).map(task=>[task.title,task.dueDate,task.assigneeIds.map(id=>state.employees.find(person=>person.id===id)?.name||id).join(', ')||'Керівник',planner.STATUS_LABELS[task.status],task.description])];
+  return work.csv(report,'workers')+'\r\n'+rows.map(row=>row.map(csvEscape).join(';')).join('\r\n')+'\r\n';
 }
 
 async function withNativeDialog(owner, showDialog) {
@@ -381,7 +327,67 @@ async function withNativeDialog(owner, showDialog) {
   }
 }
 
+function setWindowMode(mode) {
+  windowTransition=windowTransition.catch(()=>null).then(()=>applyWindowMode(mode));
+  return windowTransition;
+}
+async function applyWindowMode(mode) {
+    if (!mainWindow) return false;
+    if (!['dialog', 'dashboard', 'fullscreen', 'widget'].includes(mode)) return false;
+    const display = screen.getDisplayMatching(mainWindow.getBounds());
+    if(windowMode==='widget')saveWidgetBounds();
+    if (mainWindow.isFullScreen() && mode !== 'fullscreen') mainWindow.setFullScreen(false);
+    mainWindow.hide();
+    mainWindow.setResizable(mode === 'dashboard' || mode === 'fullscreen');
+    if (mode === 'dialog') {
+      windowMode = 'dialog';
+      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
+      mainWindow.setSkipTaskbar(true);
+      const width = Math.min(640, display.workArea.width);
+      const height = Math.min(800, display.workArea.height);
+      const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
+      const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
+      await setWindowBoundsAndWait({ x, y, width, height });
+    } else if (mode === 'dashboard' || mode === 'fullscreen') {
+      windowMode = mode;
+      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
+      mainWindow.setSkipTaskbar(false);
+      const width = Math.min(1240, display.workArea.width);
+      const height = Math.min(860, display.workArea.height);
+      const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
+      const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
+      await setWindowBoundsAndWait({ x, y, width, height });
+      if (mode === 'fullscreen') mainWindow.setFullScreen(true);
+    } else {
+      windowMode = 'widget';
+      mainWindow.setSkipTaskbar(true);
+      restoreWidgetPosition();
+      const bounds=mainWindow.getBounds();
+      await setWindowBoundsAndWait(bounds);
+      applyWidgetShape(bounds.width);
+    }
+    mainWindow.show();
+    return true;
+}
+
 function registerIpc() {
+  ipcMain.handle('work:create', (_event,input) => mutate('work:create',state=>work.create(state,input)));
+  ipcMain.handle('work:update', (_event,{id,input}) => mutate('work:update',state=>work.update(state,id,input)));
+  ipcMain.handle('work:progress', (_event,{id,input}) => mutate('work:progress',state=>work.progress(state,id,input)));
+  ipcMain.handle('work:finish', (_event,{id,input}) => mutate('work:finish',state=>work.finish(state,id,input)));
+  ipcMain.handle('work:mark-day', (_event,input) => mutate('work:mark-day',state=>{
+    if(!['working','submitted'].includes(input.status)||input.date>dateKeyFromDate())throw new Error('Позначити роботу можна до сьогодні включно.');
+    const employee=state.employees.find(person=>person.id===input.employeeId);
+    if(!employee||!work.validDate(input.date)||!work.trackableOn(employee,input.date))throw new Error('Дата не входить до періоду роботи працівника.');
+    const previous=state.records[`${input.employeeId}|${input.date}`];
+    if(previous&&work.absence.has(previous.status))throw new Error('Спочатку перевірте позначку відсутності через зміну доступності.');
+    if(!work.isWorkday(state,input.employeeId,input.date))throw new Error('Спочатку зробіть цю дату робочим днем у табелі.');
+    const legacyReceiptId=previous?.receiptId;
+    if(legacyReceiptId){if(!String(input.note||'').trim())throw new Error('Поясніть виправлення позначки попереднього обліку.');previous.receiptId=null;}
+    const record=setManualStatus(state,input);
+    if(legacyReceiptId)record.legacyReceiptId=legacyReceiptId;
+    return record;
+  }));
   ipcMain.handle('snapshot:get', () => currentSnapshot());
   ipcMain.handle('training:enter', () => {
     if(trainingSession)return {entered:true};
@@ -528,11 +534,12 @@ function registerIpc() {
   ));
   ipcMain.handle('analytics:get', (_event, filter) => calculateStatistics(store.state, filter));
   ipcMain.handle('analytics:trend', (_event, filter) => calculateAnalyticsTrend(store.state, filter));
-  ipcMain.handle('analytics:report', (_event, filter) => calculateAnalyticsReport(store.state, filter));
+  ipcMain.handle('analytics:report', (_event, filter) => work.report(store.state, filter));
   ipcMain.handle('analytics:details', (_event, input) => getAnalyticsDetails(store.state, input));
   ipcMain.handle('analytics:export-report', async (_event, { filter, view }) => {
-    const report = calculateAnalyticsReport(store.state, filter);
-    const csv = buildAnalyticsCsv(report, view);
+    if(!['workers','trend','days'].includes(view))throw new Error('Невідомий вигляд звіту роботи.');
+    const report = work.report(store.state, filter);
+    const csv = work.csv(report, view);
     const result = await dialog.showSaveDialog(mainWindow, {
       title: 'Експортувати статистику', defaultPath: `counter-statistics-${view}-${report.startDate}-${report.endDate}.csv`,
       filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
@@ -696,7 +703,7 @@ function registerIpc() {
           type: 'question',
           title: 'Імпорт резервної копії ЛАД',
           message: `Імпортувати «${fileName}»?`,
-          detail: `Працівників: ${normalized.employees.length}; документів: ${normalized.receipts.length}; завдань: ${normalized.tasks.length}; графіків: ${normalized.dutySchedules.length}; жеребкувань: ${normalized.draws.length}.\n\nПоточну базу буде замінено. Попередня база залишиться в локальній резервній копії; імпорт також можна скасувати кнопкою «Скасувати останню дію».`,
+          detail: `Працівників: ${normalized.employees.length}; робіт: ${normalized.workEntries.length}; записів попереднього обліку: ${normalized.receipts.length}; завдань: ${normalized.tasks.length}; графіків: ${normalized.dutySchedules.length}; жеребкувань: ${normalized.draws.length}.\n\nПоточну базу буде замінено. Попередня база залишиться в локальній резервній копії; імпорт також можна скасувати кнопкою «Скасувати останню дію».`,
           buttons: ['Імпортувати', 'Скасувати'],
           defaultId: 1,
           cancelId: 1,
@@ -737,74 +744,30 @@ function registerIpc() {
     return { reset: true };
   });
 
-  ipcMain.handle('window:set-mode', async (_event, { mode }) => {
-    if (!mainWindow) return false;
-    if (!['dialog', 'dashboard', 'fullscreen', 'widget'].includes(mode)) return false;
-    const display = screen.getDisplayMatching(mainWindow.getBounds());
-    if (mainWindow.isFullScreen() && mode !== 'fullscreen') mainWindow.setFullScreen(false);
-    mainWindow.hide();
-    mainWindow.setResizable(mode === 'dashboard' || mode === 'fullscreen');
-    if (mode === 'dialog') {
-      if (windowMode === 'widget') saveWidgetBounds();
-      windowMode = 'dialog';
-      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
-      mainWindow.setSkipTaskbar(true);
-      const width = Math.min(640, display.workArea.width);
-      const height = Math.min(800, display.workArea.height);
-      const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
-      const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
-      await setWindowBoundsAndWait({ x, y, width, height });
-    } else if (mode === 'dashboard' || mode === 'fullscreen') {
-      if (windowMode === 'widget') saveWidgetBounds();
-      windowMode = mode;
-      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
-      mainWindow.setSkipTaskbar(false);
-      const width = Math.min(1240, display.workArea.width);
-      const height = Math.min(860, display.workArea.height);
-      const x = display.workArea.x + Math.floor((display.workArea.width - width) / 2);
-      const y = display.workArea.y + Math.floor((display.workArea.height - height) / 2);
-      await setWindowBoundsAndWait({ x, y, width, height });
-      if (mode === 'fullscreen') mainWindow.setFullScreen(true);
-    } else {
-      windowMode = 'widget';
-      const size = clampWidgetSize(store.state.settings.widgetSize);
-      if (process.platform === 'win32' && typeof mainWindow.setShape === 'function') mainWindow.setShape([]);
-      mainWindow.setSkipTaskbar(true);
-      mainWindow.setSize(size, size, false);
-      if (!restoreWidgetPosition(size)) mainWindow.center();
-      const position = mainWindow.getPosition();
-      await setWindowBoundsAndWait({ x: position[0], y: position[1], width: size, height: size });
-      applyWidgetShape(size);
-    }
-    mainWindow.show();
-    return true;
-  });
+  ipcMain.handle('window:set-mode', (_event, {mode}) => setWindowMode(mode));
 
+  ipcMain.handle('widget:preferences', (_event,input) => {
+    const allowed=['widgetMode','widgetShape','widgetList','widgetLocked','widgetSnap','widgetQuickMode','widgetShortcutEnabled'];
+    if(!input||typeof input!=='object'||Object.keys(input).some(key=>!allowed.includes(key)))throw new Error('Некоректні налаштування віджета.');
+    if(('widgetMode' in input&&!['team','duties','tasks'].includes(input.widgetMode))||('widgetShape' in input&&!['circle','panel'].includes(input.widgetShape))
+      ||allowed.slice(2).some(key=>key in input&&typeof input[key]!=='boolean'))throw new Error('Некоректні налаштування віджета.');
+    const before=store.snapshot();
+    try{updateSettings(store.state,input);store.save();}catch(error){store.state=normalizeState(before);throw error;}
+    broadcast();return clone(store.state.settings);
+  });
   ipcMain.handle('window:resize-widget', (_event, { size, persist }) => {
-    if (!mainWindow || windowMode !== 'widget') return null;
-    const nextSize = clampWidgetSize(size);
-    const bounds = mainWindow.getBounds();
-    const display = screen.getDisplayMatching(bounds);
-    const area = display.workArea;
-    const centerX = bounds.x + bounds.width / 2;
-    const centerY = bounds.y + bounds.height / 2;
-    const nextX = Math.max(area.x, Math.min(
-      Math.round(centerX - nextSize / 2),
-      area.x + area.width - nextSize,
-    ));
-    const nextY = Math.max(area.y, Math.min(
-      Math.round(centerY - nextSize / 2),
-      area.y + area.height - nextSize,
-    ));
-    mainWindow.setBounds({ x: nextX, y: nextY, width: nextSize, height: nextSize }, false);
-    applyWidgetShape(nextSize);
-    if (persist) {
-      store.state.settings.widgetSize = nextSize;
-      store.state.settings.widgetPosition = { x: nextX, y: nextY };
-      store.save();
-      broadcast();
-    }
-    return nextSize;
+    if (!mainWindow || windowMode !== 'widget' || store.state.settings.widgetLocked) return null;
+    const nextSize=clampWidgetSize(size),bounds=mainWindow.getBounds(),area=screen.getDisplayMatching(bounds).workArea;
+    const dimensions=widgetWindow.dimensions({...store.state.settings,widgetSize:nextSize},area);
+    const next=widgetWindow.fit({x:bounds.x+(bounds.width-dimensions.width)/2,y:bounds.y+(bounds.height-dimensions.height)/2,...dimensions},area);
+    mainWindow.setBounds(next,false);applyWidgetShape(next.width);
+    if(persist){store.state.settings.widgetSize=nextSize;store.state.settings.widgetPosition={x:next.x,y:next.y};store.save();broadcast();}
+    return next.width;
+  });
+  ipcMain.handle('window:hide', () => {
+    if(!mainWindow)return false;
+    if(tray){saveWidgetBounds();mainWindow.hide();}else{mainWindow.setSkipTaskbar(false);mainWindow.minimize();}
+    return true;
   });
 
   ipcMain.handle('window:set-always-on-top', (_event, { value }) => {
@@ -816,7 +779,7 @@ function registerIpc() {
     return enabled;
   });
   ipcMain.handle('window:minimize', () => { mainWindow?.setSkipTaskbar(false); mainWindow?.minimize(); });
-  ipcMain.handle('window:close', () => mainWindow?.close());
+  ipcMain.handle('window:close', () => app.quit());
 }
 
 function revealMainWindow() {
@@ -856,6 +819,7 @@ app.whenReady().then(async () => {
   if (!notificationSetup.supported) reminders.disable(notificationSetup.error);
   registerIpc();
   createMainWindow();
+  createTray();
 
   closeTimer = setInterval(() => {
     const now = new Date();
@@ -873,6 +837,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  quitting=true;globalShortcut.unregisterAll();tray?.destroy();tray=null;
   if (closeTimer) clearInterval(closeTimer);
   if (positionSaveTimer) clearTimeout(positionSaveTimer);
   saveWidgetBounds();
@@ -880,6 +845,6 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin'&&!tray) app.quit();
 });
 module.exports={getMainWindow:()=>mainWindow,getStore:()=>store};

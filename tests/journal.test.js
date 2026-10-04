@@ -151,7 +151,7 @@ test('report counts only current and past pending, preserves history and can inc
   domain.archiveEmployee(state, people[2].id, new Date(2026, 8, 30, 9));
   const report = domain.calculateJournalReport(state, { startDate: '2026-09-28', endDate: '2026-10-09' }, now);
   assert.equal(report.rows.length, 2);
-  assert.deepEqual(report.rows[0].totals, { submitted: 1, missed: 1, other: 1, absent: 1, pending: 1, worked: 2 });
+  assert.deepEqual(report.rows[0].totals, { submitted: 1, missed: 1, other: 1, absent: 1, pending: 1, working: 0, worked: 2 });
   const archived = domain.calculateJournalReport(state, { startDate: '2026-09-28', endDate: '2026-10-09', employeeIds: [people[2].id] }, now);
   assert.equal(archived.rows.length, 1); assert.equal(archived.rows[0].totals.pending, 2);
   assert.equal(archived.rows[0].cells.find((cell) => cell.date === '2026-10-02').status, 'outside');

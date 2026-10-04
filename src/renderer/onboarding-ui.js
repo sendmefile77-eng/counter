@@ -7,7 +7,7 @@ function renderLearningIntro() {
 function guideSteps() {
   const practice=ladGuide.mode==='practice',scenario=snapshot.training || {},modal=(selector,fallback)=>modalRoot.querySelector(selector)?selector:fallback;
   return [
-    {tab:'today',title:'Усе важливе на початку дня',text:'Тут видно подані запити, пропуски, чергових і завдання зі строками. Із цього огляду починайте щоденну роботу.',selector:'.today-hero'},
+    {tab:'today',title:'Усе важливе на початку дня',text:'Тут видно роботу співробітників, прогрес проєктів, чергових і завдання зі строками. Із цього огляду починайте щоденну роботу.',selector:'.today-summary'},
     {tab:'employees',title:'Працівники',text:practice?'Це вигадані працівники. Можете додати ще одного для вправи. У робочій базі спочатку додайте людей, які братимуть участь у графіку.':'Додайте працівників. Ім’я відкриває картку; «Доступність» допомагає записати відсутність із перевіркою наслідків.',selector:'#employee-form'},
     {tab:'duties',title:'Учасники й початкові підсумки',text:'Оберіть учасників саме цього графіка та внесіть відомі підсумки. Якщо починаєте з нуля, залиште нулі. Історію іншого графіка сюди переносити не потрібно.',selector:()=>modal('#duty-history-form .modal-body','[data-duty-history]'),prepare:()=>{if(activeEmployees().length)openDutyHistoryModal();}},
     {tab:'duties',title:'Правила графіка',text:'Кількість людей, відпочинок і тижневий ліміт налаштовуються окремо для кожного графіка. Обов’язкові обмеження можуть залишити незаповнене місце; програма пояснить причину.',selector:()=>modal('#duty-rules-form .settings-grid','[data-duty-rules]'),prepare:()=>openDutyRulesModal()},

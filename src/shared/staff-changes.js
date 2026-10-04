@@ -43,7 +43,7 @@ function inspectStaffEffects(state,change,dates,now=new Date()) {
     if(duty.locked)blockers.push(`${duty.scheduleName}, ${duty.date}: тиждень заблоковано. Розблокуйте його перед зміною.`);
     if(duty.realized||duty.past)blockers.push(`${duty.scheduleName}, ${duty.date}: є виконане або минуле чергування. Перевірте фактичний облік окремо.`);
   }
-  if(change.kind==='status')for(const date of dates)if(state.records[d.recordKey(person.id,date)]?.receiptId)blockers.push(`${date}: день пов’язаний із документом. Спочатку виправте його зарахування.`);
+  if(change.kind==='status')for(const date of dates)if(state.records[d.recordKey(person.id,date)]?.receiptId)blockers.push(`${date}: захищений запис попереднього обліку. Спочатку виправте статус дня з поясненням.`);
   if(change.kind==='restriction')for(const date of dates)if(d.dutyDateLocked(replacements.scheduleView(state,change.scheduleId),date))blockers.push(`${date}: тиждень графіка заблоковано.`);
   return {duties,tasks,blockers:[...new Set(blockers)]};
 }

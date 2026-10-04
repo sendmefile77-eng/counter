@@ -9,19 +9,20 @@ const { createRequire } = require('node:module');
 const domain = require('../src/shared/domain');
 const tasks = require('../src/shared/tasks');
 
-async function fixture(t, { secondBeforeReady = false } = {}) {
+async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true, trayAvailable = true } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lad-import-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const handlers = new Map(), calls = [];
+  const handlers = new Map(), calls = [],trays=[],shortcuts=new Map();
   const app = new EventEmitter();
   Object.assign(app, { whenReady: () => Promise.resolve(), getPath: () => directory,
-    getAppPath: () => directory, getVersion: () => '0.14.3', isPackaged: false, quit() {} });
+    getAppPath: () => directory, getVersion: () => '0.15.0', isPackaged: false, quit() {calls.push({type:'quit'});} });
   class Window extends EventEmitter {
-    constructor() { super(); Window.instances.push(this); this.events=[]; this.topChanges=[]; this.onTop=true; this.minimized=false; this.webContents = { send() {}, on() {} }; }
+    constructor(options) { super(); this.bounds={x:0,y:0,width:options.width,height:options.height};this.visible=false;this.full=false; Window.instances.push(this); this.events=[]; this.topChanges=[]; this.onTop=true; this.minimized=false; this.sent=[];this.webContents = { send:(...args)=>this.sent.push(args), on() {} }; }
     loadFile() {} setAlwaysOnTop(value) { this.onTop=value; this.topChanges.push(value); } isAlwaysOnTop() { return this.onTop; } isDestroyed() { return false; } center() { this.events.push('center'); }
     isMinimized() { return this.minimized; } restore() { this.minimized=false; this.events.push('restore'); }
-    show() { this.events.push('show'); } focus() { this.events.push('focus'); }
-    getBounds() { return { x:0, y:0, width:380, height:380 }; }
+    hide() {this.visible=false;} setBounds(bounds){this.bounds={...bounds};} setPosition(x,y){Object.assign(this.bounds,{x,y});} setShape(value){this.shape=value;} setResizable(){} setSkipTaskbar(){} setFullScreen(v){this.full=v;} isFullScreen(){return this.full;} minimize(){this.minimized=true;}
+    show() {this.visible=true; this.events.push('show'); } focus() { this.events.push('focus'); }
+    getBounds() { return {...this.bounds}; }
     static getAllWindows() { return []; }
   }
   Window.instances=[];
@@ -33,7 +34,8 @@ async function fixture(t, { secondBeforeReady = false } = {}) {
   };
   const mainPath = path.resolve(__dirname, '../src/main/main.js'), localRequire = createRequire(mainPath);
   const electron = { app, BrowserWindow:Window, dialog, ipcMain:{ handle:(name,fn) => handlers.set(name,fn) },
-    Menu:{ setApplicationMenu() {} }, screen:{}, Notification:{ isSupported:() => false }, shell:{} };
+    Menu:{ setApplicationMenu() {},buildFromTemplate:value=>value }, screen:{getAllDisplays:()=>[{workArea:{x:0,y:0,width:1920,height:1080}}],getDisplayMatching:()=>({workArea:{x:0,y:0,width:1920,height:1080}})},
+    Tray:class extends EventEmitter{constructor(){super();if(!trayAvailable)throw Error('No tray');trays.push(this);}setToolTip(){} setContextMenu(menu){this.menu=menu;} destroy(){this.destroyed=true;}},nativeImage:{createFromBuffer:value=>value},globalShortcut:{unregister:key=>shortcuts.delete(key),unregisterAll:()=>shortcuts.clear(),register:(key,callback)=>{if(shortcutAvailable)shortcuts.set(key,callback);return shortcutAvailable;}}, Notification:{ isSupported:() => false }, shell:{} };
   const context = vm.createContext({ require:name => name === 'electron' ? electron : localRequire(name),
     __dirname:path.dirname(mainPath), process:{ ...process, platform:'win32', env:{ ...process.env,
       PORTABLE_EXECUTABLE_DIR:directory, PORTABLE_EXECUTABLE_FILE:'' } },
@@ -52,7 +54,7 @@ async function fixture(t, { secondBeforeReady = false } = {}) {
   tasks.createTask(incoming,{ title:'Завдання з копії', dueDate:'2026-10-06', assigneeIds:[person.id] },new Date(2026,9,2,15));
   fs.writeFileSync(filePath,JSON.stringify(incoming));
   dialog.openResult.filePaths = [filePath];
-  return { call, dialog, calls, database, filePath, incoming, directory, app, windows:Window.instances };
+  return { call, dialog, calls, database, filePath, incoming, directory, app, windows:Window.instances,trays,shortcuts };
 }
 
 test('import opens the picker first, confirms the selected contents, persists and supports undo', async t => {
@@ -64,7 +66,7 @@ test('import opens the picker first, confirms the selected contents, persists an
   assert.equal(f.calls[0].options.buttonLabel,'Вибрати копію');
   assert.equal(f.calls[1].options.defaultId,1);
   assert.equal(f.calls[1].options.cancelId,1);
-  assert.match(f.calls[1].options.detail,/Працівників: 1; документів: 1; завдань: 1; графіків: 1/);
+  assert.match(f.calls[1].options.detail,/Працівників: 1; робіт: 0; записів попереднього обліку: 1; завдань: 1; графіків: 1/);
   assert.deepEqual(JSON.parse(fs.readFileSync(f.database)),domain.normalizeState(f.incoming));
   assert.equal(fs.readFileSync(path.join(f.directory,'Counter-data','counter-data.backup.json'),'utf8'),before);
   await f.call('history:undo');
@@ -90,7 +92,7 @@ test('a second launch restores and focuses the existing window without creating 
 
 test('a second launch during startup focuses the first window once it is ready',async t=>{
   const f=await fixture(t,{secondBeforeReady:true}), window=f.windows[0];
-  window.emit('ready-to-show'); assert.deepEqual(window.events,['center','show','focus']); assert.equal(f.windows.length,1);
+  window.emit('ready-to-show'); assert.deepEqual(window.events,['show','focus']); assert.equal(f.windows.length,1);
 });
 
 test('a saved draw is an undo checkpoint; undoing its linked task keeps the protocol and allows recreation',async t=>{
@@ -317,4 +319,49 @@ test('selected files respect disabled confirmations, imported window settings an
   f.incoming.settings.alwaysOnTop=false;
   await f.call('data:import',{name:'copy.json',content:JSON.stringify(f.incoming)});
   assert.equal(f.calls.length,0); assert.equal(f.windows[0].onTop,false);
+});
+
+test('work changes persist through IPC, undo and selected-file restore with revisions and atomic failures',async t=>{
+ const f=await fixture(t),snap=await f.call('snapshot:get'),employee=snap.employees[0],today=domain.dateKeyFromDate();
+ let entry=await f.call('work:create',{employeeId:employee.id,title:'Робота без паперів',projectCount:5,startDate:today,estimatedEndDate:today});
+ const before=fs.readFileSync(f.database,'utf8');
+ assert.throws(()=>f.call('work:update',{id:entry.id,input:{...entry,projectCount:6,expectedRevision:entry.revision}}),/Поясніть/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ entry=await f.call('work:progress',{id:entry.id,input:{completedProjects:2,expectedRevision:entry.revision}});
+ assert.equal(JSON.parse(fs.readFileSync(f.database)).workEntries[0].completedProjects,2);
+ await f.call('history:undo');assert.equal(JSON.parse(fs.readFileSync(f.database)).workEntries[0].completedProjects,0);
+ const current=await f.call('snapshot:get'),content=JSON.stringify(current);
+ await f.call('data:reset-all');assert.equal((await f.call('snapshot:get')).workEntries.length,0);
+ await f.call('data:import',{name:'work.json',content});assert.deepEqual((await f.call('snapshot:get')).workEntries,current.workEntries);
+ await assert.rejects(f.call('data:import',{name:'bad-work.json',content:JSON.stringify({...current,workEntries:[{...current.workEntries[0],history:[{}]}]})}),/історія/);
+ assert.deepEqual((await f.call('snapshot:get')).workEntries,current.workEntries);
+});
+test('widget preferences control persistent shapes, native hit regions, locking and hide instead of quitting',async t=>{
+ const f=await fixture(t),window=f.windows[0];window.emit('ready-to-show');
+ await f.call('widget:preferences',{widgetMode:'tasks',widgetShape:'panel',widgetLocked:true,widgetQuickMode:false});
+ assert.equal(window.getBounds().height,494);assert.equal(window.shape.length,0);
+ const before=window.getBounds();assert.equal(await f.call('window:resize-widget',{size:700,persist:true}),null);assert.deepEqual(window.getBounds(),before);
+ assert.throws(()=>f.call('widget:preferences',{workdays:[]}));assert.throws(()=>f.call('widget:preferences',{widgetMode:'bad'}));
+ await f.call('window:hide');assert.equal(window.visible,false);
+ f.app.emit('second-instance');assert.equal(window.visible,true);
+ await f.call('widget:preferences',{widgetShape:'circle',widgetMode:'duties',widgetLocked:false,widgetShortcutEnabled:false});
+ assert.equal(window.getBounds().height,380);assert.ok(window.shape.length>300);
+ const stored=JSON.parse(fs.readFileSync(f.database));assert.equal(stored.settings.widgetMode,'duties');assert.equal(stored.settings.widgetShape,'circle');
+ assert.equal((await f.call('snapshot:get')).widgetWindowStatus.shortcutRegistered,false);
+});
+
+test('tray menu and global shortcut change native mode and notify the renderer; exit is distinct from hide',async t=>{
+ const f=await fixture(t),window=f.windows[0];window.emit('ready-to-show');
+ f.trays[0].menu.find(item=>item.label==='Відкрити ЛАД').click();await new Promise(resolve=>setTimeout(resolve,60));
+ assert.equal(window.getBounds().width,1240);assert.deepEqual(Array.from(window.sent.at(-1)),['window:mode-changed','dashboard']);
+ f.shortcuts.get('CommandOrControl+Shift+L')();await new Promise(resolve=>setTimeout(resolve,60));
+ assert.equal(window.getBounds().width,380);assert.deepEqual(Array.from(window.sent.at(-1)),['window:mode-changed','widget']);
+ const lock=f.trays[0].menu.find(item=>item.type==='checkbox');lock.click({checked:true});assert.equal((await f.call('snapshot:get')).settings.widgetLocked,true);
+ let prevented=false;window.emit('close',{preventDefault:()=>prevented=true});assert.equal(prevented,true);assert.equal(window.visible,false);assert.ok(!f.calls.some(call=>call.type==='quit'));
+ await f.call('window:close');assert.equal(f.calls.at(-1).type,'quit');
+ f.app.emit('before-quit');assert.equal(f.shortcuts.size,0);assert.equal(f.trays[0].destroyed,true);prevented=false;window.emit('close',{preventDefault:()=>prevented=true});assert.equal(prevented,false);
+});
+test('shortcut conflicts are visible, and hiding without a tray leaves a taskbar window',async t=>{
+ const f=await fixture(t,{shortcutAvailable:false,trayAvailable:false}),window=f.windows[0];
+ const snapshot=await f.call('snapshot:get');assert.equal(snapshot.widgetWindowStatus.shortcutRegistered,false);assert.equal(snapshot.widgetWindowStatus.trayAvailable,false);
+ await f.call('window:hide');assert.equal(window.isMinimized(),true);assert.ok(!f.calls.some(call=>call.type==='quit'));
 });

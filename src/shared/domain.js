@@ -1,11 +1,14 @@
 const crypto = require('node:crypto');
 const journal = require('./journal');
+const work = require('./work');
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
+  working: '#36a8b7',
+  planned_work: '#668ac9',
   pending: '#586b85',
   submitted: '#36bf76',
   submitted_late: '#82c967',
@@ -40,6 +43,7 @@ const DEFAULT_DUTY_RULES = Object.freeze({
 });
 
 const STATUS = Object.freeze({
+  WORKING: 'working',
   SUBMITTED: 'submitted',
   SUBMITTED_LATE: 'submitted_late',
   SUBMITTED_ADVANCE: 'submitted_advance',
@@ -52,20 +56,10 @@ const STATUS = Object.freeze({
   HOLIDAY: 'holiday',
 });
 
-const STATUS_LABELS = Object.freeze({
-  [STATUS.SUBMITTED]: 'Подав вчасно',
-  [STATUS.SUBMITTED_LATE]: 'Подав із запізненням',
-  [STATUS.SUBMITTED_ADVANCE]: 'Зараховано наперед',
-  [STATUS.MISSED]: 'Не подав',
-  [STATUS.OTHER_TASKS]: 'Залучений до інших завдань',
-  [STATUS.PERSONAL_PERMISSION]: 'Відпущений в особистих справах',
-  [STATUS.SICK]: 'Лікарняний',
-  [STATUS.VACATION]: 'Відпустка',
-  [STATUS.DAY_OFF]: 'Відгул',
-  [STATUS.HOLIDAY]: 'Вихідний або святковий день',
-});
+const STATUS_LABELS = Object.freeze({...Object.fromEntries(Object.values(STATUS).map(status=>[status,work.labels[status]])),planned_work:work.labels.planned_work});
 
 const MANUAL_STATUSES = new Set([
+  STATUS.WORKING,
   STATUS.SUBMITTED,
   STATUS.MISSED,
   STATUS.OTHER_TASKS,
@@ -222,6 +216,13 @@ function normalizeGlobalSettings(input = {}) {
     alwaysOnTop: source.alwaysOnTop !== false,
     widgetSize: clampInteger(source.widgetSize, 260, 700, 380),
     widgetPosition: source.widgetPosition || null,
+    widgetMode: ['team','duties','tasks'].includes(source.widgetMode) ? source.widgetMode : 'team',
+    widgetShape: source.widgetShape === 'panel' ? 'panel' : 'circle',
+    widgetList: source.widgetList === true,
+    widgetLocked: source.widgetLocked === true,
+    widgetSnap: source.widgetSnap !== false,
+    widgetQuickMode: source.widgetQuickMode === true,
+    widgetShortcutEnabled: source.widgetShortcutEnabled !== false,
     dutyNameWidth: clampInteger(source.dutyNameWidth, 130, 320, 180),
     dutyRowHeight: clampInteger(source.dutyRowHeight, 34, 72, 46),
     dutyLineStrength: clampInteger(source.dutyLineStrength, 1, 3, 2),
@@ -332,6 +333,7 @@ function defaultState(now = new Date()) {
     employees: [],
     records: {},
     receipts: [],
+    workEntries: [],
     workdayOverrides: {},
     dutySchedules: [{
       id: 'primary',
@@ -473,6 +475,7 @@ function normalizeState(input, now = new Date()) {
 
   state.tasks = normalizeTasks(input.tasks, state, now);
   state.draws = normalizeDraws(input.draws);
+  state.workEntries = work.normalize(input.workEntries, state);
   return state;
 }
 
@@ -965,7 +968,7 @@ function ensureAutomaticMisses(state, now = new Date()) {
     while (cursor <= closeThrough) {
       if (employeeExistsOnDate(employee, cursor) && isEmployeeWorkday(state, employee.id, cursor)) {
         const key = recordKey(employee.id, cursor);
-        if (!state.records[key]) {
+        if (!state.records[key] && !work.workForDay(state,employee.id,cursor,today).length) {
           state.records[key] = {
             employeeId: employee.id,
             date: cursor,
@@ -998,8 +1001,8 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   if (!MANUAL_STATUSES.has(status)) {
     throw new Error('Цей статус не можна встановити вручну.');
   }
-  if (status === STATUS.SUBMITTED && date > dateKeyFromDate(now)) {
-    throw new Error('Не можна вручну позначити майбутній день як поданий.');
+  if ([STATUS.SUBMITTED,STATUS.WORKING].includes(status) && date > dateKeyFromDate(now)) {
+    throw new Error('Не можна вручну позначити майбутній день як поданий або відпрацьований. Заплануйте роботу з датою початку.');
   }
   const blockingSchedule = DUTY_BLOCKING_RECORD_STATUSES.has(status)
     ? dutySchedules(state).find((schedule) => (
@@ -1101,7 +1104,7 @@ function journalBatchPlan(state, input, now = new Date()) {
     const key = recordKey(employeeId, date);
     const previous = state.records[key];
     const item = { employeeId, name: employee.name, date,
-      from: isEmployeeWorkday(state, employeeId, date) ? previous?.status || 'pending' : 'weekend' };
+      from: work.statusForDay(state,employeeId,date,dateKeyFromDate(now)) };
     if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) {
       skipped.push({ ...item, reason: 'Поза періодом роботи працівника.' });
       continue;
@@ -1131,7 +1134,7 @@ function journalBatchPlan(state, input, now = new Date()) {
       continue;
     }
     if (previous?.receiptId) {
-      blocked.push({ ...item, reason: 'Пов’язано з документом; виправляйте сам документ.' });
+      blocked.push({ ...item, reason: 'Захищений запис попереднього обліку. Спочатку виправте статус дня з поясненням.' });
       continue;
     }
     // setManualStatus validates first. A blocked status must not leave a
@@ -1144,8 +1147,8 @@ function journalBatchPlan(state, input, now = new Date()) {
       else if (action === 'make_workday') setWorkdayOverride(draft, employeeId, date, note, now);
       else clearWorkdayOverride(draft, employeeId, date, now);
       draft.audit = [];
-      let to = action === 'status' ? input.status : action === 'make_workday' ? 'workday' : action === 'restore_weekend' ? 'weekend' : 'pending';
-      if (action === 'clear' && state.settings.automaticClose !== false && employeeExistsOnDate(employee, date)
+      let to = action === 'status' ? input.status : action === 'make_workday' ? 'workday' : action === 'restore_weekend' ? 'weekend' : work.statusForDay(draft,employeeId,date,dateKeyFromDate(now));
+      if (action === 'clear' && !work.workForDay(draft,employeeId,date).length && state.settings.automaticClose !== false && employeeExistsOnDate(employee, date)
         && isEmployeeWorkday(state, employeeId, date)
         && (date < dateKeyFromDate(now) || (date === dateKeyFromDate(now) && isPastCloseTime(state, now)))) to = 'missed';
       changes.push({ ...item, to,
@@ -1159,7 +1162,7 @@ function journalBatchPlan(state, input, now = new Date()) {
       employee: getEmployee(state, employeeId), record: state.records[recordKey(employeeId, date)] || null,
       override: state.workdayOverrides[recordKey(employeeId, date)] || null,
       duties: dutySchedules(state).map((schedule) => ({ id: schedule.id, ids: schedule.data.assignments[date]?.employeeIds || [] })),
-    })), workdays: state.settings.workdays,
+    })), workEntries:(state.workEntries||[]).map(entry=>[entry.id,entry.revision]), workdays: state.settings.workdays,
     closeSettings: action === 'clear' ? { automaticClose: state.settings.automaticClose,
       closeHour: state.settings.closeHour, closeMinute: state.settings.closeMinute, due: isPastCloseTime(state, now) } : null,
     today: dateKeyFromDate(now) })).digest('hex');
