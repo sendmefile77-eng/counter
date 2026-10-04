@@ -106,7 +106,7 @@ contextBridge.exposeInMainWorld('counter', {
   deleteTimeOffEntry: (entryId) => ipcRenderer.invoke('time-off:delete', { entryId }),
   undo: () => ipcRenderer.invoke('history:undo'),
   exportData: (format) => ipcRenderer.invoke('data:export', { format }),
-  importData: () => ipcRenderer.invoke('data:import'),
+  importData: (file) => ipcRenderer.invoke('data:import', file),
   listBackups: () => ipcRenderer.invoke('data:backups'),
   restoreBackup: (id) => ipcRenderer.invoke('data:restore-backup', { id }),
   resetAllData: () => ipcRenderer.invoke('data:reset-all'),

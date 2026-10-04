@@ -367,6 +367,20 @@ function buildCsv(state) {
   return `\uFEFF${[header, ...rows].map((row) => row.map(csvEscape).join(';')).join('\r\n')}\r\n`;
 }
 
+async function withNativeDialog(owner, showDialog) {
+  if (!owner || owner.isDestroyed()) throw new Error('Вікно застосунку закрито. Відкрийте ЛАД і повторіть дію.');
+  // The transparent widget must not cover a Windows system dialog.
+  const onTop = owner.isAlwaysOnTop();
+  if (onTop) owner.setAlwaysOnTop(false);
+  try {
+    if (owner.isMinimized()) owner.restore();
+    owner.show(); owner.focus();
+    return await showDialog();
+  } finally {
+    if (!owner.isDestroyed()) owner.setAlwaysOnTop(Boolean(store.state.settings.alwaysOnTop));
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('snapshot:get', () => currentSnapshot());
   ipcMain.handle('training:enter', () => {
@@ -410,10 +424,8 @@ function registerIpc() {
   ipcMain.handle('dialog:confirm', async (_event, message) => {
     if (typeof message !== 'string' || !message.trim() || message.length>2500) throw new Error('Некоректний текст підтвердження.');
     if (!mainWindow || mainWindow.isDestroyed()) return false;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show(); mainWindow.focus();
-    const answer = await dialog.showMessageBox(mainWindow,{ type:'question', title:'ЛАД · Підтвердження',
-      message, buttons:['Продовжити','Скасувати'], defaultId:1, cancelId:1, noLink:true });
+    const answer = await withNativeDialog(mainWindow, () => dialog.showMessageBox(mainWindow,{ type:'question', title:'ЛАД · Підтвердження',
+      message, buttons:['Продовжити','Скасувати'], defaultId:1, cancelId:1, noLink:true }));
     return answer.response===0;
   });
 
@@ -653,45 +665,53 @@ function registerIpc() {
     return { canceled: false, filePath: result.filePath };
   });
 
-  ipcMain.handle('data:import', async () => {
+  ipcMain.handle('data:import', async (_event, file) => {
     if(trainingSession)throw new Error('Вийдіть із навчання, щоб імпортувати свою робочу базу.');
     if (dataImportPending) return { canceled: true, busy: true };
     dataImportPending = true;
     try {
       const owner = mainWindow;
       if (!owner || owner.isDestroyed()) throw new Error('Вікно застосунку закрито. Відкрийте ЛАД і повторіть імпорт.');
-      if (owner.isMinimized()) owner.restore();
-      owner.show();
-      owner.focus();
-      const result = await dialog.showOpenDialog(owner, {
-        title: 'Відкрити резервну копію ЛАД',
-        buttonLabel: 'Вибрати копію',
-        properties: ['openFile'],
-        filters: [{ name: 'Резервна копія JSON', extensions: ['json'] }],
-      });
-      if (result.canceled || !result.filePaths[0]) return { canceled: true };
-      const filePath = result.filePaths[0];
-      const normalized = store.readBackup(filePath);
+      let filePath, fileName, normalized;
+      if (file !== undefined) {
+        if (!file || typeof file.name !== 'string' || !file.name.trim() || file.name.length > 255 || typeof file.content !== 'string') {
+          throw new Error('Виберіть один файл резервної копії JSON.');
+        }
+        fileName = path.basename(file.name);
+        normalized = store.parseBackup(file.content);
+      } else {
+        const result = await withNativeDialog(owner, () => dialog.showOpenDialog(owner, {
+          title: 'Відкрити резервну копію ЛАД',
+          buttonLabel: 'Вибрати копію',
+          properties: ['openFile'],
+          filters: [{ name: 'Резервна копія JSON', extensions: ['json'] }],
+        }));
+        if (result.canceled || !result.filePaths[0]) return { canceled: true };
+        filePath = result.filePaths[0];
+        fileName = path.basename(filePath);
+        normalized = store.readBackup(filePath);
+      }
       if (store.state.settings.confirmDestructiveActions !== false) {
-        const answer = await dialog.showMessageBox(owner, {
+        const answer = await withNativeDialog(owner, () => dialog.showMessageBox(owner, {
           type: 'question',
           title: 'Імпорт резервної копії ЛАД',
-          message: `Імпортувати «${path.basename(filePath)}»?`,
+          message: `Імпортувати «${fileName}»?`,
           detail: `Працівників: ${normalized.employees.length}; документів: ${normalized.receipts.length}; завдань: ${normalized.tasks.length}; графіків: ${normalized.dutySchedules.length}; жеребкувань: ${normalized.draws.length}.\n\nПоточну базу буде замінено. Попередня база залишиться в локальній резервній копії; імпорт також можна скасувати кнопкою «Скасувати останню дію».`,
           buttons: ['Імпортувати', 'Скасувати'],
           defaultId: 1,
           cancelId: 1,
           noLink: true,
-        });
+        }));
         if (answer.response !== 0) return { canceled: true };
       }
       const before = store.snapshot();
       store.replace(normalized);
+      if (!owner.isDestroyed()) owner.setAlwaysOnTop(Boolean(store.state.settings.alwaysOnTop));
       reminders?.reconcile();
       undoStack.push({ action: 'data:import', before });
       if (undoStack.length > 30) undoStack.shift();
       broadcast();
-      return { canceled: false, filePath };
+      return { canceled: false, filePath, fileName };
     } finally {
       dataImportPending = false;
     }

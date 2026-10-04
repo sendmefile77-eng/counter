@@ -15,10 +15,10 @@ async function fixture(t, { secondBeforeReady = false } = {}) {
   const handlers = new Map(), calls = [];
   const app = new EventEmitter();
   Object.assign(app, { whenReady: () => Promise.resolve(), getPath: () => directory,
-    getAppPath: () => directory, getVersion: () => '0.14.0', isPackaged: false, quit() {} });
+    getAppPath: () => directory, getVersion: () => '0.14.3', isPackaged: false, quit() {} });
   class Window extends EventEmitter {
-    constructor() { super(); Window.instances.push(this); this.events=[]; this.minimized=false; this.webContents = { send() {}, on() {} }; }
-    loadFile() {} setAlwaysOnTop() {} isDestroyed() { return false; } center() { this.events.push('center'); }
+    constructor() { super(); Window.instances.push(this); this.events=[]; this.topChanges=[]; this.onTop=true; this.minimized=false; this.webContents = { send() {}, on() {} }; }
+    loadFile() {} setAlwaysOnTop(value) { this.onTop=value; this.topChanges.push(value); } isAlwaysOnTop() { return this.onTop; } isDestroyed() { return false; } center() { this.events.push('center'); }
     isMinimized() { return this.minimized; } restore() { this.minimized=false; this.events.push('restore'); }
     show() { this.events.push('show'); } focus() { this.events.push('focus'); }
     getBounds() { return { x:0, y:0, width:380, height:380 }; }
@@ -245,6 +245,9 @@ if (process.env.LAD_TEST_BACKUP) test('the complete supplied demonstration backu
   assert.deepEqual(JSON.parse(fs.readFileSync(f.database)),expected);
   assert.equal(expected.receipts.length,2254);
   assert.equal(expected.tasks.length,127);
+  await f.call('history:undo');
+  assert.equal((await f.call('data:import',{name:path.basename(filename),content:fs.readFileSync(filename,'utf8')})).canceled,false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.database)),expected);
 });
 
 test('production mass availability IPC removes both selected crew members, retains the task and undoes the operation atomically',async t=>{
@@ -253,4 +256,65 @@ test('production mass availability IPC removes both selected crew members, retai
  const input={cells:ids.map(employeeId=>({employeeId,date})),action:'status',status:'sick',note:'Обидва повідомили про лікарняний',replaceExisting:true},before=fs.readFileSync(f.database,'utf8'),report=await f.call('journal:preview-batch',input);
  assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(report.tasks.length,1);assert.ok(report.duties.every(item=>item.after.length===0));await f.call('journal:apply-batch',{...input,expectedToken:report.token});const snapshot=await f.call('snapshot:get');assert.deepEqual(snapshot.duties.assignments[date].employeeIds,[]);assert.deepEqual(snapshot.tasks[0],task);assert.equal(snapshot.records[ids[0]+'|'+date].status,'sick');assert.equal(snapshot.records[ids[1]+'|'+date].status,'sick');
  await f.call('history:undo');assert.deepEqual(JSON.parse(fs.readFileSync(f.database,'utf8')),JSON.parse(before));
+});
+
+
+test('selected file contents import through production IPC without a second picker, preserve BOM data, checkpoint and undo', async t => {
+  const f = await fixture(t), before = fs.readFileSync(f.database,'utf8');
+  f.dialog.showOpenDialog = () => { throw Error('The renderer already selected a file'); };
+  const result = await f.call('data:import', { name:'Моя копія.json', content:'\uFEFF'+JSON.stringify(f.incoming) });
+  assert.equal(result.canceled,false); assert.equal(result.fileName,'Моя копія.json');
+  assert.deepEqual(f.calls.map(c=>c.type),['confirm']);
+  assert.match(f.calls[0].options.message,/Моя копія.json/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.database)),domain.normalizeState(f.incoming));
+  assert.equal(fs.readFileSync(path.join(f.directory,'Counter-data','counter-data.backup.json'),'utf8'),before);
+  await f.call('history:undo'); assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
+
+test('cancelling selected-file confirmation preserves all data and permits selecting the same file again', async t => {
+  const f = await fixture(t), before = fs.readFileSync(f.database,'utf8'), file={name:'copy.json',content:JSON.stringify(f.incoming)};
+  f.dialog.answer={response:1}; assert.equal((await f.call('data:import',file)).canceled,true);
+  assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  f.dialog.answer={response:0}; assert.equal((await f.call('data:import',file)).canceled,false);
+});
+
+test('malformed file payloads and future-schema contents cannot bypass validation or change data', async t => {
+  const f=await fixture(t), before=fs.readFileSync(f.database,'utf8');
+  for (const file of [null,{}, {name:'copy.json',content:42}, {name:'',content:'{}'},
+    ...['{broken','{}','null','[]',JSON.stringify({...f.incoming,schemaVersion:99})].map(content=>({name:'copy.json',content}))]) {
+    await assert.rejects(f.call('data:import',file));
+    assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  }
+  assert.equal(f.calls.length,0);
+  assert.equal((await f.call('data:import',{name:'copy.json',content:JSON.stringify(f.incoming)})).canceled,false);
+});
+
+test('pending selected-file confirmation suspends always-on-top, blocks duplicates and restores it after cancellation', async t => {
+  const f=await fixture(t), owner=f.windows[0], before=fs.readFileSync(f.database,'utf8');
+  let finish; f.dialog.answer=new Promise(resolve=>{finish=resolve;});
+  const first=f.call('data:import',{name:'copy.json',content:JSON.stringify(f.incoming)});
+  assert.equal(owner.onTop,false);
+  assert.equal((await f.call('data:import',{name:'copy.json',content:JSON.stringify(f.incoming)})).busy,true);
+  assert.equal(f.calls.length,1); finish({response:1}); await first;
+  assert.equal(owner.onTop,true); assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
+
+test('native dialog failures restore window layering and permit a subsequent selected-file import', async t => {
+  const f=await fixture(t), owner=f.windows[0], before=fs.readFileSync(f.database,'utf8');
+  f.dialog.showMessageBox=async()=>{assert.equal(owner.onTop,false);throw Error('Dialog failure');};
+  const file={name:'copy.json',content:JSON.stringify(f.incoming)};
+  await assert.rejects(f.call('data:import',file),/Dialog failure/);
+  assert.equal(owner.onTop,true); assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  f.dialog.showMessageBox=async()=>({response:0}); await f.call('data:import',file); assert.equal(owner.onTop,true);
+});
+
+test('selected files respect disabled confirmations, imported window settings and training isolation', async t => {
+  const f=await fixture(t), before=fs.readFileSync(f.database,'utf8');
+  await f.call('training:enter');
+  await assert.rejects(f.call('data:import',{name:'copy.json',content:JSON.stringify(f.incoming)}),/Вийдіть із навчання/);
+  assert.equal(fs.readFileSync(f.database,'utf8'),before); await f.call('training:exit');
+  await f.call('settings:update',{confirmDestructiveActions:false});
+  f.incoming.settings.alwaysOnTop=false;
+  await f.call('data:import',{name:'copy.json',content:JSON.stringify(f.incoming)});
+  assert.equal(f.calls.length,0); assert.equal(f.windows[0].onTop,false);
 });

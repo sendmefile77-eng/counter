@@ -53,6 +53,21 @@ async function run(reportPath) {
     const original=main.getStore(),bytes=fs.readFileSync(original.filePath,'utf8');
     await window.webContents.executeJavaScript('(async()=>{await startLadGuide("practice");if(!snapshot.training?.active)throw Error("Навчальна база не відкрилася");await finishLadGuide();if(snapshot.training?.active)throw Error("Навчальна база не закрилася");})()');
     assert.equal(fs.readFileSync(original.filePath,'utf8'),bytes);report.checks.push('training-isolation-and-return');
+    await window.webContents.executeJavaScript(`(async()=>{
+      const api=window.counter,settings=(await api.getSnapshot()).settings;
+      await api.updateSettings({confirmDestructiveActions:false});
+      try {
+        await navigateToTab('data');
+        const copy=await api.getSnapshot(),id=copy.employees[0].id;
+        copy.employees[0].name='Самоперевірка імпорту файла';
+        await importBackupFiles([new File([JSON.stringify(copy)],'self-test.json',{type:'application/json'})]);
+        const saved=await api.getSnapshot();
+        if(ui.dataImportPending||ui.dataImportError||saved.employees.find(person=>person.id===id)?.name!==copy.employees[0].name)throw Error('Файловий імпорт через preload не завершився.');
+        await api.undo();await refresh();
+        if(snapshot.employees.find(person=>person.id===id)?.name===copy.employees[0].name)throw Error('Імпорт файла не скасовано.');
+      } finally { await api.updateSettings({confirmDestructiveActions:settings.confirmDestructiveActions}); }
+    })()`);
+    report.checks.push('selected-file-import-through-preload-and-undo');
     const restored=new DataStore(options.selfTestDirectory);restored.load();assert.deepEqual(restored.state.duties.assignments,original.state.duties.assignments);report.checks.push('database-reload');
     const reportVersion=await window.webContents.executeJavaScript('snapshot.appVersion');assert.equal(reportVersion,app.getVersion());report.checks.push('packaged-version');
     finish();

@@ -88,6 +88,7 @@ const DUTY_ROW_COLORS = [
 const appRoot = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
 const toastRoot = document.querySelector('#toast-root');
+const backupFileInput = document.querySelector('#backup-file-input');
 
 let snapshot = null;
 let resizeGesture = null;
@@ -117,6 +118,8 @@ let ui = {
   analyticsDocumentView: 'received', analyticsDocumentQuery: '', analyticsDocumentPage: 0,
   analyticsDetail: null, analyticsDetailRevision: 0,
   backups: [],
+  dataImportPending: false,
+  dataImportError: '',
   dutyMonth: localDateKey().slice(0, 7),
   dutySelectedWeek: '',
   dutyFocusedEmployeeId: '',
@@ -1315,7 +1318,7 @@ function renderDataPage() {
       <div class="data-actions">
         <div class="data-action"><h3>Резервна копія JSON</h3><p>Повна база: працівники, документи, статуси, усі графіки, відлучення та журнал змін.</p><button class="button primary" data-export="json">Зберегти копію</button></div>
         <div class="data-action"><h3>Таблиця CSV</h3><p>Плоска таблиця для відкриття в Excel або іншій програмі.</p><button class="button" data-export="csv">Експортувати таблицю</button></div>
-        <div class="data-action"><h3>Відновлення</h3><p>Імпорт повної резервної копії JSON з іншого комп’ютера.</p><button class="button danger" data-action="import-data">Імпортувати копію</button></div>
+        <div class="data-action backup-drop-zone" data-backup-drop aria-busy="${ui.dataImportPending}"><h3>Відновлення</h3><p>Виберіть JSON-копію або перетягніть один файл у цей блок. Перед заміною бази файл буде перевірено.</p><button class="button danger" data-action="import-data" ${ui.dataImportPending ? 'disabled' : ''}>${ui.dataImportPending ? 'Перевіряємо копію…' : 'Імпортувати копію'}</button><small data-import-status role="status">${ui.dataImportPending ? 'Дочекайтеся завершення імпорту.' : h(ui.dataImportError) || 'Якщо вибір файла не відкривається, перетягніть копію сюди.'}</small></div>
       </div>
       <div class="backup-list"><h3>Доступні локальні копії</h3>
         ${(ui.backups || []).map((backup) => `<div class="backup-row"><span>${backup.kind === 'checkpoint' ? 'Перед імпортом / відновленням' : backup.id === 'previous' ? 'Попередня версія' : h(backup.id.slice(13, 23))} · ${h(new Date(backup.savedAt).toLocaleString('uk-UA'))} · ${backup.employees} працівників, ${backup.receipts} документів, ${backup.tasks || 0} завдань, ${backup.draws || 0} жеребкувань</span><button class="button small" data-restore-backup="${h(backup.id)}">Відновити</button></div>`).join('') || '<p class="muted">Локальних копій поки немає.</p>'}
@@ -2153,7 +2156,94 @@ function updateAnalyticsDraftNotice(form) {
   if (notice) notice.textContent = 'Фільтри змінено. Натисніть «Показати статистику», щоб оновити цифри.';
 }
 
+function resetImportedViews() {
+  Object.assign(ui, { settingsDraft:null, todayQuery:'', todayFilter:'all',
+    analytics:null, analyticsEmployeeIds:null, analyticsDraft:null, analyticsDetail:null,
+    analyticsError:'', analyticsLoading:false, dutyStats:null, dutyFairness:null, dutyPreview:null,
+    dutyFocusedEmployeeId:'', dutySelectedWeek:'', journalFocusedEmployeeId:'', journalQuery:'',
+    plannerEmployee:'', plannerQuery:'', plannerFocus:'', timeOffEmployee:'',
+    weekly:null, weeklyError:'', weeklyLoading:false, profile:null });
+  drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0;
+  effectsUi.staffDraft=null; effectsUi.staffReport=null; effectsUi.employeeId='';
+  effectsUi.scheduleId=''; effectsUi.page=0; effectsUi.replacementReport=null;
+  ui.analyticsRevision += 1; ui.analyticsDetailRevision += 1;
+  ui.weeklyRevision += 1; ui.profileRevision += 1;
+  clearJournalSelection();
+}
+
+async function importBackupFiles(files) {
+  if (ui.dataImportPending || !files.length) return;
+  ui.dataImportError = '';
+  if (files.length !== 1 || !/\.json$/i.test(files[0].name)) {
+    ui.dataImportError = 'Виберіть один файл резервної копії з розширенням .json.';
+    renderShell({ preserveDrafts:true });
+    showToast(ui.dataImportError, { error:true });
+    return;
+  }
+  ui.dataImportPending = true;
+  backupFileInput.disabled = true;
+  renderShell({ preserveDrafts:true });
+  let imported = false;
+  try {
+    let content;
+    try { content = await files[0].text(); }
+    catch (_error) { throw new Error('Не вдалося прочитати файл. Скопіюйте його на цей комп’ютер і повторіть імпорт.'); }
+    const result = await window.counter.importData({ name:files[0].name, content });
+    if (result?.busy) throw new Error('Інша копія вже імпортується. Дочекайтеся завершення.');
+    if (result && !result.canceled) {
+      imported = true;
+      resetImportedViews();
+      await refresh();
+      showToast('Резервну копію імпортовано.', { undo:true });
+    }
+  } catch (error) {
+    ui.dataImportError = imported
+      ? 'Копію імпортовано. Не вдалося оновити екран; відкрийте розділ повторно.'
+      : error.message || String(error);
+    showToast(ui.dataImportError, { error:true });
+  } finally {
+    ui.dataImportPending = false;
+    backupFileInput.disabled = false;
+    renderShell({ preserveDrafts:!imported });
+  }
+}
+
+backupFileInput.addEventListener('change', () => {
+  const files = [...backupFileInput.files];
+  // Selecting the same copy after cancellation or an error must fire change again.
+  backupFileInput.value = '';
+  void importBackupFiles(files);
+});
+
+window.addEventListener('dragover', event => {
+  if (!event.dataTransfer?.types.includes('Files')) return;
+  event.preventDefault();
+  const zone = event.target.closest('[data-backup-drop]');
+  event.dataTransfer.dropEffect = zone && !ui.dataImportPending ? 'copy' : 'none';
+  document.querySelector('[data-backup-drop]')?.classList.toggle('is-dragging', Boolean(zone) && !ui.dataImportPending);
+});
+window.addEventListener('dragleave', event => {
+  if (!event.relatedTarget) document.querySelector('[data-backup-drop]')?.classList.remove('is-dragging');
+});
+window.addEventListener('drop', event => {
+  if (!event.dataTransfer?.types.includes('Files')) return;
+  // Never navigate away from the app when a file is dropped outside the target.
+  event.preventDefault();
+  document.querySelector('[data-backup-drop]')?.classList.remove('is-dragging');
+  if (event.target.closest('[data-backup-drop]')) void importBackupFiles([...event.dataTransfer.files]);
+});
+
 appRoot.addEventListener('click', async (event) => {
+  // File selection must start in the original user gesture, before async handlers.
+  const importButton = event.target.closest('[data-action="import-data"]');
+  if (importButton) {
+    event.preventDefault();
+    if (!ui.dataImportPending && !importButton.disabled) {
+      backupFileInput.value = '';
+      backupFileInput.click();
+    }
+    return;
+  }
   if (await handleLearningClick(event)) return;
   if (await handleChangesClick(event)) return;
   if (await handleDrawClick(event)) return;
@@ -2201,33 +2291,6 @@ appRoot.addEventListener('click', async (event) => {
     if (action === 'close') return window.counter.close();
     if (action === 'undo') {
       await run(() => window.counter.undo(), 'Останню дію скасовано.', { undo: false });
-      return;
-    }
-    if (action === 'import-data') {
-      if (actionButton.disabled) return;
-      actionButton.disabled = true;
-      const label = actionButton.textContent;
-      actionButton.textContent = 'Вибираємо копію…';
-      try {
-        const result = await run(() => window.counter.importData(), null, { undo: true });
-        if (result && !result.canceled) {
-          Object.assign(ui, { settingsDraft:null, todayQuery:'', todayFilter:'all',
-            analytics:null, analyticsEmployeeIds:null, analyticsDraft:null, analyticsDetail:null,
-            analyticsError:'', analyticsLoading:false, dutyStats:null, dutyFairness:null, dutyPreview:null,
-            dutyFocusedEmployeeId:'', dutySelectedWeek:'', journalFocusedEmployeeId:'', journalQuery:'',
-            plannerEmployee:'', plannerQuery:'', plannerFocus:'', timeOffEmployee:'',
-            weekly:null, weeklyError:'', weeklyLoading:false, profile:null });
-          drawUi.draft = null; drawUi.resultId = ''; drawUi.query = ''; drawUi.page = 0; effectsUi.staffDraft=null; effectsUi.staffReport=null; effectsUi.employeeId=''; effectsUi.scheduleId=''; effectsUi.page=0; effectsUi.replacementReport=null;
-          ui.analyticsRevision += 1; ui.analyticsDetailRevision += 1;
-          ui.weeklyRevision += 1; ui.profileRevision += 1;
-          clearJournalSelection();
-          renderShell();
-          showToast('Резервну копію імпортовано.', { undo: true });
-        }
-      } finally {
-        actionButton.disabled = false;
-        actionButton.textContent = label;
-      }
       return;
     }
     if (action === 'reset-all-data') {

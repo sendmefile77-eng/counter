@@ -84,7 +84,14 @@ class DataStore {
   }
 
   readBackup(backupPath) {
-    const data = JSON.parse(fs.readFileSync(backupPath, 'utf8').replace(/^\uFEFF/, ''));
+    return this.parseBackup(fs.readFileSync(backupPath, 'utf8'));
+  }
+
+  parseBackup(content) {
+    if (typeof content !== 'string') throw new Error('Не вдалося прочитати резервну копію.');
+    let data;
+    try { data = JSON.parse(content.replace(/^\uFEFF/, '')); }
+    catch (_error) { throw new Error('Файл не є справною резервною копією JSON.'); }
     if (!data || !Array.isArray(data.employees) || !data.records || typeof data.records !== 'object' || Array.isArray(data.records)) {
       throw new Error('Резервна копія не містить необхідних розділів бази.');
     }
