@@ -56,5 +56,12 @@
     const old=state.records?.[key(id,date)];
     if(old&&absent.has(old.status)&&!old.receiptId)delete state.records[key(id,date)];
   }
-  return {labels,absent,working,learning,dutyBlocked,noSubmission,symbols,validDate,key,get,normalize,write,clear};
+  // «Аркан» in presence and a legacy per-schedule «А» share one duty rule.
+  function dutyAMark(state,id,date) {
+    const mark=state.presenceRecords?.[key(id,date)];
+    if(mark?.status==='arkan')return {...mark,source:'presence'};
+    const legacy=state.duties?.aDays?.[key(id,date)];
+    return legacy?{...legacy,source:'duty_a'}:null;
+  }
+  return {labels,absent,working,learning,dutyBlocked,noSubmission,symbols,validDate,key,get,normalize,write,clear,dutyAMark};
 }));

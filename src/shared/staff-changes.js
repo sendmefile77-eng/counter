@@ -25,7 +25,7 @@ function inspectStaffEffects(state,change,dates,now=new Date()) {
   const person=d.getEmployee(state,change.employeeId),today=planner.dateKey(now);
   const affectedDates=new Set(dates);
   const markedDates=new Set(dates);
-  if(change.type==='a')dates.forEach(date=>affectedDates.add(d.addDays(date,-1)));
+  if(change.type==='a'||change.kind==='presence'&&change.status==='arkan')dates.forEach(date=>affectedDates.add(d.addDays(date,-1)));
   const duties=d.dutySchedules(state).filter(schedule=>!change.scheduleId||schedule.id===change.scheduleId).flatMap(schedule=>{
     const view=replacements.scheduleView(state,schedule.id);
     return Object.values(view.duties.assignments).filter(assignment=>assignment.employeeIds.includes(person.id)
@@ -36,7 +36,7 @@ function inspectStaffEffects(state,change,dates,now=new Date()) {
       past:assignment.date<today }));
   });
   const tasks=(state.tasks || []).filter(task=>planner.active(task)&&task.assigneeIds.includes(person.id)
-    && (change.kind==='archive'||['status','presence'].includes(change.kind)&&affectedDates.has(task.dueDate)
+    && (change.kind==='archive'||['status','presence'].includes(change.kind)&&markedDates.has(task.dueDate)
       ||change.kind==='restriction'&&!['planning_block'].includes(change.type)&&markedDates.has(task.dueDate)))
     .map(task=>({id:task.id,title:task.title,dueDate:task.dueDate,dueTime:task.dueTime,priority:task.priority,status:task.status}));
   const blockers=[];
@@ -127,10 +127,11 @@ function getConsequences(state,input={},now=new Date()) {
     if(archived)reasons.push('Відповідальний у архіві; перевірте виконавця і строк.');
     const status=presence.get(state,id,task.dueDate)?.status;
     if(ABSENCES.has(status))reasons.push(`На день строку в табелі: ${d.STATUS_LABELS[status]}.`);
+    if(status==='arkan')reasons.push('На день строку Аркан («А»); перевірте сумісність із завданням.');
     const marks=d.dutySchedules(state).flatMap(schedule=>{
       const view=replacements.scheduleView(state,schedule.id), mark=view.duties.unavailable[d.recordKey(id,task.dueDate)];
       if(mark)return [`У графіку «${schedule.name}» позначено: ${d.dutyRestrictionLabel(mark.type)}.`];
-      return view.duties.aDays[d.recordKey(id,task.dueDate)]?[`У графіку «${schedule.name}» позначено «А»; перевірте сумісність із завданням.`]:[];
+      return status!=='arkan'&&view.duties.aDays[d.recordKey(id,task.dueDate)]?[`У графіку «${schedule.name}» позначено «А»; перевірте сумісність із завданням.`]:[];
     });
     reasons.push(...marks);
     if(reasons.length)issues.push({id:`task:${task.id}:${id}`,kind:'task',taskId:task.id,date:task.dueDate,employeeId:id,employeeName:person?.name || 'Працівник з історії',title:task.title,reasons,severity:archived||ABSENCES.has(status)?'action':'review'});

@@ -1482,8 +1482,8 @@ function dutyRestriction(state, employeeId, date) {
   if (!state.duties.participantIds.includes(employeeId)) return 'not_participant';
   if (date >= employee.createdDate && !employeeExistsOnDate(employee, date)) return 'outside_period';
   const key = recordKey(employeeId, date);
-  if (state.duties.aDays[key]) return 'a_day';
-  if (state.duties.aDays[recordKey(employeeId, addDays(date, 1))]) return 'before_a';
+  if (presence.dutyAMark(state,employeeId,date)) return 'a_day';
+  if (presence.dutyAMark(state,employeeId,addDays(date,1))) return 'before_a';
   if (state.duties.planningBlocks[key]) return 'planning_block';
   if (state.duties.unavailable[key]) return state.duties.unavailable[key].type;
   const mark = presence.get(state,employeeId,date);
@@ -2754,8 +2754,8 @@ function dutyRestrictionLabel(code) {
   const labels = {
     not_participant: 'не входить до цього графіка',
     outside_period: 'поза періодом роботи',
-    a_day: 'цього дня позначено «А»',
-    before_a: 'наступного дня позначено «А»',
+    a_day: 'Аркан («А»): не чергує цього дня й напередодні',
+    before_a: 'наступного дня Аркан («А»): напередодні не чергує',
     planning_block: 'встановлено «Не планувати»',
     off: 'вихідний',
     arkan:'Аркан: працює, але не може чергувати',

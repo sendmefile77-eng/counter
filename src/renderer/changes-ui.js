@@ -12,7 +12,7 @@ function renderBatchEffects(report) {
 function renderConsequenceBanner() {
   const report = snapshot.consequences;
   if (!report?.total) return '';
-  return `<section class="effect-banner" aria-label="Наслідки змін"><div><strong>Потребують перевірки: ${report.total}</strong><p>Призначення, відсутність і завдання · ${report.actionCount} потребують рішення, ${report.reviewCount} — перевірки сумісності. Період: ${h(formatDate(report.startDate))} — ${h(formatDate(report.endDate))}.</p></div><button class="button" data-tab="consequences">Розібрати зміни →</button></section>`;
+  return `<section class="effect-banner" aria-label="Наслідки змін"><span class="effect-icon" aria-hidden="true">${NAV_ICONS.consequences}</span><div><strong title="Період: ${h(formatDate(report.startDate))} — ${h(formatDate(report.endDate))}">Потребують перевірки <span class="count-pill">${report.total}</span></strong><p>Потрібне рішення: ${report.actionCount} · перевірка сумісності: ${report.reviewCount}</p></div><button class="button small" data-tab="consequences">Розібрати зміни →</button></section>`;
 }
 function effectDutyButton(issue, label='До дня') { return `<button class="button small" data-effect-duty-day="${h(issue.date)}" data-effect-schedule="${h(issue.scheduleId)}">${label}</button>`; }
 function effectRow(issue) {

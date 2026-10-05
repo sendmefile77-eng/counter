@@ -336,6 +336,26 @@ test('direct presence IPC saves and clears without reason or preview, persists a
  await f.call('data:import',{name:'Відрядження.json',content:saved});assert.equal((await f.call('snapshot:get')).presenceRecords[id+'|'+date].status,'business_trip');
 });
 
+test('Arkan presence IPC removes the previous day and undo restores the complete schedule and presence',async t=>{
+ const f=await fixture(t),snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,eve=domain.addDays(domain.dateKeyFromDate(),1),date=domain.addDays(eve,1);
+ await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});
+ await f.call('duties:set-assignment',{date:eve,employeeIds:[id],singleApproved:true});
+ await f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true});
+ const before=fs.readFileSync(f.database,'utf8');
+ const result=await f.call('presence:save',{employeeId:id,date,status:'arkan'});assert.equal(result.duties.length,2);
+ const saved=JSON.parse(fs.readFileSync(f.database,'utf8'));assert.deepEqual(saved.duties.assignments[eve].employeeIds,[]);assert.deepEqual(saved.duties.assignments[date].employeeIds,[]);
+ assert.equal(domain.dutyRestriction(saved,id,eve),'before_a');assert.equal(domain.dutyRestriction(saved,id,date),'a_day');
+ await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
+
+test('locked Arkan eve rejects native presence save without changing disk data',async t=>{
+ const f=await fixture(t),snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,eve=domain.addDays(domain.dateKeyFromDate(),1),date=domain.addDays(eve,1);
+ await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});
+ await f.call('duties:set-assignment',{date:eve,employeeIds:[id],singleApproved:true});await f.call('duties:week-lock',{date:eve,locked:true});
+ const before=fs.readFileSync(f.database,'utf8');await assert.rejects(async()=>f.call('presence:save',{employeeId:id,date,status:'arkan'}),/заблоковано/);
+ assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
+
 test('direct presence IPC cannot change a locked duty or its saved database and remains usable after rejection',async t=>{
  const f=await fixture(t),snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,date=domain.addDays(domain.dateKeyFromDate(),1);
  await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});

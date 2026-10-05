@@ -501,13 +501,12 @@ function renderDashboard() {
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
-        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','planner','consequences','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees','draws','coins'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
+        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Керування командою</div>${['planner','consequences','weekly','analytics','employees'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Інструменти вибору</div>${['draws','coins'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
         <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6,8).map((item, i) => navButton(item, i + 6)).join('')}</nav>
-        <div class="sidebar-note">
-          <strong><i></i> Локальний режим</strong>
-          <span>Дані на цьому комп’ютері</span>
-          <small>ЛАД · ${h(snapshot.appVersion || 'версія невідома')}</small>
+        <div class="sidebar-note" title="Дані зберігаються на цьому комп’ютері">
+          <strong><i></i> Локально</strong>
+          <small>v${h(snapshot.appVersion || '—')}</small>
         </div>
       </aside>
       <section class="dashboard-content" data-scroll-key="page-${ui.tab}" aria-label="${h(NAV_ITEMS.find(([id]) => id === ui.tab)?.[1] || 'Огляд дня')}">
@@ -645,7 +644,7 @@ function dutyCell(employee, date) {
       title: realized ? 'Чергування реалізоване: були завдання' : 'Призначено чергування',
     };
   }
-  if (snapshot.duties.aDays[key]) return { symbol: 'А', className: 'duty-a', title: 'Залучення «А»' };
+  if (LadPresence.dutyAMark(snapshot,employee.id,date)) return { symbol: 'А', className: 'duty-a', title: 'Аркан («А») · не чергує цього дня й напередодні' };
   if (snapshot.duties.planningBlocks?.[key]) {
     return {
       symbol: '—',
@@ -661,7 +660,7 @@ function dutyCell(employee, date) {
       title: `Не бере участі: ${unavailable.type}`,
     };
   }
-  if (snapshot.duties.aDays[`${employee.id}|${shiftDate(date, 1)}`]) {
+  if (LadPresence.dutyAMark(snapshot,employee.id,shiftDate(date,1))) {
     return { symbol: 'до/А', className: 'duty-after-a', title: 'Не можна чергувати напередодні «А»' };
   }
   const record = recordFor(employee.id, date);
@@ -670,7 +669,7 @@ function dutyCell(employee, date) {
     sick: 'ЛК',
     vacation: 'ВП',
     day_off: 'ВГ',
-    holiday: 'В',business_trip:'ВД',arkan:'АРК',
+    holiday: 'В',business_trip:'ВД',
   };
   if (linkedMarks[record?.status]) {
     return { symbol: linkedMarks[record.status], className: 'duty-unavailable', title: STATUS_LABELS[record.status] };
@@ -769,10 +768,11 @@ function renderDutyPage() {
     </div>
     ${scheduleToolbar}
     ${renderConsequenceBanner()}
-    <div class="metrics-grid duty-metrics">
-      <div class="metric-card"><strong>${minTotal}–${maxTotal}</strong><span>діапазон за ${dutyYear} рік</span></div>
-      <div class="metric-card"><strong>${totals.reduce((sum, value) => sum + value, 0)}</strong><span>чергувань за ${dutyYear} рік</span></div>
-      <div class="metric-card"><strong>${participants.reduce((sum, employee) => sum + (stats.get(employee.id)?.realized || 0), 0)}</strong><span>реалізованих за рік</span></div>
+    <div class="duty-summary" aria-label="Підсумки чергувань за ${dutyYear} рік">
+      <span class="duty-summary-year">${dutyYear} рік</span>
+      <span>Діапазон на людину <strong>${minTotal}–${maxTotal}</strong></span>
+      <span>Чергування · Σ <strong>${totals.reduce((sum, value) => sum + value, 0)}</strong></span>
+      <span>Реалізовано · Р <strong>${participants.reduce((sum, employee) => sum + (stats.get(employee.id)?.realized || 0), 0)}</strong></span>
     </div>
     <div class="table-toolbar">
       <button class="button small" data-duty-month-shift="-1">← Попередній</button>
@@ -788,10 +788,10 @@ function renderDutyPage() {
         <details class="duty-schedule-more"><summary>Очистити тиждень</summary><div class="button-row"><button class="button small" data-clear-duty-week="generated" ${selectedWeekLocked || !selectedWeekAssignments.some((date) => hasClearableGeneratedDuty(snapshot.duties.assignments[date])) ? 'disabled' : ''}>Лише автоматичні</button><button class="button danger small" data-clear-duty-week="all" ${selectedWeekLocked || !selectedWeekAssignments.length ? 'disabled' : ''}>Усі призначення</button></div></details>
       </div>
     </div>
-    <p class="duty-help">Натисніть ім’я, щоб виділити рядок. Клік по порожній клітинці призначає чергування; клік по призначеній відкриває окремі дії для виконання або зняття. Правий клік — «А», відсутність або заборона планування. Червона колонка означає нестачу чергового.</p>
     <div class="duty-legend">
-      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> залучення</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
+      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> Аркан</span><span><b class="legend-a">до/А</b> напередодні Аркану</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
+    <details class="table-help"><summary>Дії в графіку</summary><p>Натисніть ім’я, щоб виділити рядок, або кольорову крапку, щоб змінити його колір. Клік по порожній клітинці призначає чергування; по призначеній — відкриває виконання, зняття та пояснення. Права кнопка — Аркан («А»), відсутність або заборона планування. «АРК» у наявності та «А» у графіку мають однакове обмеження: без чергування цього дня й напередодні. Червона колонка — нестача чергового.</p></details>
     <div class="table-scroll" data-scroll-key="duty-matrix">
       <table class="matrix duty-matrix ${ui.dutyFocusedEmployeeId ? 'has-focused-row' : ''}">
         <thead><tr>
@@ -1281,7 +1281,7 @@ function openModal(content, wide = false) {
   const dialog = modalRoot.querySelector('[role="dialog"]');
   const heading = dialog.querySelector('h2');
   if (heading) { heading.id = 'lad-dialog-title'; dialog.setAttribute('aria-labelledby', heading.id); }
-  dialog.querySelectorAll('[data-close-modal]').forEach((button) => { if (button.textContent.trim() === '×') button.setAttribute('aria-label', 'Закрити діалог'); });
+  dialog.querySelectorAll('[data-close-modal]').forEach((button) => { if (button.textContent.trim() === '×'&&!button.hasAttribute('aria-label')) button.setAttribute('aria-label', 'Закрити діалог'); });
   appRoot.setAttribute('inert', '');
   dialog.focus();
   if (ui.mode === 'widget' && !widgetDialogExpanded) {
@@ -1609,8 +1609,8 @@ function openDutyHistoryModal() {
 
 function dutyRestrictionText(employeeId, date) {
   const key = `${employeeId}|${date}`;
-  if (snapshot.duties.aDays[key]) return '«А» цього дня';
-  if (snapshot.duties.aDays[`${employeeId}|${shiftDate(date, 1)}`]) return 'наступного дня позначено «А»';
+  if (LadPresence.dutyAMark(snapshot,employeeId,date)) return 'Аркан («А»): не чергує цього дня й напередодні';
+  if (LadPresence.dutyAMark(snapshot,employeeId,shiftDate(date,1))) return 'напередодні Аркану («А»): чергування заборонене';
   if (snapshot.duties.planningBlocks?.[key]) return 'не ставити в чергування цього дня';
   const unavailable = snapshot.duties.unavailable[key];
   if (unavailable) return `позначка ${DUTY_MARK_LABELS[unavailable.type] || 'недоступний'}`;
@@ -1677,6 +1677,7 @@ async function openDutyEmployeeModal(employeeId, date) {
   const assigned = assignment?.employeeIds?.includes(employeeId);
   const realized = assignment?.realizedEmployeeIds?.includes(employeeId);
   const aDay = snapshot.duties.aDays[key];
+  const arkan = LadPresence.get(snapshot,employeeId,date)?.status==='arkan';
   const unavailable = snapshot.duties.unavailable[key];
   const planningBlock = snapshot.duties.planningBlocks?.[key];
   const previousDuty = snapshot.duties.assignments[shiftDate(date, -1)]?.employeeIds?.includes(employeeId);
@@ -1684,7 +1685,8 @@ async function openDutyEmployeeModal(employeeId, date) {
   openModal(`
     <header class="modal-head"><div><h2>Чергування працівника</h2><p>${h(employee?.name || '')} · ${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
     <div class="modal-body">
-      <div>Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
+      <div class="duty-person-state">Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
+      ${arkan?`<div class="confirm-box">Аркан («А») внесено у «Наявності» й діє в усіх графіках. Чергування заборонене цього дня та напередодні. <button class="button small" data-duty-presence="${h(employeeId)}" data-date="${date}">Змінити наявність</button></div>`:''}
       ${assigned ? `
         <details class="modal-details" open><summary>Чому я чергую цього дня</summary>${renderDutyExplanation(explanation, employeeId)}<button class="button small" type="button" data-copy-duty-explanation="${date}" data-explanation-employee="${h(employeeId)}">Скопіювати пояснення</button></details>
         <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-realized="${realized ? 'false' : 'true'}" data-date="${date}" data-employee-id="${h(employeeId)}">${realized ? 'Скасувати позначку виконання' : 'Позначити виконаним'}</button>
@@ -1694,7 +1696,7 @@ async function openDutyEmployeeModal(employeeId, date) {
         <label class="field"><span>Примітка</span><textarea id="duty-restriction-note" maxlength="500" placeholder="Необов’язково">${h(aDay?.note || unavailable?.note || planningBlock?.note || '')}</textarea></label>
         <div class="status-grid duty-status-grid">
           <button class="status-choice planning-block-choice" data-set-duty-restriction="planning_block" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Не ставити</strong><span>Лише жовта заборона для планувальника; без статистики</span></button>
-          <button class="status-choice" data-set-duty-restriction="a" data-employee-id="${h(employeeId)}" data-date="${date}" ${previousDuty ? 'disabled' : ''}><strong>А</strong><span>${previousDuty ? 'Заборонено після чергування попереднього дня' : 'Не чергує лише цього дня'}</span></button>
+          <button class="status-choice" data-set-duty-restriction="a" data-employee-id="${h(employeeId)}" data-date="${date}" ${previousDuty||arkan ? 'disabled' : ''}><strong>Аркан · А</strong><span>${arkan?'Уже внесено у «Наявності»':previousDuty ? 'Спочатку змініть чергування попереднього дня' : 'Без чергування цього дня й напередодні'}</span></button>
           <button class="status-choice" data-set-duty-restriction="off" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Вихідний</strong><span>Не бере участі в чергуванні</span></button>
           <button class="status-choice" data-set-duty-restriction="vacation" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Відпустка</strong><span>Недоступний</span></button>
           <button class="status-choice" data-set-duty-restriction="sick" data-employee-id="${h(employeeId)}" data-date="${date}"><strong>Лікарняний</strong><span>Недоступний</span></button>
@@ -2353,6 +2355,10 @@ appRoot.addEventListener('click', async (event) => {
   if (dutyCellButton) {
     const date = dutyCellButton.dataset.date;
     const assignment = snapshot.duties.assignments[date];
+    if(!assignment?.employeeIds?.includes(dutyCellButton.dataset.employeeId)&&dutyRestrictionText(dutyCellButton.dataset.employeeId,date)) {
+      openDutyEmployeeModal(dutyCellButton.dataset.employeeId,date);
+      return;
+    }
     const incomplete = assignment
       && (assignment.employeeIds?.length || 0) < dutyRequiredCount(date)
       && !assignment.singleApproved;
@@ -2989,6 +2995,8 @@ modalRoot.addEventListener('click', async (event) => {
     return;
   }
 
+  const dutyPresenceButton=event.target.closest('[data-duty-presence]');
+  if(dutyPresenceButton){openPresenceForm({employeeId:dutyPresenceButton.dataset.dutyPresence,date:dutyPresenceButton.dataset.date});return;}
   const dutyRestrictionButton = event.target.closest('[data-set-duty-restriction]');
   if (dutyRestrictionButton) {
     const note = modalRoot.querySelector('#duty-restriction-note')?.value || '';

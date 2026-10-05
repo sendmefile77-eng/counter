@@ -1,6 +1,6 @@
 {
   "name": "counter-widget",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "ЛАД — Люди. Аналітика. Документи. Облік роботи співробітників, чергувань і завдань",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",
