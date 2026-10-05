@@ -18,6 +18,7 @@ const {
   correctReceipt,
   createDutySchedule,
   createEmployee,
+  setEmployeeDutyColor,
   createTimeOffEntry,
   dateKeyFromDate,
   deleteDutySchedule,
@@ -54,6 +55,7 @@ const { DataStore } = require('./store');
 const work = require('../shared/work');
 const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
+const coins=require('../shared/coins');
 const employeeDeletion = require('../shared/employee-deletion');
 const staffChanges = require('../shared/staff-changes');
 const presence = require('../shared/presence');
@@ -433,6 +435,10 @@ function registerIpc() {
     undoStack.length = 0;
     return result;
   });
+  ipcMain.handle('coins:flip',(_event,input)=>{
+    const result=mutate('coins:flip',state=>coins.flip(state,input));
+    undoStack.length=0;return result;
+  });
   ipcMain.handle('draws:create-task', (_event, { id, input }) => {
     const existing = store.state.draws.find(draw=>draw.id===id)?.taskId;
     if (existing && store.state.tasks.some(task=>task.id===existing)) return store.state.tasks.find(task=>task.id===existing);
@@ -492,6 +498,7 @@ function registerIpc() {
   ipcMain.handle('employee:rename', (_event, { employeeId, name }) => (
     mutate('employee:rename', (state) => renameEmployee(state, employeeId, name))
   ));
+  ipcMain.handle('employee:duty-color',(_event,{employeeId,color})=>mutate('employee:duty-color',state=>setEmployeeDutyColor(state,employeeId,color)));
   ipcMain.handle('employee:move', (_event, { employeeId, direction }) => (
     mutate('employee:move', (state) => moveEmployee(state, employeeId, direction))
   ));

@@ -3,14 +3,15 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
+const coins=require('./coins');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
   onsite: '#36bf76',
   zkp: '#36a8b7',
-  training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',
+  training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',arkan:'#54bba3',weekend:'#8293a8',
   working: '#36a8b7',
   planned_work: '#668ac9',
   pending: '#586b85',
@@ -354,6 +355,8 @@ function defaultState(now = new Date()) {
     tasks: [],
     draws: [],
     drawSequence: 0,
+    coinFlips: [],
+    coinSequence: 0,
     timeOffEntries: [],
     settings: normalizeGlobalSettings(),
     audit: [{
@@ -430,6 +433,8 @@ function normalizeState(input, now = new Date()) {
       throw new Error('У файлі є працівник без імені або з дубльованим ідентифікатором.');
     }
     assertDateKey(employee.createdDate);
+    if(employee.dutyColor!=null&&!/^#[0-9a-f]{6}$/i.test(employee.dutyColor))throw new Error('Некоректний колір працівника.');
+    employee.dutyColor=employee.dutyColor?.toLowerCase()||null;
     if (!Array.isArray(employee.activePeriods) || employee.activePeriods.length === 0) {
       employee.activePeriods = [{ start: employee.createdDate, end: employee.archivedDate || null }];
     }
@@ -484,6 +489,9 @@ function normalizeState(input, now = new Date()) {
 
   state.tasks = normalizeTasks(input.tasks, state, now);
   state.draws = normalizeDraws(input.draws);
+  state.coinFlips=coins.normalize(input.coinFlips);
+  if(input.coinSequence!=null&&(!Number.isSafeInteger(input.coinSequence)||input.coinSequence<0))throw new Error('Некоректний лічильник монетки.');
+  state.coinSequence=Math.max(input.coinSequence||0,...state.coinFlips.map(item=>item.number));
   if (input.drawSequence != null && (!Number.isSafeInteger(input.drawSequence) || input.drawSequence < 0)) throw new Error('Некоректний лічильник протоколів.');
   state.drawSequence = state.draws.reduce((maximum, draw) => Math.max(maximum, draw.number), input.drawSequence || 0);
   state.workEntries = work.normalize(input.workEntries, state);
@@ -524,9 +532,18 @@ function createEmployee(state, name, now = new Date()) {
     archivedDate: null,
     archivedAt: null,
     activePeriods: [{ start: dateKeyFromDate(now), end: null }],
+    dutyColor: null,
   };
   state.employees.push(employee);
   appendAudit(state, 'employee_created', { employeeId: employee.id, name: employee.name }, now);
+  return employee;
+}
+
+function setEmployeeDutyColor(state,employeeId,color,now=new Date()) {
+  const employee=getEmployee(state,employeeId);
+  if(color!==null&&(typeof color!=='string'||!/^#[0-9a-f]{6}$/i.test(color)))throw new Error('Оберіть колір у форматі #RRGGBB.');
+  const previous=employee.dutyColor||null;employee.dutyColor=color?.toLowerCase()||null;
+  appendAudit(state,'employee_duty_color_changed',{employeeId,previous,color:employee.dutyColor,actor:state.settings.operatorName||'Керівник'},now);
   return employee;
 }
 
@@ -928,12 +945,15 @@ function isWorkday(state, dateKey) {
 }
 
 function isEmployeeWorkday(state, employeeId, dateKey) {
-  return isWorkday(state, dateKey) || Boolean(state.workdayOverrides[recordKey(employeeId, dateKey)]);
+  return work.isWorkday(state,employeeId,dateKey);
 }
 
 function setWorkdayOverride(state, employeeId, date, note = '', now = new Date()) {
   const employee = getEmployee(state, employeeId);
   assertDateKey(date);
+  if (state.presenceRecords[presence.key(employeeId,date)]?.status === 'weekend') {
+    throw new Error('На цей день вручну встановлено «Вихідний». Спочатку змініть статус у «Наявності».');
+  }
   if (isWorkday(state, date)) {
     throw new Error('Ця дата вже є звичайним робочим днем.');
   }
@@ -1032,6 +1052,7 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
       throw new Error('Роботу за ЗКП зараховують після повернення в офіс у наступний день. Позначте «На роботі» на дату повернення.');
     if(!String(note).trim())throw new Error('Вкажіть пояснення: за які дні ЗКП отримано роботу.');
   }
+  if(explicit&&['arkan','weekend'].includes(explicit.status)&&!presence.absent.has(status))throw new Error('За цією наявністю здача документів не потрібна. Щоб змінити облік роботи, спочатку змініть «Наявність».');
   if (explicit && (presence.absent.has(explicit.status)||presence.learning.has(explicit.status)) && !presence.absent.has(status)) {
     throw new Error('Працівник відсутній за даними «Наявності». Спочатку змініть наявність.');
   }
@@ -1466,7 +1487,7 @@ function dutyRestriction(state, employeeId, date) {
   if (state.duties.planningBlocks[key]) return 'planning_block';
   if (state.duties.unavailable[key]) return state.duties.unavailable[key].type;
   const mark = presence.get(state,employeeId,date);
-  if (mark && presence.absent.has(mark.status)) return mark.status;
+  if (mark && presence.dutyBlocked.has(mark.status)) return mark.status;
   return null;
 }
 
@@ -2737,6 +2758,7 @@ function dutyRestrictionLabel(code) {
     before_a: 'наступного дня позначено «А»',
     planning_block: 'встановлено «Не планувати»',
     off: 'вихідний',
+    arkan:'Аркан: працює, але не може чергувати',
     vacation: 'відпустка',
     sick: 'лікарняний',
     day_off: 'відгул',
@@ -3162,6 +3184,7 @@ function calculateAnalyticsTrend(state, { employeeId = null, startDate, endDate 
 
 module.exports = {
   SCHEMA_VERSION,
+  setEmployeeDutyColor,
   STATUS,
   STATUS_LABELS,
   SUBMITTED_STATUSES,

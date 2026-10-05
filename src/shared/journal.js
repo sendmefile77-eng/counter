@@ -7,11 +7,11 @@
   const absent = work.absence;
   const symbols = { submitted: '✓', not_submitted:'×', future:'',training_online:'НО',training_academy:'НА',
     personal_permission: 'ОС', sick: 'ЛК', vacation: 'ВП',
-    day_off: 'ВГ', holiday: 'СВ',business_trip:'ВД', weekend: 'ВХ', outside: '—' };
+    day_off: 'ВГ', holiday: 'СВ',business_trip:'ВД',arkan:'АРК', weekend: 'ВХ', outside: '—' };
   const labels={submitted:'Роботу / документи здано',not_submitted:'Роботу / документи ще не підтверджено',
     future:'Майбутній день: здачу ще не очікують',weekend:'Вихідний',outside:'Поза періодом роботи',
     vacation:'Відпустка',sick:'Лікарняний',day_off:'Відгул',personal_permission:'Особисті справи',holiday:'Неробочий день',
-    business_trip:'Відрядження',training_online:'Навчання онлайн',training_academy:'Навчання Академія'};
+    business_trip:'Відрядження',training_online:'Навчання онлайн',training_academy:'Навчання Академія',arkan:'Аркан · на роботі, здача документів не потрібна'};
 
   function datesBetween(startDate, endDate) {
     const valid = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value))
@@ -33,11 +33,11 @@
     const key = `${employee.id}|${date}`;
     const record = work.recordForDay(state,employee.id,date,today);
     const override = Boolean(state.workdayOverrides?.[key]);
-    const working = (state.settings.workdays || [1, 2, 3, 4, 5]).includes(new Date(`${date}T12:00:00Z`).getUTCDay()) || override;
+    const working = work.isWorkday(state,employee.id,date);
     const outside = !activeOn(employee, date) && !record && !override;
     const status = outside ? 'outside' : !working ? 'weekend' : record?.status || 'pending';
     const presenceStatus=record?.presenceStatus||'';
-    const exception=absent.has(status)||['training_online','training_academy'].includes(status);
+    const exception=absent.has(status)||['training_online','training_academy','arkan'].includes(status);
     const displayStatus=['outside','weekend'].includes(status)||exception?status:date>today?'future':submitted.has(status)?'submitted':'not_submitted';
     const symbol=symbols[displayStatus]??'·';
     return { employeeId: employee.id, date, status, displayStatus, presenceStatus, symbol,

@@ -8,6 +8,7 @@ const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
 const domain = require('../src/shared/domain');
 const tasks = require('../src/shared/tasks');
+const coins = require('../src/shared/coins');
 
 async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true, trayAvailable = true } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lad-import-'));
@@ -56,6 +57,48 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   dialog.openResult.filePaths = [filePath];
   return { call, dialog, calls, database, filePath, incoming, directory, app, windows:Window.instances,trays,shortcuts };
 }
+
+test('coin IPC saves its result before return and later undo preserves the toss', async t => {
+  const f=await fixture(t),before=await f.call('snapshot:get'),id=before.employees[0].id;
+  const result=await f.call('coins:flip',{question:'Перенести нараду?'});
+  const saved=JSON.parse(fs.readFileSync(f.database,'utf8'));
+  assert.deepEqual(saved.coinFlips[0],result);assert.equal(saved.coinSequence,1);
+  assert.equal(result.question,'Перенести нараду?');assert.ok(['yes','no'].includes(result.answer));
+  assert.throws(()=>f.call('history:undo'),/Немає дії/);
+  await f.call('employee:duty-color',{employeeId:id,color:'#AD7733'});
+  assert.equal((await f.call('snapshot:get')).employees[0].dutyColor,'#ad7733');
+  await f.call('history:undo');
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.database,'utf8')).coinFlips,saved.coinFlips);
+  assert.equal((await f.call('snapshot:get')).employees[0].dutyColor,null);
+  const unchanged=fs.readFileSync(f.database,'utf8');
+  assert.throws(()=>f.call('coins:flip',{question:'x'.repeat(301)}),/300/);
+  assert.equal(fs.readFileSync(f.database,'utf8'),unchanged);
+});
+
+test('backup import restores employee colours and saved coin results without tossing again', async t => {
+  const f=await fixture(t),id=f.incoming.employees[0].id;
+  domain.setEmployeeDutyColor(f.incoming,id,'#112233');
+  const result=coins.flip(f.incoming,{question:'Так чи ні?'},new Date('2026-10-05T09:00:00Z'),()=>1);
+  fs.writeFileSync(f.filePath,JSON.stringify(f.incoming));
+  await f.call('data:import');
+  const restored=await f.call('snapshot:get');
+  assert.equal(restored.employees[0].dutyColor,'#112233');assert.deepEqual(restored.coinFlips[0],result);
+  assert.equal(restored.coinSequence,1);
+  const next=await f.call('coins:flip',{});assert.equal(next.number,2);
+  assert.deepEqual((await f.call('snapshot:get')).coinFlips[0],result);
+});
+
+test('malformed coin history or employee colour cannot replace the database on import', async t => {
+  const f=await fixture(t),before=fs.readFileSync(f.database,'utf8');
+  coins.flip(f.incoming,{},new Date('2026-10-05T09:00:00Z'),()=>0);
+  f.incoming.coinFlips[0].answer='maybe';fs.writeFileSync(f.filePath,JSON.stringify(f.incoming));
+  await assert.rejects(f.call('data:import'),/монетки/);
+  assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  f.incoming.coinFlips[0].answer='yes';f.incoming.employees[0].dutyColor='red';
+  fs.writeFileSync(f.filePath,JSON.stringify(f.incoming));
+  await assert.rejects(f.call('data:import'),/колір/i);
+  assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
 
 test('import opens the picker first, confirms the selected contents, persists and supports undo', async t => {
   const f = await fixture(t), before = fs.readFileSync(f.database,'utf8');

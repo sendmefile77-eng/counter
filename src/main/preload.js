@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('counter', {
   previewPresence: input => ipcRenderer.invoke('presence:preview',input),
   applyPresence: input => ipcRenderer.invoke('presence:apply',input),
   savePresence: input => ipcRenderer.invoke('presence:save',input),
+  flipCoin: input=>ipcRenderer.invoke('coins:flip',input),
+  setEmployeeDutyColor: (employeeId,color)=>ipcRenderer.invoke('employee:duty-color',{employeeId,color}),
   acknowledgeRecovery: () => ipcRenderer.invoke('data:ack-recovery'),
   enterTraining: () => ipcRenderer.invoke('training:enter'),
   exitTraining: () => ipcRenderer.invoke('training:exit'),

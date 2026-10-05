@@ -141,3 +141,45 @@ test('direct presence save needs no reason or external preview and preserves dut
  changes.save(state,{employeeId:person.id,date,action:'clear'},now);assert.equal(p.get(state,person.id,date),null);assert.equal(d.dutyRestriction(state,person.id,date),null);
  assert.deepEqual(replacements.scheduleView(state,primary).duties.assignments[date].employeeIds,[people[1].id]);assert.equal(state.audit.at(-1).details.action,'clear');
 });
+
+test('calendar weekends appear automatically, manual work replaces them and clearing restores the default without writing generated records',()=>{
+ const {state,people}=fixture(),person=people[0],saturday='2026-10-03',sunday='2026-10-04',before=d.clone(state.presenceRecords);
+ for(const day of [saturday,sunday]){assert.equal(p.get(state,person.id,day).status,'weekend');assert.equal(p.get(state,person.id,day).source,'calendar_presence');assert.equal(d.dutyRestriction(state,person.id,day),null);}
+ assert.deepEqual(state.presenceRecords,before);assert.equal(changes.preview(state,{employeeId:person.id,date:saturday,action:'clear'},now).canApply,false);
+ changes.save(state,{employeeId:person.id,date:saturday,status:'onsite'},now);assert.equal(work.isWorkday(state,person.id,saturday),true);assert.equal(journal.cell(state,person,saturday,'2026-10-05').symbol,'×');
+ changes.save(state,{employeeId:person.id,date:saturday,action:'clear'},now);assert.equal(p.get(state,person.id,saturday).source,'calendar_presence');assert.equal(work.isWorkday(state,person.id,saturday),false);
+ changes.save(state,{employeeId:person.id,date:saturday,status:'onsite'},now);d.setManualStatus(state,{employeeId:person.id,date:saturday,status:'submitted'},now);assert.equal(journal.cell(state,person,saturday,'2026-10-05').symbol,'✓');
+ assert.equal(p.get(state,people[1].id,saturday).status,'weekend');assert.equal(d.normalizeState(d.clone(state),now).presenceRecords[p.key(person.id,saturday)].status,'onsite');
+});
+test('Arkan is a working day without document submission, duty eligibility or an automatic miss',()=>{
+ const {state,people}=fixture(),person=people[0],day='2026-10-01';
+ work.create(state,{employeeId:person.id,title:'Поточна робота',projectCount:5,startDate:day,estimatedEndDate:date},now);
+ changes.save(state,{employeeId:person.id,date:day,status:'arkan'},now);state.settings.automaticClose=true;d.ensureAutomaticMisses(state,now);
+ const report=work.report(state,{startDate:day,endDate:day,employeeIds:[person.id]},now);assert.equal(report.total.workedDays,1);assert.equal(report.total.arkanDays,1);assert.equal(report.total.confirmedDays,0);assert.equal(report.total.absent,0);assert.equal(report.total.missed,0);assert.equal(report.total.pending,0);
+ const tab=journal.report(state,{startDate:day,endDate:day,employeeIds:[person.id]},'2026-10-05');assert.equal(tab.rows[0].cells[0].symbol,'АРК');assert.equal(tab.totals.notSubmitted,0);
+ assert.equal(d.dutyRestriction(state,person.id,day),'arkan');assert.throws(()=>d.setDutyAssignment(state,{date:day,employeeIds:[person.id],singleApproved:true},now));
+ const original=d.clone(state);assert.throws(()=>d.setManualStatus(state,{employeeId:person.id,date:day,status:'submitted'},now),/здача документів не потрібна/);assert.deepEqual(state,original);
+ changes.save(state,{employeeId:person.id,date:'2026-10-05',status:'arkan'},now);assert.ok(draws.createDraw(state,{title:'Завдання без чергування',participantIds:[person.id],count:1},now));
+});
+test('Arkan removes a future duty while preserving work and tasks, and locked duties still reject the change atomically',()=>{
+ const {state,people}=fixture(),person=people[0];d.setDutyAssignment(state,{date,employeeIds:[person.id,people[1].id]},now);
+ const task=tasks.createTask(state,{title:'Робота на Аркані',dueDate:date,assigneeIds:[person.id]},now),originalTask=d.clone(task);
+ d.setDutyWeekLocked(state,date,true,now);const before=d.clone(state);assert.throws(()=>changes.save(state,{employeeId:person.id,date,status:'arkan'},now),/заблоковано/);assert.deepEqual(state,before);
+ d.setDutyWeekLocked(state,date,false,now);changes.save(state,{employeeId:person.id,date,status:'arkan'},now);assert.deepEqual(state.duties.assignments[date].employeeIds,[people[1].id]);assert.deepEqual(state.tasks[0],originalTask);
+ assert.ok(!staff.getConsequences(state,{},now).issues.some(issue=>issue.kind==='task'&&issue.taskId===task.id));
+});
+test('a manually selected weekday weekend needs no work submission but still permits weekend duty',()=>{
+ const {state,people}=fixture(),person=people[0],day='2026-10-01';changes.save(state,{employeeId:person.id,date:day,status:'weekend'},now);
+ assert.equal(work.isWorkday(state,person.id,day),false);assert.equal(journal.cell(state,person,day,'2026-10-05').symbol,'ВХ');
+ assert.equal(work.report(state,{startDate:day,endDate:day,employeeIds:[person.id]},now).total.calendarWorkdays,0);
+ assert.equal(d.dutyRestriction(state,person.id,day),null);d.setDutyAssignment(state,{date:day,employeeIds:[person.id],singleApproved:true},now);
+});
+test('calendar defaults respect configured working weekends and a manual weekend stays authoritative over an old workday override',()=>{
+ const {state,people}=fixture(),person=people[0],saturday='2026-10-03';
+ state.settings.workdays.push(6);assert.equal(p.get(state,person.id,saturday),null);assert.equal(work.isWorkday(state,person.id,saturday),true);
+ state.settings.workdays=state.settings.workdays.filter(day=>day!==6);
+ d.setWorkdayOverride(state,person.id,saturday,'Робоча субота',now);assert.equal(p.get(state,person.id,saturday),null);
+ changes.save(state,{employeeId:person.id,date:saturday,status:'weekend'},now);
+ assert.equal(work.isWorkday(state,person.id,saturday),false);assert.equal(journal.cell(state,person,saturday,'2026-10-05').symbol,'ВХ');
+ const before=d.clone(state);assert.throws(()=>d.setWorkdayOverride(state,person.id,saturday,'',now),/Наявності/);assert.deepEqual(state,before);
+});

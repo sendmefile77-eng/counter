@@ -5,11 +5,13 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, function presenceFactory() {
   const labels = Object.freeze({onsite:'На роботі',zkp:'ЗКП',vacation:'Відпустка',sick:'Лікарняний',
     day_off:'Відгул',personal_permission:'Особисті справи',holiday:'Неробочий день',
-    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження'});
+    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження',arkan:'Аркан',weekend:'Вихідний'});
   const absent = new Set(['vacation','sick','day_off','personal_permission','holiday','business_trip']);
-  const working = new Set(['onsite','zkp']);
+  const working = new Set(['onsite','zkp','arkan']);
   const learning = new Set(['training_online','training_academy']);
-  const symbols = {onsite:'Р',zkp:'ЗКП',vacation:'ВП',sick:'ЛК',day_off:'ВГ',personal_permission:'ОС',holiday:'СВ',training_online:'НО',training_academy:'НА',business_trip:'ВД'};
+  const dutyBlocked=new Set([...absent,'arkan']);
+  const noSubmission=new Set([...absent,...learning,'arkan','weekend']);
+  const symbols = {onsite:'Р',zkp:'ЗКП',vacation:'ВП',sick:'ЛК',day_off:'ВГ',personal_permission:'ОС',holiday:'СВ',training_online:'НО',training_academy:'НА',business_trip:'ВД',arkan:'АРК',weekend:'ВХ'};
   const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value+'T12:00:00Z'))
     && new Date(value+'T12:00:00Z').toISOString().slice(0,10) === value;
   const key = (id,date) => id+'|'+date;
@@ -19,7 +21,16 @@
     const explicit=state.presenceRecords?.[key(id,date)];
     if(explicit)return {...explicit,source:'presence'};
     const old=state.records?.[key(id,date)];
-    return old&&absent.has(old.status)?{...old,source:'legacy_presence'}:null;
+    if(old&&absent.has(old.status))return {...old,source:'legacy_presence'};
+    const person=state.employees.find(person=>person.id===id);
+    if(!person||!validDate(date)||state.workdayOverrides?.[key(id,date)])return null;
+    const active=date<person.createdDate||(person.activePeriods?.length
+      ?person.activePeriods.some(period=>date>=period.start&&(!period.end||date<period.end))
+      :date>=person.createdDate&&(!person.archivedDate||date<person.archivedDate));
+    const weekday=new Date(date+'T12:00:00Z').getUTCDay();
+    if(active&&[0,6].includes(weekday)&&!state.settings.workdays.includes(weekday))
+      return {employeeId:id,date,status:'weekend',note:'Календарний вихідний · можна змінити',actor:'Автоматично',source:'calendar_presence'};
+    return null;
   }
   function normalize(input,state) {
     if(input==null)return {};
@@ -45,5 +56,5 @@
     const old=state.records?.[key(id,date)];
     if(old&&absent.has(old.status)&&!old.receiptId)delete state.records[key(id,date)];
   }
-  return {labels,absent,working,learning,symbols,validDate,key,get,normalize,write,clear};
+  return {labels,absent,working,learning,dutyBlocked,noSubmission,symbols,validDate,key,get,normalize,write,clear};
 }));

@@ -1,7 +1,7 @@
 const STATUS_LABELS = LadWork.labels;
 
 const STATUS_COLORS = {
-  onsite:'#36bf76',zkp:'#36a8b7',training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',
+  onsite:'#36bf76',zkp:'#36a8b7',training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',arkan:'#54bba3',weekend:'#8293a8',
   working: '#36a8b7', planned_work: '#668ac9',
   pending: '#586b85',
   submitted: '#36bf76',
@@ -17,7 +17,7 @@ const STATUS_COLORS = {
 };
 
 const STATUS_SYMBOLS = {
-  onsite:'Р',zkp:'ЗКП',training_online:'НО',training_academy:'НА',business_trip:'ВД',working:'Р', planned_work:'П',
+  onsite:'Р',zkp:'ЗКП',training_online:'НО',training_academy:'НА',business_trip:'ВД',arkan:'АРК',working:'Р', planned_work:'П',
   pending: '·',
   submitted: '✓',
   submitted_late: '◷',
@@ -386,7 +386,7 @@ function renderShell({ preserveDrafts = false } = {}) {
       </main>
     </section>
   `;
-  appRoot.querySelectorAll('[data-employee-row-color]').forEach((row) => row.style.setProperty('--employee-row-rgb', DUTY_ROW_COLORS[Number(row.dataset.employeeRowColor)]));
+  appRoot.querySelectorAll('[data-employee-row-color]').forEach((row) => row.style.setProperty('--employee-row-rgb',employeeRowRgb(employeeById(row.dataset.employeeRowId),Number(row.dataset.employeeRowColor))));
   appRoot.querySelectorAll('[data-legend-status]').forEach((swatch) => { swatch.style.backgroundColor = statusColor(swatch.dataset.legendStatus); });
   updateDutyScrollExtent();
   updateDrawOdds();
@@ -454,6 +454,7 @@ const NAV_ICONS = {
   planner: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h3M15 13v5M13 15.5h4"></path></svg>',
   weekly: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6zM15 3v4h3M9 11h6M9 15h6M9 18h4"></path></svg>',
   consequences: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19L12 3zM12 9v5M12 17h.01"></path></svg>',
+  coins:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="6"></circle><path d="m9 12 2 2 4-4"></path></svg>',
   draws: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9v12M17 14v7"></path><ellipse cx="7" cy="6" rx="2.5" ry="3"></ellipse><ellipse cx="17" cy="11" rx="2.5" ry="3"></ellipse></svg>',
   search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>',
   today: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><path d="m9.4 12 1.7 1.8 3.8-4"></path></svg>',
@@ -478,6 +479,7 @@ const NAV_ITEMS = [
   ['planner', 'Планувальник', 'Завдання, календар, строки й нагадування'],
   ['weekly', 'Тижневе зведення', 'Виконане, затримки й рішення для керівника'],
   ['draws', 'Тягнути сірник', 'Випадковий вибір виконавців та збережені протоколи'],
+  ['coins','Підкинути монетку','Відповідь Так / Ні, анімація та історія підкидань'],
   ['consequences', 'Наслідки змін', 'Зачеплені чергування й завдання; заміни та обміни'],
   ['presence','Наявність','Де працівник: на роботі, ЗКП, відпустка, лікарняний або відгул'],
 ];
@@ -499,7 +501,7 @@ function renderDashboard() {
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
-        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','planner','consequences','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees','draws'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
+        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','planner','consequences','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Команда й дані</div>${['weekly','analytics','employees','draws','coins'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
         <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6,8).map((item, i) => navButton(item, i + 6)).join('')}</nav>
         <div class="sidebar-note">
@@ -519,6 +521,7 @@ function renderActivePage() {
   if (ui.tab === 'presence') return renderPresencePage();
   if (ui.tab === 'consequences') return renderConsequencesPage();
   if (ui.tab === 'draws') return renderDrawPage();
+  if (ui.tab === 'coins') return renderCoinPage();
   if (ui.tab === 'planner') return renderPlannerPage();
   if (ui.tab === 'weekly') return renderWeeklyPage();
   if (ui.tab === 'journal') return renderJournalPage();
@@ -549,7 +552,7 @@ function journalVisibleReport() {
   const report = CounterJournal.report(snapshot, { ...journalRange(), employeeIds: employees.map(({ id }) => id) }, localDateKey());
   report.rows = report.rows.filter((row) => row.name.toLocaleLowerCase('uk-UA').includes(ui.journalQuery.toLocaleLowerCase('uk-UA'))
     && (ui.journalFilter === 'all' || (ui.journalFilter === 'missed' && row.totals.notSubmitted > 0)
-      || (ui.journalFilter === 'pending' && row.cells.some(cell=>cell.date===localDateKey()&&cell.displayStatus==='not_submitted')) || (ui.journalFilter === 'absent' && row.totals.absent+row.totals.training > 0)));
+      || (ui.journalFilter === 'pending' && row.cells.some(cell=>cell.date===localDateKey()&&cell.displayStatus==='not_submitted')) || (ui.journalFilter === 'absent' && (row.totals.absent+row.totals.training > 0 || row.cells.some(cell=>cell.displayStatus==='arkan')))));
   if (ui.journalHideWeekends) report.dates = report.dates.filter((date) => configuredWorkday(date)
     || report.rows.some((row) => row.cells.find((cell) => cell.date === date)?.override));
   report.totals = report.rows.reduce((totals, row) => {
@@ -667,7 +670,7 @@ function dutyCell(employee, date) {
     sick: 'ЛК',
     vacation: 'ВП',
     day_off: 'ВГ',
-    holiday: 'В',business_trip:'ВД',
+    holiday: 'В',business_trip:'ВД',arkan:'АРК',
   };
   if (linkedMarks[record?.status]) {
     return { symbol: linkedMarks[record.status], className: 'duty-unavailable', title: STATUS_LABELS[record.status] };
@@ -806,8 +809,8 @@ function renderDutyPage() {
         <tbody>${participants.map((employee, employeeIndex) => {
           const rowStats = stats.get(employee.id) || { total: 0, realized: 0 };
           const focused = ui.dutyFocusedEmployeeId === employee.id;
-          return `<tr class="${focused ? 'duty-row-focused' : ''}" data-employee-row-color="${employeeIndex % DUTY_ROW_COLORS.length}">
-            <td class="sticky-name"><button class="duty-name-button" data-focus-duty-row="${h(employee.id)}" aria-pressed="${focused}" title="${h(employee.name)} · ${focused ? 'зняти виділення' : 'виділити рядок'}"><span class="employee-name-content"><i class="employee-row-marker" aria-hidden="true"></i>${h(shortName(employee.name))}</span></button></td>
+          return `<tr class="${focused ? 'duty-row-focused' : ''}" data-employee-row-color="${employeeIndex % DUTY_ROW_COLORS.length}" data-employee-row-id="${h(employee.id)}">
+            <td class="sticky-name"><div class="duty-name-layout"><button class="duty-color-button" data-duty-color="${h(employee.id)}" aria-label="Змінити колір: ${h(employee.name)}" title="Змінити колір працівника"><i class="employee-row-marker" aria-hidden="true"></i></button><button class="duty-name-button" data-focus-duty-row="${h(employee.id)}" aria-pressed="${focused}" title="${h(employee.name)} · ${focused ? 'зняти виділення' : 'виділити рядок'}"><span class="employee-name-content">${h(shortName(employee.name))}</span></button></div></td>
             <td class="duty-total">${rowStats.total}</td><td class="duty-total duty-realized-total">${rowStats.realized}</td>
             ${dates.map((date) => {
               const cell = dutyCell(employee, date);
@@ -1179,7 +1182,7 @@ function renderDataPage() {
     [1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [0, 'Нд'],
   ];
   const colorLabels = {
-    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження',
+    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження',arkan:'Аркан',weekend:'Вихідний',
     onsite:'На роботі',zkp:'ЗКП',working:'У роботі', planned_work:'Запланована робота', pending:'Без позначки',submitted:'Відпрацьовано',submitted_late:'Роботу зараховано',
     submitted_advance:'Раніше зараховано',missed:'Роботу не позначено',other_tasks:'Інша робота',
     personal_permission: 'Особисті справи', sick: 'Лікарняний', vacation: 'Відпустка',
@@ -1268,6 +1271,7 @@ function queueWidgetWindowMode(mode) {
 function openModal(content, wide = false) {
   closePresenceContext(true);
   finishDrawReveal({close:false,focus:false});
+  finishCoinReveal({close:false,focus:false});
   interfaceDialogRevision += 1;
   ui.profileRevision += 1;
   ui.analyticsDetailRevision += 1;
@@ -1289,6 +1293,7 @@ function openModal(content, wide = false) {
 function closeModal(owner = null) {
   if (owner && !modalRoot.contains(owner)) return;
   finishDrawReveal({close:false,focus:false});
+  finishCoinReveal({close:false,focus:false});
   interfaceDialogRevision += 1;
   ui.analyticsDetailRevision += 1;
   ui.profileRevision += 1;
@@ -2068,6 +2073,8 @@ appRoot.addEventListener('click', async (event) => {
   if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
   if (await handleEmployeeDeletionClick(event)) return;
+  if (await handleCoinClick(event)) return;
+  if (await handleDutyColorClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   if (handleAnalyticsClick(event)) return;
@@ -2538,6 +2545,8 @@ appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () 
   if (await handlePresenceSubmit(event)) return;
   if (await handleWorkSubmit(event)) return;
   if (await handleChangesSubmit(event)) return;
+  if (await handleCoinSubmit(event)) return;
+  if (await handleDutyColorSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'journal-range-form') {
@@ -2601,6 +2610,7 @@ appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () 
 }));
 
 appRoot.addEventListener('input', (event) => {
+  if (handleCoinInput(event)) return;
   if (handlePresenceInput(event)) return;
   if (handleChangesInput(event)) return;
   captureDrawInput(event);
@@ -2682,6 +2692,7 @@ appRoot.addEventListener('change', async (event) => {
 });
 
 modalRoot.addEventListener('input', (event) => {
+  if (handleCoinInput(event)) return;
   if (handlePresenceInput(event)) return;
   if (handleChangesInput(event)) return;
   if (event.target.matches('[data-quick-query]')) modalRoot.querySelector('[data-quick-results]').innerHTML = renderQuickSearchResults(event.target.value);
@@ -2739,6 +2750,8 @@ modalRoot.addEventListener('click', async (event) => {
   if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
   if (await handleEmployeeDeletionClick(event)) return;
+  if (await handleCoinClick(event)) return;
+  if (await handleDutyColorClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   const quick = event.target.closest('[data-quick-type]');
@@ -3051,6 +3064,8 @@ modalRoot.addEventListener('submit', event => submitInterfaceForm(event, async (
   if (await handlePresenceSubmit(event)) return;
   if (await handleWorkSubmit(event)) return;
   if (await handleChangesSubmit(event)) return;
+  if (await handleCoinSubmit(event)) return;
+  if (await handleDutyColorSubmit(event)) return;
   if (await handleDrawSubmit(event)) return;
   if (['task-form','task-status-form','planner-filter-form','profile-range-form','weekly-range-form'].includes(event.target.id) && await handleManagementSubmit(event)) return;
   if (event.target.id === 'employee-rename-form') {

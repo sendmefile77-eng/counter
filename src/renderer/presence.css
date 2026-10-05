@@ -18,7 +18,8 @@
 .presence-calendar-scroll { border:1px solid var(--line); border-radius:10px; }
 .presence-table { border-collapse:separate; border-spacing:0; }
 .presence-table .presence-name { position:sticky; left:0; z-index:2; text-align:left; width:158px; min-width:158px; background:var(--panel); box-shadow:inset 3px 0 rgb(var(--employee-row-rgb,110,150,190)); }
-.presence-table thead .presence-name { background:var(--table-head); z-index:3; box-shadow:none; }
+.presence-table thead .presence-name { background:var(--table-head); z-index:5; box-shadow:1px 0 var(--line); white-space:nowrap; }
+.presence-table tbody .presence-name { top:auto; }
 .presence-table .presence-calendar-day { padding:4px; }
 .presence-calendar-day > button:not(.presence-cell) { border:0; background:none; color:inherit; font:inherit; cursor:pointer; padding:2px; width:100%; }
 .presence-calendar-day strong,.presence-calendar-day small { display:block; }

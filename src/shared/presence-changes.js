@@ -18,13 +18,13 @@ function preview(state,input,now=new Date()) {
     for(let date=startDate;date<=endDate;date=d.addDays(date,1)) {
       if(!d.employeeExistsOnDate(person,date)&&date>=person.createdDate){skipped.push({employeeId:id,date});continue;}
       const before=presence.get(state,id,date);
-      if(action==='clear'&&!before)continue;
+      if(action==='clear'&&(!before||before.source==='calendar_presence'))continue;
       if(action==='clear'&&state.records[d.recordKey(id,date)]?.receiptId&&presence.absent.has(state.records[d.recordKey(id,date)].status)) {
         blockers.push(`${person.name}, ${date}: захищена історична відсутність. Змініть статус у «Наявності».`);continue;
       }
       cells.push({employeeId:id,name:person.name,date,before,after:action==='clear'?null:status});dates.push(date);
     }
-    if(action==='set'&&presence.absent.has(status)) {
+    if(action==='set'&&presence.dutyBlocked.has(status)) {
       const effects=staff.inspectStaffEffects(state,{kind:'presence',employeeId:id,status,reason},dates,now);
       duties.push(...effects.duties);effects.tasks.forEach(task=>tasks.set(task.id,task));blockers.push(...effects.blockers);
     }
