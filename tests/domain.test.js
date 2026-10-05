@@ -779,7 +779,7 @@ test('база попередньої версії автоматично отр
   oldState.schemaVersion = 1;
 
   const normalized = normalizeState(oldState, localDate(2026, 7, 20, 9, 0));
-  assert.equal(normalized.schemaVersion, 10);
+  assert.equal(normalized.schemaVersion, 11);
   assert.equal(normalized.employees[0].id, employee.id);
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);

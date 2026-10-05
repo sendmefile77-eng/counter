@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const tasks = require('./tasks');
 const planner = require('./planner');
+const presence = require('./presence');
 const METHOD = 'crypto.randomInt/Fisher-Yates';
 const clean = (value, max) => String(value || '').trim().slice(0, max);
 function audit(state, action, details, now) {
@@ -15,6 +16,8 @@ function createDraw(state, input, now = new Date(), randomInt = crypto.randomInt
   if (ids.length !== input.participantIds.length) throw new Error('Учасник не може тягнути два сірники в одному жеребкуванні.');
   const people = ids.map(id => state.employees.find(person => person.id === id));
   if (people.some(person => !person?.active)) throw new Error('У складі є недоступний або архівний працівник. Оновіть список учасників.');
+  const unavailable=people.filter(person=>presence.absent.has(presence.get(state,person.id,planner.dateKey(now))?.status));
+  if(unavailable.length)throw new Error(`За даними «Наявності» сьогодні відсутні: ${unavailable.map(person=>person.name).join(', ')}. Оновіть склад жеребкування.`);
   const count = Number(input.count);
   if (!Number.isInteger(count) || count < 1 || count > ids.length) throw new Error(`Оберіть від 1 до ${ids.length} виконавців.`);
   const previousDrawId = clean(input.previousDrawId,100), rerollReason = clean(input.rerollReason,500);

@@ -55,6 +55,8 @@ const work = require('../shared/work');
 const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
 const staffChanges = require('../shared/staff-changes');
+const presence = require('../shared/presence');
+const presenceChanges = require('../shared/presence-changes');
 const dutyReplacements = require('../shared/duty-replacements');
 const availability = require('../shared/availability');
 const runtimeOptions = require('./runtime-options');
@@ -299,6 +301,11 @@ function buildCsv(state) {
   const rows=[['Облік роботи · період',startDate,today],['Робота','Співробітник','Стан','Проєктів','Виконано','Початок','Орієнтир','Фактичне завершення','Примітка'],
     ...(state.workEntries||[]).map(entry=>[entry.title,state.employees.find(person=>person.id===entry.employeeId)?.name||entry.employeeId,
       {active:'У роботі',done:'Завершено',cancelled:'Скасовано'}[entry.status],entry.projectCount,entry.completedProjects,entry.startDate,entry.estimatedEndDate,entry.finishedDate,entry.note]),
+    [],['Наявність','Дата','Працівник','Статус','Підстава','Автор'],
+    ...[...new Set([...Object.keys(state.presenceRecords||{}),...Object.keys(state.records)])].sort().flatMap(key=>{
+      const [id,date]=key.split('|'),mark=presence.get(state,id,date);
+      return mark?[[date>today?'План наявності':'Позначка наявності',date,state.employees.find(person=>person.id===id)?.name||id,presence.labels[mark.status],mark.note,mark.actor||'']]:[];
+    }),
     [],['Чергування','Дата','Працівник','Стан'],...(state.dutySchedules||[]).flatMap(schedule=>Object.values((schedule.id===state.activeDutyScheduleId?state.duties:schedule.data).assignments)
       .flatMap(day=>(day.employeeIds||[]).map(id=>[schedule.name,day.date,state.employees.find(person=>person.id===id)?.name||id,day.realizedEmployeeIds?.includes(id)?'Реалізовано':'Заплановано']))),
     [],['Жеребкування','Дата','Учасник','Результат','Завдання','Пояснення'],...(state.draws||[]).flatMap(draw=>draw.participants.map(person=>[
@@ -371,6 +378,8 @@ async function applyWindowMode(mode) {
 }
 
 function registerIpc() {
+  ipcMain.handle('presence:preview', (_event,input) => presenceChanges.preview(store.state,input));
+  ipcMain.handle('presence:apply', (_event,input) => mutate('presence:apply',state=>presenceChanges.apply(state,input)));
   ipcMain.handle('work:create', (_event,input) => mutate('work:create',state=>work.create(state,input)));
   ipcMain.handle('work:update', (_event,{id,input}) => mutate('work:update',state=>work.update(state,id,input)));
   ipcMain.handle('work:progress', (_event,{id,input}) => mutate('work:progress',state=>work.progress(state,id,input)));
@@ -380,7 +389,7 @@ function registerIpc() {
     const employee=state.employees.find(person=>person.id===input.employeeId);
     if(!employee||!work.validDate(input.date)||!work.trackableOn(employee,input.date))throw new Error('Дата не входить до періоду роботи працівника.');
     const previous=state.records[`${input.employeeId}|${input.date}`];
-    if(previous&&work.absence.has(previous.status))throw new Error('Спочатку перевірте позначку відсутності через зміну доступності.');
+    if(work.absence.has(presence.get(state,input.employeeId,input.date)?.status))throw new Error('Спочатку перевірте позначку відсутності в «Наявності».');
     if(!work.isWorkday(state,input.employeeId,input.date))throw new Error('Спочатку зробіть цю дату робочим днем у табелі.');
     const legacyReceiptId=previous?.receiptId;
     if(legacyReceiptId){if(!String(input.note||'').trim())throw new Error('Поясніть виправлення позначки попереднього обліку.');previous.receiptId=null;}

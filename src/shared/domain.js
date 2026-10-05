@@ -1,12 +1,15 @@
 const crypto = require('node:crypto');
 const journal = require('./journal');
 const work = require('./work');
+const presence = require('./presence');
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
+  onsite: '#36bf76',
+  zkp: '#36a8b7',
   working: '#36a8b7',
   planned_work: '#668ac9',
   pending: '#586b85',
@@ -56,7 +59,7 @@ const STATUS = Object.freeze({
   HOLIDAY: 'holiday',
 });
 
-const STATUS_LABELS = Object.freeze({...Object.fromEntries(Object.values(STATUS).map(status=>[status,work.labels[status]])),planned_work:work.labels.planned_work});
+const STATUS_LABELS = Object.freeze({...presence.labels,...Object.fromEntries(Object.values(STATUS).map(status=>[status,work.labels[status]])),planned_work:work.labels.planned_work});
 
 const MANUAL_STATUSES = new Set([
   STATUS.WORKING,
@@ -334,6 +337,7 @@ function defaultState(now = new Date()) {
     records: {},
     receipts: [],
     workEntries: [],
+    presenceRecords: {},
     workdayOverrides: {},
     dutySchedules: [{
       id: 'primary',
@@ -476,6 +480,7 @@ function normalizeState(input, now = new Date()) {
   state.tasks = normalizeTasks(input.tasks, state, now);
   state.draws = normalizeDraws(input.draws);
   state.workEntries = work.normalize(input.workEntries, state);
+  state.presenceRecords = presence.normalize(input.presenceRecords, state);
   return state;
 }
 
@@ -968,7 +973,7 @@ function ensureAutomaticMisses(state, now = new Date()) {
     while (cursor <= closeThrough) {
       if (employeeExistsOnDate(employee, cursor) && isEmployeeWorkday(state, employee.id, cursor)) {
         const key = recordKey(employee.id, cursor);
-        if (!state.records[key] && !work.workForDay(state,employee.id,cursor,today).length) {
+        if (!state.records[key] && !presence.get(state,employee.id,cursor) && !work.workForDay(state,employee.id,cursor,today).length) {
           state.records[key] = {
             employeeId: employee.id,
             date: cursor,
@@ -1014,6 +1019,10 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   }
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
+  const explicit = state.presenceRecords?.[key];
+  if (explicit && presence.absent.has(explicit.status) && !presence.absent.has(status)) {
+    throw new Error('Працівник відсутній за даними «Наявності». Спочатку змініть наявність із поясненням.');
+  }
   if (previous?.receiptId) {
     throw new Error('День уже пов’язаний із запитом. Спочатку скасуйте зарахування.');
   }
@@ -1026,6 +1035,7 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
     note: String(note || '').trim(),
     receiptId: null,
   };
+  if (explicit && presence.absent.has(status)) presence.write(state,{employeeId,date,status,note},now);
   appendAudit(state, 'status_set', { employeeId, date, status }, now);
   return state.records[key];
 }
@@ -1047,6 +1057,7 @@ function setManualStatuses(state, { employeeId, startDate, endDate, status, note
   }
   if (!dates.length) throw new Error('У вибраному періоді немає робочих днів.');
   state.records = draft.records;
+  state.presenceRecords = draft.presenceRecords;
   state.audit = draft.audit;
   appendAudit(state, 'status_period_set', { employeeId, startDate, endDate, status, count: dates.length }, now);
   return { count: dates.length, dates };
@@ -1057,6 +1068,7 @@ function previewManualStatuses(state, input, now = new Date()) {
 }
 
 function clearManualRecord(state, employeeId, date, now = new Date()) {
+  if (state.presenceRecords?.[recordKey(employeeId,date)]) throw new Error('Цим днем керує «Наявність». Змініть або очистіть позначку в цьому розділі.');
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
   if (!previous) return false;
@@ -1113,11 +1125,11 @@ function journalBatchPlan(state, input, now = new Date()) {
       skipped.push({ ...item, reason: 'Вихідний — включення вихідних вимкнене.' });
       continue;
     }
-    if (action === 'status' && input.replaceExisting === false && previous && previous.status !== 'pending') {
+    if (action === 'status' && input.replaceExisting === false && (state.presenceRecords?.[key] || previous && previous.status !== 'pending')) {
       skipped.push({ ...item, reason: 'Уже має статус; заміну наявних позначок вимкнено.' });
       continue;
     }
-    if (action === 'clear' && (!previous || previous.source === 'automatic_close')) {
+    if (action === 'clear' && !state.presenceRecords?.[key] && (!previous || previous.source === 'automatic_close')) {
       skipped.push({ ...item, reason: previous ? 'Автоматичний пропуск: змініть статус, щоб виправити його.' : 'Ручної позначки немає.' });
       continue;
     }
@@ -1161,6 +1173,7 @@ function journalBatchPlan(state, input, now = new Date()) {
     cells: cells.map(({ employeeId, date }) => ({ employeeId, date,
       employee: getEmployee(state, employeeId), record: state.records[recordKey(employeeId, date)] || null,
       override: state.workdayOverrides[recordKey(employeeId, date)] || null,
+      presence: state.presenceRecords?.[recordKey(employeeId,date)] || null,
       duties: dutySchedules(state).map((schedule) => ({ id: schedule.id, ids: schedule.data.assignments[date]?.employeeIds || [] })),
     })), workEntries:(state.workEntries||[]).map(entry=>[entry.id,entry.revision]), workdays: state.settings.workdays,
     closeSettings: action === 'clear' ? { automaticClose: state.settings.automaticClose,
@@ -1182,6 +1195,7 @@ function applyJournalBatch(state, input, now = new Date()) {
     throw new Error('Немає клітинок, які можна змінити.');
   }
   state.records = plan.draft.records;
+  state.presenceRecords = plan.draft.presenceRecords;
   state.workdayOverrides = plan.draft.workdayOverrides;
   appendAudit(state, 'journal_batch_applied', { action: plan.action, status: input.status || null, note: plan.note,
     count: plan.result.count, cells: plan.result.changes.map(({ employeeId, date }) => ({ employeeId, date })),
@@ -1438,8 +1452,8 @@ function dutyRestriction(state, employeeId, date) {
   if (state.duties.aDays[recordKey(employeeId, addDays(date, 1))]) return 'before_a';
   if (state.duties.planningBlocks[key]) return 'planning_block';
   if (state.duties.unavailable[key]) return state.duties.unavailable[key].type;
-  const record = state.records[key];
-  if (record && DUTY_BLOCKING_RECORD_STATUSES.has(record.status)) return record.status;
+  const mark = presence.get(state,employeeId,date);
+  if (mark && presence.absent.has(mark.status)) return mark.status;
   return null;
 }
 

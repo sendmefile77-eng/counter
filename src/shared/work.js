@@ -1,17 +1,18 @@
 (function installWork(root, factory) {
-  const api = factory(typeof module === 'object' && module.exports ? require('node:crypto') : root.crypto);
+  const api = factory(typeof module === 'object' && module.exports ? require('node:crypto') : root.crypto,
+    typeof module === 'object' && module.exports ? require('./presence') : root.LadPresence);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root?.document) root.LadWork = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, function workFactory(crypto) {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function workFactory(crypto, presence) {
   const clone = value => JSON.parse(JSON.stringify(value));
-  const absence = new Set(['personal_permission','sick','vacation','day_off','holiday']);
+  const absence = presence.absent;
   const confirmed = new Set(['submitted','submitted_late','submitted_advance']);
-  const labels = {working:'У роботі',planned_work:'Запланована робота',submitted:'Відпрацьовано',
+  const labels = {...presence.labels,working:'У роботі',planned_work:'Запланована робота',submitted:'Відпрацьовано',
     submitted_late:'Роботу зараховано',submitted_advance:'Раніше зараховано',pending:'Без позначки',
     missed:'Роботу не позначено',other_tasks:'Інша робота',personal_permission:'Особисті справи',
     sick:'Лікарняний',vacation:'Відпустка',day_off:'Відгул',holiday:'Неробочий день',weekend:'Вихідний',outside:'Поза періодом роботи'};
   const metricLabels = {calendarWorkdays:'Робочі дні',workedDays:'Дні роботи',workingDays:'У роботі',confirmedDays:'Відпрацьовано',
-    otherTasks:'Інша робота',missed:'Роботу не позначено',pending:'Без позначки',absent:'Відсутність',
+    otherTasks:'Інша робота',onsiteDays:'На роботі',zkpDays:'Дні на ЗКП',missed:'Роботу не позначено',pending:'Без позначки',absent:'Відсутність',
     projectsStarted:'Призначено проєктів',projectsCompleted:'Проєкти у завершених роботах',coveragePercent:'Дні з обліком роботи',openProjects:'Проєктів залишилося зараз',dueForReview:'Перевірити строк зараз'};
   const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value+'T12:00:00Z')) && new Date(value+'T12:00:00Z').toISOString().slice(0,10) === value;
   const dateKey = (now = new Date()) => [now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');
@@ -35,6 +36,9 @@
       && (!entry.finishedDate||date<=entry.finishedDate));
   }
   function recordForDay(state,id,date,today=dateKey()) {
+    const mark=presence.get(state,id,date);
+    const person=state.employees.find(person=>person.id===id);
+    if(mark&&person&&trackableOn(person,date))return {...mark,receiptId:mark.source==='presence'?null:mark.receiptId||null};
     const existing=state.records[id+'|'+date];
     if(existing&&existing.source!=='automatic_close')return existing;
     const entries=workForDay(state,id,date,today);
@@ -52,7 +56,7 @@
     if(!validDate(start)||!Number.isInteger(count)||count<1||count>1000)throw Error('Орієнтир: від 1 до 1000 робочих днів.');
     let cursor=start,remaining=count;
     for(let inspected=0;inspected<3660;inspected++,cursor=addDays(cursor,1)) {
-      if(isWorkday(state,id,cursor)&&!absence.has(state.records[id+'|'+cursor]?.status)&&!--remaining)return cursor;
+      if(isWorkday(state,id,cursor)&&!absence.has(presence.get(state,id,cursor)?.status)&&!--remaining)return cursor;
     }
     throw Error('Не вдалося визначити орієнтовний строк.');
   }
@@ -113,6 +117,7 @@
     return entry;
   }
   function create(state,input,now=new Date()) {
+    if(absence.has(presence.get(state,input.employeeId,input.startDate)?.status))throw Error('На дату початку працівник відсутній. Перевірте «Наявність» або оберіть іншу дату.');
     const entry={...clean(state,input),id:crypto.randomUUID(),status:'active',completedProjects:0,finishedDate:null,createdAt:now.toISOString(),updatedAt:now.toISOString(),revision:0,history:[]};
     state.workEntries||=[];state.workEntries.push(entry);event(state,entry,'created',{title:entry.title,projectCount:entry.projectCount,estimatedEndDate:entry.estimatedEndDate},now);return entry;
   }
@@ -121,6 +126,7 @@
     if(entry.status!=='active')throw Error('Змінювати можна лише активну роботу.');
     const next=clean(state,input,entry),reason=String(input.reason||'').trim().slice(0,500);
     if((next.estimatedEndDate!==entry.estimatedEndDate||next.startDate!==entry.startDate||next.projectCount!==entry.projectCount)&&!reason)throw Error('Поясніть зміну строку або обсягу роботи.');
+    if(next.startDate!==entry.startDate&&absence.has(presence.get(state,entry.employeeId,next.startDate)?.status))throw Error('На нову дату початку працівник відсутній. Перевірте «Наявність» або оберіть іншу дату.');
     const changes=Object.fromEntries(Object.keys(next).filter(key=>next[key]!==entry[key]).map(key=>[key,{before:entry[key],after:next[key]}]));
     if(!Object.keys(changes).length)return entry;
     Object.assign(entry,next);event(state,entry,'updated',{changes,reason},now);return entry;
@@ -142,12 +148,13 @@
     entry.status=status;entry.finishedDate=finishedDate;if(status==='done')entry.completedProjects=entry.projectCount;
     event(state,entry,status,{finishedDate,completedProjects:entry.completedProjects,reason},now);return entry;
   }
-  function blank() {return Object.fromEntries(['calendarWorkdays','workedDays','workingDays','confirmedDays','otherTasks','missed','pending','absent','projectsStarted','projectsCompleted'].map(key=>[key,0]));}
+  function blank() {return Object.fromEntries(['calendarWorkdays','workedDays','workingDays','confirmedDays','onsiteDays','zkpDays','otherTasks','missed','pending','absent','projectsStarted','projectsCompleted'].map(key=>[key,0]));}
   function finalize(row) {const expected=row.calendarWorkdays-row.absent;row.coveragePercent=expected?Math.round(row.workedDays*1000/expected)/10:null;return row;}
   function addFact(row,fact) {
     row.calendarWorkdays++;
     if(confirmed.has(fact.status)){row.confirmedDays++;row.workedDays++;}
     if(fact.status==='working'){row.workingDays++;row.workedDays++;}
+    if(presence.working.has(fact.status)){row.workedDays++;row[fact.status==='zkp'?'zkpDays':'onsiteDays']++;}
     if(fact.status==='other_tasks'){row.otherTasks++;row.workedDays++;}
     if(absence.has(fact.status))row.absent++;
     if(fact.status==='pending')row.pending++;
@@ -183,7 +190,7 @@
     return result;
   }
   function csv(data,view='workers') {
-    const keys=['calendarWorkdays','workedDays','workingDays','confirmedDays','absent','missed','pending','projectsCompleted'];
+    const keys=['calendarWorkdays','workedDays','workingDays','confirmedDays','onsiteDays','zkpDays','absent','missed','pending','projectsCompleted'];
     const rows=view==='trend'?[['Від','До',...keys.map(key=>metricLabels[key])],...data.trend.map(row=>[row.from,row.to,...keys.map(key=>row[key])])]
       :view==='days'?[['Дата','Працівник','Статус','Робота'],...data.facts.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.name.localeCompare(b.name,'uk')).map(f=>[f.date,f.name,labels[f.status],f.note])]
       :[['Працівник',...keys.map(key=>metricLabels[key])],...data.rows.map(row=>[row.name,...keys.map(key=>row[key])])];

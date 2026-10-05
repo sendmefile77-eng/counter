@@ -4,9 +4,9 @@
   if (root?.document) root.CounterJournal = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this, function journalFactory(work) {
   const submitted = new Set(['submitted', 'submitted_late', 'submitted_advance']);
-  const absent = new Set(['personal_permission', 'sick', 'vacation', 'day_off', 'holiday']);
+  const absent = work.absence;
   const symbols = { pending: '·', submitted: '✓', submitted_late: '◷', submitted_advance: '↗',
-    working: 'Р', planned_work: 'П',
+    working: 'Р', planned_work: 'П', onsite:'Р', zkp:'ЗКП',
     missed: '×', other_tasks: 'ІЗ', personal_permission: 'ОС', sick: 'ЛК', vacation: 'ВП',
     day_off: 'ВГ', holiday: 'СВ', weekend: 'ВХ', outside: '—' };
 
@@ -49,13 +49,15 @@
         other: count((item) => item.date<=today&&item.status === 'other_tasks'), absent: count((item) => item.date<=today&&absent.has(item.status)),
         pending: count((item) => item.status === 'pending' && item.date <= today),
         working: count((item) => item.status === 'working' && item.date <= today),
-        worked: count((item) => item.date <= today && (submitted.has(item.status) || item.status === 'other_tasks' || item.status === 'working')),
+        onsite: count((item) => item.date <= today && item.status === 'onsite'),
+        zkp: count((item) => item.date <= today && item.status === 'zkp'),
+        worked: count((item) => item.date <= today && (submitted.has(item.status) || ['other_tasks','working','onsite','zkp'].includes(item.status))),
       } };
     });
     return { startDate, endDate, dates, rows, totals: rows.reduce((total, row) => {
       for (const [key, value] of Object.entries(row.totals)) total[key] = (total[key] || 0) + value;
       return total;
-    }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0, working: 0, worked: 0 }) };
+    }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0, working: 0, onsite: 0, zkp: 0, worked: 0 }) };
   }
 
   function rectangle(rows, dates, anchor, target) {

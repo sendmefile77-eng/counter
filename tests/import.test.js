@@ -15,7 +15,7 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   const handlers = new Map(), calls = [],trays=[],shortcuts=new Map();
   const app = new EventEmitter();
   Object.assign(app, { whenReady: () => Promise.resolve(), getPath: () => directory,
-    getAppPath: () => directory, getVersion: () => '0.15.0', isPackaged: false, quit() {calls.push({type:'quit'});} });
+    getAppPath: () => directory, getVersion: () => '0.16.0', isPackaged: false, quit() {calls.push({type:'quit'});} });
   class Window extends EventEmitter {
     constructor(options) { super(); this.bounds={x:0,y:0,width:options.width,height:options.height};this.visible=false;this.full=false; Window.instances.push(this); this.events=[]; this.topChanges=[]; this.onTop=true; this.minimized=false; this.sent=[];this.webContents = { send:(...args)=>this.sent.push(args), on() {} }; }
     loadFile() {} setAlwaysOnTop(value) { this.onTop=value; this.topChanges.push(value); } isAlwaysOnTop() { return this.onTop; } isDestroyed() { return false; } center() { this.events.push('center'); }
@@ -258,6 +258,28 @@ test('production mass availability IPC removes both selected crew members, retai
  const input={cells:ids.map(employeeId=>({employeeId,date})),action:'status',status:'sick',note:'Обидва повідомили про лікарняний',replaceExisting:true},before=fs.readFileSync(f.database,'utf8'),report=await f.call('journal:preview-batch',input);
  assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(report.tasks.length,1);assert.ok(report.duties.every(item=>item.after.length===0));await f.call('journal:apply-batch',{...input,expectedToken:report.token});const snapshot=await f.call('snapshot:get');assert.deepEqual(snapshot.duties.assignments[date].employeeIds,[]);assert.deepEqual(snapshot.tasks[0],task);assert.equal(snapshot.records[ids[0]+'|'+date].status,'sick');assert.equal(snapshot.records[ids[1]+'|'+date].status,'sick');
  await f.call('history:undo');assert.deepEqual(JSON.parse(fs.readFileSync(f.database,'utf8')),JSON.parse(before));
+});
+
+test('presence IPC persists a previewed ZKP, allows duty, blocks absent work and restores the whole batch with undo and import',async t=>{
+ const f=await fixture(t);await f.call('settings:update',{workdays:[0,1,2,3,4,5,6]});const state=await f.call('snapshot:get'),id=state.employees[0].id,date=domain.dateKeyFromDate();
+ const input={employeeIds:[id],startDate:date,status:'zkp',reason:'Працює в іншому офісі'},before=fs.readFileSync(f.database,'utf8');
+ const report=await f.call('presence:preview',input);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ await assert.rejects(async()=>f.call('presence:apply',{change:report.change,expectedToken:'bad'}),/змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ await f.call('presence:apply',{change:report.change,expectedToken:report.token});const saved=fs.readFileSync(f.database,'utf8');assert.equal(JSON.parse(saved).presenceRecords[id+'|'+date].status,'zkp');
+ const stats=await f.call('analytics:report',{startDate:date,endDate:date});assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.workedDays,1);
+ await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});await f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true});
+ const sick=await f.call('presence:preview',{...input,status:'sick',reason:'Повідомлення про лікарняний'});assert.equal(sick.duties.length,1);await f.call('presence:apply',{change:sick.change,expectedToken:sick.token});
+ assert.deepEqual((await f.call('snapshot:get')).duties.assignments[date].employeeIds,[]);
+ await assert.rejects(async()=>f.call('work:mark-day',{employeeId:id,date,status:'submitted'}),/відсутності/);
+ await assert.rejects(async()=>f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true}));
+ await f.call('history:undo');assert.equal((await f.call('snapshot:get')).presenceRecords[id+'|'+date].status,'zkp');assert.deepEqual((await f.call('snapshot:get')).duties.assignments[date].employeeIds,[id]);
+ await f.call('data:import',{name:'Наявність.json',content:saved});assert.equal((await f.call('snapshot:get')).presenceRecords[id+'|'+date].status,'zkp');
+});
+
+test('malformed presence cannot replace the live database during import',async t=>{
+ const f=await fixture(t),state=await f.call('snapshot:get'),id=state.employees[0].id,date=domain.dateKeyFromDate(),before=fs.readFileSync(f.database,'utf8');
+ state.presenceRecords={[id+'|'+date]:{employeeId:id,date,status:'unknown',note:'',actor:'Керівник',recordedAt:new Date().toISOString()}};
+ await assert.rejects(async()=>f.call('data:import',{name:'Зіпсована.json',content:JSON.stringify(state)}),/Наявність/);assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(f.calls.length,0);
 });
 
 

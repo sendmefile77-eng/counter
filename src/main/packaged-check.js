@@ -39,6 +39,12 @@ async function run(reportPath) {
       checks.push('production-ipc-atomic-swap-and-reason');
       await openDutyDayModal(scenario.date);if(!document.querySelector('.replacement-proof'))throw Error('Немає збереженого пояснення в UI.');closeModal();checks.push('saved-explanation-in-renderer');
       await api.undo();saved=await api.getSnapshot();if(saved.duties.assignments[scenario.date].employeeIds[0]!==scenario.employeeId)throw Error('Не скасовано обмін.');checks.push('production-ipc-undo');
+      const presence=await api.previewPresence({employeeIds:[scenario.employeeId],startDate:scenario.date,status:'zkp',reason:'Самоперевірка ЗКП'});
+      await api.applyPresence({change:presence.change,expectedToken:presence.token});saved=await api.getSnapshot();if(saved.presenceRecords[scenario.employeeId+'|'+scenario.date].status!=='zkp'||!saved.duties.assignments[scenario.date].employeeIds.includes(scenario.employeeId))throw Error('ЗКП змінив доступність для чергування.');
+      await navigateToTab('presence');if(!document.querySelector('.presence-table'))throw Error('Не відкрито «Наявність».');
+      const sick=await api.previewPresence({employeeIds:[scenario.employeeId],startDate:scenario.date,status:'sick',reason:'Самоперевірка пріоритету наявності'});if(!sick.duties.length||!sick.tasks.length)throw Error('Наявність не врахувала графік або завдання.');
+      await api.applyPresence({change:sick.change,expectedToken:sick.token});saved=await api.getSnapshot();if(saved.duties.assignments[scenario.date].employeeIds.includes(scenario.employeeId)||LadWork.recordForDay(saved,scenario.employeeId,scenario.date).status!=='sick')throw Error('Відсутність не стала головною позначкою.');
+      await api.undo();await api.undo();checks.push('presence-zkp-absence-priority-and-atomic-undo');
       const change=await api.previewStaffChange({employeeId:scenario.employeeId,startDate:scenario.date,status:'sick',reason:'Самоперевірка лікарняного'});if(change.tasks.length!==1)throw Error('Не знайдено зачеплене завдання.');
       await api.applyStaffChange({change:change.change,expectedToken:change.token});saved=await api.getSnapshot();if(!saved.consequences.issues.some(issue=>issue.kind==='vacancy'))throw Error('Не показано вільне місце.');await api.undo();checks.push('availability-and-consequences');
       const batch={cells:[{employeeId:scenario.employeeId,date:scenario.date}],action:'status',status:'vacation',note:'Самоперевірка масового табеля',includeWeekends:true,replaceExisting:true};

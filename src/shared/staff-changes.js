@@ -2,7 +2,8 @@ const crypto = require('node:crypto');
 const d = require('./domain');
 const planner = require('./planner');
 const replacements = require('./duty-replacements');
-const ABSENCES = new Set(['sick','vacation','day_off','personal_permission','holiday']);
+const presence = require('./presence');
+const ABSENCES = presence.absent;
 const RESTRICTIONS = new Set(['a','planning_block','off','vacation','sick','day_off','personal','other']);
 function cleanInput(state,input,now) {
   const kind = input.kind || 'status', employeeId = String(input.employeeId || ''), person = d.getEmployee(state,employeeId);
@@ -35,7 +36,7 @@ function inspectStaffEffects(state,change,dates,now=new Date()) {
       past:assignment.date<today }));
   });
   const tasks=(state.tasks || []).filter(task=>planner.active(task)&&task.assigneeIds.includes(person.id)
-    && (change.kind==='archive'||change.kind==='status'&&affectedDates.has(task.dueDate)
+    && (change.kind==='archive'||['status','presence'].includes(change.kind)&&affectedDates.has(task.dueDate)
       ||change.kind==='restriction'&&!['planning_block'].includes(change.type)&&markedDates.has(task.dueDate)))
     .map(task=>({id:task.id,title:task.title,dueDate:task.dueDate,dueTime:task.dueTime,priority:task.priority,status:task.status}));
   const blockers=[];
@@ -124,7 +125,7 @@ function getConsequences(state,input={},now=new Date()) {
     if(!inRange(task.dueDate)&&!archived&&!(allFuture&&task.dueDate<from))continue;
     const reasons=[];
     if(archived)reasons.push('Відповідальний у архіві; перевірте виконавця і строк.');
-    const status=state.records[d.recordKey(id,task.dueDate)]?.status;
+    const status=presence.get(state,id,task.dueDate)?.status;
     if(ABSENCES.has(status))reasons.push(`На день строку в табелі: ${d.STATUS_LABELS[status]}.`);
     const marks=d.dutySchedules(state).flatMap(schedule=>{
       const view=replacements.scheduleView(state,schedule.id), mark=view.duties.unavailable[d.recordKey(id,task.dueDate)];

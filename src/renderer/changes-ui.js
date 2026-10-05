@@ -80,7 +80,7 @@ async function handleChangesClick(event) {
   const target=event.target;
   if(target.closest('[data-replacement-clear-filters]')){effectsUi.replacementQuery='';effectsUi.replacementMode='all';effectsUi.replacementPage=0;renderReplacementModal();return true;}
   const change=target.closest('[data-staff-change]');
-  if(change){openStaffChange({employeeId:change.dataset.staffChange || undefined,startDate:change.dataset.staffDate || undefined});return true;}
+  if(change){openPresenceForm({status:'sick',employeeId:change.dataset.staffChange || undefined,startDate:change.dataset.staffDate || undefined});return true;}
   const search=target.closest('[data-find-replacement]');
   if(search){await openReplacementSearch({date:search.dataset.findReplacement,scheduleId:search.dataset.replacementSchedule || snapshot.activeDutyScheduleId,employeeId:search.dataset.replacementEmployee});return true;}
   const day=target.closest('[data-effect-duty-day]');
