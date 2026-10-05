@@ -1,7 +1,7 @@
 const STATUS_LABELS = LadWork.labels;
 
 const STATUS_COLORS = {
-  onsite:'#36bf76',zkp:'#36a8b7',
+  onsite:'#36bf76',zkp:'#36a8b7',training_online:'#6887d8',training_academy:'#b383d9',
   working: '#36a8b7', planned_work: '#668ac9',
   pending: '#586b85',
   submitted: '#36bf76',
@@ -17,7 +17,7 @@ const STATUS_COLORS = {
 };
 
 const STATUS_SYMBOLS = {
-  onsite:'Р',zkp:'ЗКП',working:'Р', planned_work:'П',
+  onsite:'Р',zkp:'ЗКП',training_online:'НО',training_academy:'НА',working:'Р', planned_work:'П',
   pending: '·',
   submitted: '✓',
   submitted_late: '◷',
@@ -350,6 +350,7 @@ function applyAppearance() {
 }
 
 function renderShell({ preserveDrafts = false } = {}) {
+  closePresenceContext();
   const pageDrafts = preserveDrafts ? rememberPageDrafts() : [];
   rememberScrollPositions();
   applyAppearance();
@@ -668,7 +669,8 @@ function dutyCell(employee, date) {
     day_off: 'ВГ',
     holiday: 'В',
   };
-  if (['onsite','zkp'].includes(record?.status)) return {symbol:record.status==='zkp'?'ЗКП':'Р',className:'duty-presence',title:`Наявність: ${STATUS_LABELS[record.status]}. Чергування дозволено за наявністю.`};
+  const availability=presenceMark(employee.id,date);
+  if (availability&&!LadPresence.absent.has(availability.status)) return {symbol:LadPresence.symbols[availability.status],className:'duty-presence',title:`Наявність: ${LadPresence.labels[availability.status]}. Чергування дозволено за наявністю.`};
   if (linkedMarks[record?.status]) {
     return { symbol: linkedMarks[record.status], className: 'duty-unavailable', title: STATUS_LABELS[record.status] };
   }
@@ -1265,6 +1267,7 @@ function queueWidgetWindowMode(mode) {
 }
 
 function openModal(content, wide = false) {
+  closePresenceContext(true);
   finishDrawReveal({close:false,focus:false});
   interfaceDialogRevision += 1;
   ui.profileRevision += 1;
@@ -1819,14 +1822,14 @@ function openFutureApproval(receipt) {
 
 function openStatusModal(employeeId, date) {
   const employee=employeeById(employeeId),record=recordFor(employeeId,date),override=hasWorkdayOverride(employeeId,date);
-  const weekend=!configuredWorkday(date),editable=!weekend||override,absent=LadPresence.absent.has(presenceMark(employeeId,date)?.status);
+  const weekend=!configuredWorkday(date),editable=!weekend||override,mark=presenceMark(employeeId,date),absent=LadPresence.absent.has(mark?.status)||LadPresence.learning.has(mark?.status),zkpCanAccept=mark?.status!=='zkp'||date<localDateKey()&&presenceMark(employeeId,localDateKey())?.status==='onsite';
   openModal(`<header class="modal-head"><div><h2>Статус робочого дня</h2><p>${h(employee?.name||'')} · ${h(formatDate(date))}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Поточний статус: ${statusBadge(statusFor(employeeId,date))}</p>
   ${weekend&&!override?`<p class="confirm-box">Це неробочий день календаря. Якщо людина працювала, спочатку зробіть його робочим.</p><button class="button primary" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>`:''}
   ${editable?`<label class="field"><span>Пояснення нової позначки</span><textarea id="status-note" maxlength="500">${h(record?.source==='work'?'':record?.note||'')}</textarea></label>${record?.receiptId?'<p class="confirm-box">Позначку перенесено з попереднього обліку. Для ручного виправлення роботи вкажіть пояснення; попередня база залишається в резервній копії.</p>':''}<div class="status-grid">
-  ${date<=localDateKey()?`<button class="status-choice" data-work-mark="working" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent?'disabled':''}><strong>У роботі</strong><span>Робота триває цього дня</span></button><button class="status-choice submitted-choice" data-work-mark="submitted" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent?'disabled':''}><strong>Відпрацьовано</strong><span>Підтверджена робота за день</span></button>`:''}
+  ${date<=localDateKey()?`<button class="status-choice" data-work-mark="working" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent?'disabled':''}><strong>У роботі</strong><span>Робота триває цього дня</span></button><button class="status-choice submitted-choice" data-work-mark="submitted" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent||!zkpCanAccept?'disabled':''}><strong>Відпрацьовано</strong><span>Підтверджена робота за день</span></button>`:''}
   ${[['missed','Роботу не позначено'],['other_tasks','Інша робота'],['personal_permission','Особисті справи'],['sick','Лікарняний'],['vacation','Відпустка'],['day_off','Відгул'],['holiday','Неробочий день']].map(([status,label])=>`<button class="status-choice" data-set-status="${status}" data-employee-id="${h(employeeId)}" data-date="${date}" ${record?.receiptId||absent&&['missed','other_tasks'].includes(status)?'disabled':''}><strong>${label}</strong><span>${['missed','other_tasks'].includes(status)?'Позначка табеля':'З перевіркою чергувань і завдань'}</span></button>`).join('')}</div>`:''}
   <button class="button" data-presence-edit="${h(employeeId)}" data-presence-cell-date="${date}">Наявність: на роботі / ЗКП / відсутність</button>
-  ${record?.source==='presence'?'<p class="confirm-box">Цим днем керує «Наявність». Для зміни доступності відкрийте її позначку.</p>':''}
+  ${mark?.status==='zkp'?`<p class="confirm-box">ЗКП не зараховує роботу автоматично. Після повернення позначте «На роботі» на дату повернення й підтвердьте отриману роботу за вибрані дні.</p><button class="button" data-work-accept="${h(employeeId)}">Прийняти роботу за дні ЗКП</button>`:''}${record?.source==='presence'?'<p class="confirm-box">Цим днем керує «Наявність». Для зміни доступності відкрийте її позначку.</p>':''}
   ${record?.source==='work'?`<p class="muted">День пов’язано з роботою: ${h(record.note)}. Щоб змінити весь період, відкрийте відповідну роботу.</p>`:''}</div><footer class="modal-foot">${weekend&&override&&!record?.receiptId?`<button class="button danger" data-clear-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Повернути вихідний</button>`:''}${record&&!['work','presence'].includes(record.source)&&!record.receiptId?`<button class="button danger" data-clear-status data-employee-id="${h(employeeId)}" data-date="${date}">Очистити ручну позначку</button>`:''}<button class="button" data-work-new="${h(employeeId)}">+ Робота</button><button class="button" data-close-modal>Закрити</button></footer>`,true);
 }
 
@@ -2473,6 +2476,7 @@ window.addEventListener('pointerup', async (event) => {
 });
 
 appRoot.addEventListener('contextmenu', (event) => {
+  if(handlePresenceContextMenu(event))return;
   const journalCell = event.target.closest('[data-cell-employee]');
   if (journalCell) {
     event.preventDefault();
@@ -2492,6 +2496,7 @@ appRoot.addEventListener('contextmenu', (event) => {
 });
 
 appRoot.addEventListener('keydown', (event) => {
+  if(handlePresenceContextKey(event))return;
   if (ui.tab === 'journal' && event.key === 'Escape' && ui.journalSelected.length) {
     clearJournalSelection(); renderShell(); return;
   }

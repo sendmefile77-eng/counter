@@ -6,7 +6,7 @@
   const submitted = new Set(['submitted', 'submitted_late', 'submitted_advance']);
   const absent = work.absence;
   const symbols = { pending: '·', submitted: '✓', submitted_late: '◷', submitted_advance: '↗',
-    working: 'Р', planned_work: 'П', onsite:'Р', zkp:'ЗКП',
+    working: 'Р', planned_work: 'П', onsite:'Р', zkp:'ЗКП',training_online:'НО',training_academy:'НА',
     missed: '×', other_tasks: 'ІЗ', personal_permission: 'ОС', sick: 'ЛК', vacation: 'ВП',
     day_off: 'ВГ', holiday: 'СВ', weekend: 'ВХ', outside: '—' };
 
@@ -33,7 +33,8 @@
     const working = (state.settings.workdays || [1, 2, 3, 4, 5]).includes(new Date(`${date}T12:00:00Z`).getUTCDay()) || override;
     const outside = !activeOn(employee, date) && !record && !override;
     const status = outside ? 'outside' : !working ? 'weekend' : record?.status || 'pending';
-    return { employeeId: employee.id, date, status, symbol: override && status === 'pending' ? 'РД' : symbols[status] || '·',
+    const presenceStatus=record?.presenceStatus||'';
+    return { employeeId: employee.id, date, status, presenceStatus, symbol: presenceStatus==='zkp'&&submitted.has(status)?'ЗКП✓':override && status === 'pending' ? 'РД' : symbols[status] || '·',
       working, outside, override, protected: Boolean(record?.receiptId), source: record?.source || '',
       note: record?.note || '', documentRef: record?.documentRef || '' };
   }
@@ -49,15 +50,16 @@
         other: count((item) => item.date<=today&&item.status === 'other_tasks'), absent: count((item) => item.date<=today&&absent.has(item.status)),
         pending: count((item) => item.status === 'pending' && item.date <= today),
         working: count((item) => item.status === 'working' && item.date <= today),
-        onsite: count((item) => item.date <= today && item.status === 'onsite'),
-        zkp: count((item) => item.date <= today && item.status === 'zkp'),
-        worked: count((item) => item.date <= today && (submitted.has(item.status) || ['other_tasks','working','onsite','zkp'].includes(item.status))),
+        onsite: count((item) => item.date <= today && (item.presenceStatus||item.status) === 'onsite'),
+        zkp: count((item) => item.date <= today && (item.presenceStatus||item.status) === 'zkp'),
+        training: count((item) => item.date <= today && ['training_online','training_academy'].includes(item.status)),
+        worked: count((item) => item.date <= today && (submitted.has(item.status) || ['other_tasks','working','onsite'].includes(item.status))),
       } };
     });
     return { startDate, endDate, dates, rows, totals: rows.reduce((total, row) => {
       for (const [key, value] of Object.entries(row.totals)) total[key] = (total[key] || 0) + value;
       return total;
-    }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0, working: 0, onsite: 0, zkp: 0, worked: 0 }) };
+    }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0, working: 0, onsite: 0, zkp: 0, training:0, worked: 0 }) };
   }
 
   function rectangle(rows, dates, anchor, target) {

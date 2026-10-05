@@ -266,7 +266,7 @@ test('presence IPC persists a previewed ZKP, allows duty, blocks absent work and
  const report=await f.call('presence:preview',input);assert.equal(fs.readFileSync(f.database,'utf8'),before);
  await assert.rejects(async()=>f.call('presence:apply',{change:report.change,expectedToken:'bad'}),/змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
  await f.call('presence:apply',{change:report.change,expectedToken:report.token});const saved=fs.readFileSync(f.database,'utf8');assert.equal(JSON.parse(saved).presenceRecords[id+'|'+date].status,'zkp');
- const stats=await f.call('analytics:report',{startDate:date,endDate:date});assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.workedDays,1);
+ const stats=await f.call('analytics:report',{startDate:date,endDate:date});assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.workedDays,0);
  await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});await f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true});
  const sick=await f.call('presence:preview',{...input,status:'sick',reason:'Повідомлення про лікарняний'});assert.equal(sick.duties.length,1);await f.call('presence:apply',{change:sick.change,expectedToken:sick.token});
  assert.deepEqual((await f.call('snapshot:get')).duties.assignments[date].employeeIds,[]);
@@ -280,6 +280,24 @@ test('malformed presence cannot replace the live database during import',async t
  const f=await fixture(t),state=await f.call('snapshot:get'),id=state.employees[0].id,date=domain.dateKeyFromDate(),before=fs.readFileSync(f.database,'utf8');
  state.presenceRecords={[id+'|'+date]:{employeeId:id,date,status:'unknown',note:'',actor:'Керівник',recordedAt:new Date().toISOString()}};
  await assert.rejects(async()=>f.call('data:import',{name:'Зіпсована.json',content:JSON.stringify(state)}),/Наявність/);assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(f.calls.length,0);
+});
+
+test('office-return acceptance stores selected ZKP days atomically, preserves presence and supports undo and import',async t=>{
+ const f=await fixture(t);await f.call('settings:update',{workdays:[0,1,2,3,4,5,6]});
+ const snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,today=domain.dateKeyFromDate(),past=domain.addDays(today,-1);
+ const presenceInput={employeeIds:[id],startDate:past,endDate:today,status:'zkp',reason:'Робота в іншому офісі'};
+ let preview=await f.call('presence:preview',presenceInput);await f.call('presence:apply',{change:preview.change,expectedToken:preview.token});
+ const untouched=fs.readFileSync(f.database,'utf8');
+ await assert.rejects(async()=>f.call('work:mark-day',{employeeId:id,date:past,status:'submitted',note:'Приніс роботу'}),/повернення/);assert.equal(fs.readFileSync(f.database,'utf8'),untouched);
+ preview=await f.call('presence:preview',{...presenceInput,startDate:today,status:'onsite',reason:'Повернувся в офіс'});await f.call('presence:apply',{change:preview.change,expectedToken:preview.token});
+ const before=fs.readFileSync(f.database,'utf8'),input={cells:[{employeeId:id,date:past},{employeeId:id,date:today}],action:'status',status:'submitted',note:'Отримано роботу за ЗКП та сьогодні',replaceExisting:true};
+ const plan=await f.call('journal:preview-batch',input);assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(plan.canApply,true);
+ await assert.rejects(async()=>f.call('journal:apply-batch',{...input,expectedToken:'bad'}),/змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ await f.call('journal:apply-batch',{...input,expectedToken:plan.token});const saved=fs.readFileSync(f.database,'utf8');
+ const state=await f.call('snapshot:get');assert.equal(state.presenceRecords[id+'|'+past].status,'zkp');assert.equal(state.records[id+'|'+past].status,'submitted');
+ const stats=await f.call('analytics:report',{startDate:past,endDate:today,employeeIds:[id]});assert.equal(stats.total.confirmedDays,2);assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.zkpPendingDays,0);
+ await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ await f.call('data:import',{name:'Підтвердження ЗКП.json',content:saved});const imported=await f.call('analytics:report',{startDate:past,endDate:today,employeeIds:[id]});assert.equal(imported.total.confirmedDays,2);assert.equal(imported.total.zkpDays,1);
 });
 
 

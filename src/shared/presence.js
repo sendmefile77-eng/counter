@@ -4,10 +4,12 @@
   if (root?.document) root.LadPresence = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this, function presenceFactory() {
   const labels = Object.freeze({onsite:'На роботі',zkp:'ЗКП',vacation:'Відпустка',sick:'Лікарняний',
-    day_off:'Відгул',personal_permission:'Особисті справи',holiday:'Неробочий день'});
+    day_off:'Відгул',personal_permission:'Особисті справи',holiday:'Неробочий день',
+    training_online:'Навчання онлайн',training_academy:'Навчання Академія'});
   const absent = new Set(['vacation','sick','day_off','personal_permission','holiday']);
   const working = new Set(['onsite','zkp']);
-  const symbols = {onsite:'Р',zkp:'ЗКП',vacation:'ВП',sick:'ЛК',day_off:'ВГ',personal_permission:'ОС',holiday:'СВ'};
+  const learning = new Set(['training_online','training_academy']);
+  const symbols = {onsite:'Р',zkp:'ЗКП',vacation:'ВП',sick:'ЛК',day_off:'ВГ',personal_permission:'ОС',holiday:'СВ',training_online:'НО',training_academy:'НА'};
   const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value+'T12:00:00Z'))
     && new Date(value+'T12:00:00Z').toISOString().slice(0,10) === value;
   const key = (id,date) => id+'|'+date;
@@ -43,5 +45,5 @@
     const old=state.records?.[key(id,date)];
     if(old&&absent.has(old.status)&&!old.receiptId)delete state.records[key(id,date)];
   }
-  return {labels,absent,working,symbols,validDate,key,get,normalize,write,clear};
+  return {labels,absent,working,learning,symbols,validDate,key,get,normalize,write,clear};
 }));

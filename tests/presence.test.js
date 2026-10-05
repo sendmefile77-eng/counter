@@ -16,12 +16,12 @@ test('presence absence overrides active work, manual facts and automatic misses 
  assert.throws(()=>work.create(state,{employeeId:person.id,title:'Нова робота',projectCount:1,startDate:'2026-10-01',estimatedEndDate:'2026-10-09'},now),/відсутній/);
  }
 });
-test('onsite and ZKP count as working days and ZKP remains eligible for every duty assignment path',()=>{
+test('onsite counts as a presence workday but ZKP awaits acceptance and remains eligible for duty',()=>{
  const {state,people}=fixture(),person=people[0];apply(state,person,'onsite',{startDate:'2026-10-01'});apply(state,person,'zkp',{startDate:'2026-10-02'});
  apply(state,person,'zkp');assert.equal(d.dutyRestriction(state,person.id,date),null);
  d.setDutyAssignment(state,{date,employeeIds:[person.id],singleApproved:true},now);assert.ok(state.duties.assignments[date].employeeIds.includes(person.id));
- const report=work.report(state,{startDate:'2026-10-01',endDate:date,employeeIds:[person.id]},now);assert.equal(report.total.workedDays,2);assert.equal(report.total.onsiteDays,1);assert.equal(report.total.zkpDays,1);assert.equal(report.total.absent,0);
- const tab=journal.report(state,{startDate:'2026-10-01',endDate:'2026-10-02',employeeIds:[person.id]},'2026-10-05');assert.equal(tab.totals.worked,2);assert.equal(tab.rows[0].cells[1].symbol,'ЗКП');assert.match(work.csv(report),/Дні на ЗКП/);
+ const report=work.report(state,{startDate:'2026-10-01',endDate:date,employeeIds:[person.id]},now);assert.equal(report.total.workedDays,1);assert.equal(report.total.onsiteDays,1);assert.equal(report.total.zkpDays,1);assert.equal(report.total.absent,0);
+ const tab=journal.report(state,{startDate:'2026-10-01',endDate:'2026-10-02',employeeIds:[person.id]},'2026-10-05');assert.equal(tab.totals.worked,1);assert.equal(tab.rows[0].cells[1].symbol,'ЗКП');assert.match(work.csv(report),/Дні на ЗКП/);
  apply(state,person,'zkp',{startDate:'2026-10-12'});const generated=d.generateDutySchedule(state,{startDate:'2026-10-12',endDate:'2026-10-12'},now);assert.ok(generated);
 });
 test('all absence statuses block generator, manual assignment, toggle and replacement candidates, including weekends',()=>{
@@ -80,4 +80,44 @@ test('presence validation rejects malformed backups and input, and records only 
  assert.throws(()=>changes.preview(state,{employeeIds:'bad'},now));assert.throws(()=>changes.preview(state,{employeeId:people[0].id,startDate:'2026-02-30',status:'zkp',reason:'офіс'},now));
  assert.throws(()=>changes.preview(state,{employeeId:people[0].id,startDate:date,status:'zkp'},now),/пояснення/);
  d.archiveEmployee(state,people[0].id,now);assert.equal(work.statusForDay(state,people[0].id,date),'outside');const report=changes.preview(state,{employeeId:people[0].id,startDate:'2026-10-02',endDate:date,status:'vacation',reason:'Історична позначка'},now);assert.equal(report.count,3);assert.equal(report.skipped.length,4);
+});
+
+test('ZKP requires separate acceptance on a later office day, survives reload and clears independently of presence',()=>{
+ const {state,people}=fixture(),person=people[0],days=['2026-10-01','2026-10-02'];
+ const entry=work.create(state,{employeeId:person.id,title:'Робота на ЗКП',projectCount:2,startDate:days[0],estimatedEndDate:date},now);
+ for(const day of days)apply(state,person,'zkp',{startDate:day});
+ work.finish(state,entry.id,{status:'done',finishedDate:'2026-10-05',expectedRevision:entry.revision},now);
+ let report=work.report(state,{startDate:days[0],endDate:days[1],employeeIds:[person.id]},now);
+ assert.equal(report.total.workedDays,0);assert.equal(report.total.confirmedDays,0);assert.equal(report.total.zkpPendingDays,2);
+ const before=d.clone(state);
+ assert.throws(()=>d.setManualStatus(state,{employeeId:person.id,date:days[0],status:'submitted',note:'Отримано роботу'},new Date(2026,9,1,15)),/повернення/);assert.deepEqual(state,before);
+ assert.throws(()=>d.setManualStatus(state,{employeeId:person.id,date:days[0],status:'submitted',note:'Отримано роботу'},now),/повернення/);assert.deepEqual(state,before);
+ apply(state,person,'onsite',{startDate:'2026-10-05'});
+ assert.throws(()=>d.setManualStatus(state,{employeeId:person.id,date:days[0],status:'submitted'},now),/пояснення/);
+ const input={cells:[{employeeId:person.id,date:days[0]},{employeeId:person.id,date:'2026-10-05'}],action:'status',status:'submitted',note:'Повернувся й приніс роботу за 1 та 5 жовтня',replaceExisting:true};
+ const preview=d.previewJournalBatch(state,input,now);assert.equal(preview.canApply,true);assert.equal(preview.changes.length,2);
+ d.applyJournalBatch(state,{...input,expectedToken:preview.token},now);
+ report=work.report(state,{startDate:days[0],endDate:'2026-10-05',employeeIds:[person.id]},now);
+ assert.equal(report.total.confirmedDays,2);assert.equal(report.total.zkpDays,2);assert.equal(report.total.zkpPendingDays,1);assert.equal(report.total.workedDays,2);
+ assert.equal(p.get(state,person.id,days[0]).status,'zkp');assert.equal(work.statusForDay(state,person.id,days[0]),'submitted');
+ assert.equal(journal.report(state,{startDate:days[0],endDate:days[1],employeeIds:[person.id]},'2026-10-05').rows[0].cells[0].symbol,'ЗКП✓');
+ assert.match(work.csv(report,'days'),/ЗКП · роботу зараховано/);assert.equal(state.audit.at(-1).details.actor,'Керівник');
+ const reload=d.normalizeState(d.clone(state),now);assert.deepEqual(work.report(reload,report.filter,now).total,report.total);
+ d.clearManualRecord(reload,person.id,days[0],now);assert.equal(p.get(reload,person.id,days[0]).status,'zkp');assert.equal(work.statusForDay(reload,person.id,days[0]),'zkp');
+ report=work.report(reload,{startDate:days[0],endDate:days[1],employeeIds:[person.id]},now);assert.equal(report.total.workedDays,0);assert.equal(report.total.zkpPendingDays,2);
+});
+
+test('both training statuses are distinct from accepted work, permit duty and draws and never become misses',()=>{
+ const {state,people}=fixture(),person=people[0];
+ for(const [i,status] of [...p.learning].entries()){
+  const day='2026-10-0'+(i+1);apply(state,person,status,{startDate:day});
+  assert.equal(d.dutyRestriction(state,person.id,day),null);assert.equal(work.statusForDay(state,person.id,day),status);
+  apply(state,person,status);d.setDutyAssignment(state,{date,employeeIds:[person.id],singleApproved:true},now);
+  apply(state,person,status,{startDate:'2026-10-05'});assert.ok(draws.createDraw(state,{title:'Навчання не заважає чергуванню',participantIds:[person.id],count:1},now));
+ }
+ state.settings.automaticClose=true;d.ensureAutomaticMisses(state,new Date(2026,9,5,20));
+ const report=work.report(state,{startDate:'2026-10-01',endDate:'2026-10-02',employeeIds:[person.id]},now);
+ assert.equal(report.total.trainingDays,2);assert.equal(report.total.workedDays,0);assert.equal(report.total.confirmedDays,0);assert.equal(report.total.missed,0);assert.equal(report.total.coveragePercent,null);
+ const tab=journal.report(state,{startDate:'2026-10-01',endDate:'2026-10-02',employeeIds:[person.id]},'2026-10-05');assert.deepEqual(tab.rows[0].cells.map(cell=>cell.symbol),['НО','НА']);
+ const reload=d.normalizeState(d.clone(state),now);assert.deepEqual(reload.presenceRecords,state.presenceRecords);assert.equal(work.report(reload,report.filter,now).total.trainingDays,2);
 });

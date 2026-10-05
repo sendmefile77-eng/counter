@@ -7,12 +7,12 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const absence = presence.absent;
   const confirmed = new Set(['submitted','submitted_late','submitted_advance']);
-  const labels = {...presence.labels,working:'У роботі',planned_work:'Запланована робота',submitted:'Відпрацьовано',
+  const labels = {...presence.labels,zkp:'ЗКП · очікує здачі роботи',working:'У роботі',planned_work:'Запланована робота',submitted:'Відпрацьовано',
     submitted_late:'Роботу зараховано',submitted_advance:'Раніше зараховано',pending:'Без позначки',
     missed:'Роботу не позначено',other_tasks:'Інша робота',personal_permission:'Особисті справи',
     sick:'Лікарняний',vacation:'Відпустка',day_off:'Відгул',holiday:'Неробочий день',weekend:'Вихідний',outside:'Поза періодом роботи'};
   const metricLabels = {calendarWorkdays:'Робочі дні',workedDays:'Дні роботи',workingDays:'У роботі',confirmedDays:'Відпрацьовано',
-    otherTasks:'Інша робота',onsiteDays:'На роботі',zkpDays:'Дні на ЗКП',missed:'Роботу не позначено',pending:'Без позначки',absent:'Відсутність',
+    otherTasks:'Інша робота',onsiteDays:'На роботі',zkpDays:'Дні на ЗКП',zkpPendingDays:'ЗКП · очікує здачі',trainingDays:'Дні навчання',missed:'Роботу не позначено',pending:'Без позначки',absent:'Відсутність',
     projectsStarted:'Призначено проєктів',projectsCompleted:'Проєкти у завершених роботах',coveragePercent:'Дні з обліком роботи',openProjects:'Проєктів залишилося зараз',dueForReview:'Перевірити строк зараз'};
   const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value+'T12:00:00Z')) && new Date(value+'T12:00:00Z').toISOString().slice(0,10) === value;
   const dateKey = (now = new Date()) => [now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');
@@ -38,8 +38,14 @@
   function recordForDay(state,id,date,today=dateKey()) {
     const mark=presence.get(state,id,date);
     const person=state.employees.find(person=>person.id===id);
-    if(mark&&person&&trackableOn(person,date))return {...mark,receiptId:mark.source==='presence'?null:mark.receiptId||null};
     const existing=state.records[id+'|'+date];
+    if(mark&&person&&trackableOn(person,date)) {
+      const accepted=confirmed.has(existing?.status)&&date<=today;
+      const acceptedOn=existing?.recordedAt?dateKey(new Date(existing.recordedAt)):null;
+      if(accepted&&(mark.status==='onsite'||mark.status==='zkp'&&acceptedOn>date&&acceptedOn<=today))
+        return {...existing,presenceStatus:mark.status,presenceNote:mark.note};
+      return {...mark,presenceStatus:mark.status,receiptId:mark.source==='presence'?null:mark.receiptId||null};
+    }
     if(existing&&existing.source!=='automatic_close')return existing;
     const entries=workForDay(state,id,date,today);
     if(!entries.length)return existing||null;
@@ -148,13 +154,16 @@
     entry.status=status;entry.finishedDate=finishedDate;if(status==='done')entry.completedProjects=entry.projectCount;
     event(state,entry,status,{finishedDate,completedProjects:entry.completedProjects,reason},now);return entry;
   }
-  function blank() {return Object.fromEntries(['calendarWorkdays','workedDays','workingDays','confirmedDays','onsiteDays','zkpDays','otherTasks','missed','pending','absent','projectsStarted','projectsCompleted'].map(key=>[key,0]));}
-  function finalize(row) {const expected=row.calendarWorkdays-row.absent;row.coveragePercent=expected?Math.round(row.workedDays*1000/expected)/10:null;return row;}
+  function blank() {return Object.fromEntries(['calendarWorkdays','workedDays','workingDays','confirmedDays','onsiteDays','zkpDays','zkpPendingDays','trainingDays','otherTasks','missed','pending','absent','projectsStarted','projectsCompleted'].map(key=>[key,0]));}
+  function finalize(row) {const expected=row.calendarWorkdays-row.absent-row.trainingDays;row.coveragePercent=expected?Math.round(row.workedDays*1000/expected)/10:null;return row;}
   function addFact(row,fact) {
     row.calendarWorkdays++;
     if(confirmed.has(fact.status)){row.confirmedDays++;row.workedDays++;}
     if(fact.status==='working'){row.workingDays++;row.workedDays++;}
-    if(presence.working.has(fact.status)){row.workedDays++;row[fact.status==='zkp'?'zkpDays':'onsiteDays']++;}
+    if(fact.status==='onsite')row.workedDays++;
+    if((fact.presenceStatus||fact.status)==='onsite')row.onsiteDays++;
+    if((fact.presenceStatus||fact.status)==='zkp'){row.zkpDays++;if(!confirmed.has(fact.status))row.zkpPendingDays++;}
+    if(presence.learning.has(fact.status))row.trainingDays++;
     if(fact.status==='other_tasks'){row.otherTasks++;row.workedDays++;}
     if(absence.has(fact.status))row.absent++;
     if(fact.status==='pending')row.pending++;
@@ -168,7 +177,7 @@
     const actualDates=allDates.filter(date=>date<=today),facts=[];
     const rows=people.map(person=>{
       const row={employeeId:person.id,name:person.name,active:person.active,...blank()};
-      for(const date of actualDates){const status=statusForDay(state,person.id,date,today);if(['weekend','outside'].includes(status))continue;const record=recordForDay(state,person.id,date,today);const fact={employeeId:person.id,name:person.name,date,status,note:record?.note||'',source:record?.source||'',workEntryIds:record?.workEntryIds||[]};facts.push(fact);addFact(row,fact);}
+      for(const date of actualDates){const status=statusForDay(state,person.id,date,today);if(['weekend','outside'].includes(status))continue;const record=recordForDay(state,person.id,date,today);const fact={employeeId:person.id,name:person.name,date,status,presenceStatus:record?.presenceStatus||'',note:record?.note||'',source:record?.source||'',recordedAt:record?.recordedAt||'',workEntryIds:record?.workEntryIds||[]};facts.push(fact);addFact(row,fact);}
       const entries=(state.workEntries||[]).filter(entry=>entry.employeeId===person.id);
       for(const entry of entries){if(entry.startDate>=filter.startDate&&entry.startDate<=filter.endDate&&entry.startDate<=today)row.projectsStarted+=entry.projectCount;if(entry.status==='done'&&entry.finishedDate>=filter.startDate&&entry.finishedDate<=filter.endDate&&entry.finishedDate<=today)row.projectsCompleted+=entry.projectCount;}
       row.openProjects=entries.filter(entry=>entry.status==='active'&&entry.startDate<=today).reduce((sum,entry)=>sum+entry.projectCount-entry.completedProjects,0);
@@ -190,13 +199,14 @@
     return result;
   }
   function csv(data,view='workers') {
-    const keys=['calendarWorkdays','workedDays','workingDays','confirmedDays','onsiteDays','zkpDays','absent','missed','pending','projectsCompleted'];
+    const keys=['calendarWorkdays','workedDays','workingDays','confirmedDays','onsiteDays','zkpDays','zkpPendingDays','trainingDays','absent','missed','pending','projectsCompleted'];
     const rows=view==='trend'?[['Від','До',...keys.map(key=>metricLabels[key])],...data.trend.map(row=>[row.from,row.to,...keys.map(key=>row[key])])]
-      :view==='days'?[['Дата','Працівник','Статус','Робота'],...data.facts.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.name.localeCompare(b.name,'uk')).map(f=>[f.date,f.name,labels[f.status],f.note])]
+      :view==='days'?[['Дата','Працівник','Статус','Робота','Підтверджено / внесено'],...data.facts.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.name.localeCompare(b.name,'uk')).map(f=>[f.date,f.name,factLabel(f),f.note,f.recordedAt])]
       :[['Працівник',...keys.map(key=>metricLabels[key])],...data.rows.map(row=>[row.name,...keys.map(key=>row[key])])];
     const safe=value=>{let text=String(value??'');if(/^[=+@-]/.test(text.trimStart()))text="'"+text;return '"'+text.replaceAll('"','""')+'"';};
     const meta=[['ЛАД · Облік роботи'],['Період',data.startDate,data.endDate],['Факти до',data.asOfDate],['Група',data.filter.scope],['Вибрані співробітники',...data.rows.map(row=>row.name)],['Дні — за робочим календарем і позначками; проєкти — у роботах із підтвердженим завершенням.'],[]];
     return '\uFEFF'+[...meta,...rows].map(row=>row.map(safe).join(';')).join('\r\n')+'\r\n';
   }
-  return {labels,metricLabels,absence,confirmed,dateKey,validDate,dates,addDays,activeOn,trackableOn,isWorkday,workForDay,recordForDay,statusForDay,estimatedEnd,normalize,create,update,progress,finish,report,csv};
+  function factLabel(fact){return fact.presenceStatus==='zkp'&&confirmed.has(fact.status)?'ЗКП · роботу зараховано':labels[fact.status]||fact.status;}
+  return {labels,metricLabels,absence,confirmed,factLabel,dateKey,validDate,dates,addDays,activeOn,trackableOn,isWorkday,workForDay,recordForDay,statusForDay,estimatedEnd,normalize,create,update,progress,finish,report,csv};
 }));

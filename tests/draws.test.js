@@ -65,7 +65,7 @@ test('saved draw protocols survive reload, JSON import, and legacy schema migrat
   const reloaded=new DataStore(folder); reloaded.load(); assert.deepEqual(reloaded.state.draws,state.draws);
   assert.deepEqual(domain.normalizeState(JSON.parse(JSON.stringify(state)),now).draws,state.draws);
   const old=domain.clone(state); old.schemaVersion=8; delete old.draws;
-  const migrated=domain.normalizeState(old,now); assert.equal(migrated.schemaVersion,12); assert.deepEqual(migrated.draws,[]);
+  const migrated=domain.normalizeState(old,now); assert.equal(migrated.schemaVersion,13); assert.deepEqual(migrated.draws,[]);
 });
 test('import rejects corrupted selections, duplicate protocols, dangling parents and cycles',()=>{
   const {state,input} = fixture(); const first=draws.createDraw(state,input,now);

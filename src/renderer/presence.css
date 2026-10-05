@@ -42,4 +42,19 @@
 .presence-plan-note { margin:0 0 12px; color:var(--steel); }
 .presence-explainer,.presence-history-panel { padding:14px 18px; }
 .presence-explainer summary,.presence-history-panel summary { cursor:pointer; color:var(--muted); font-weight:600; }
+.presence-context-menu { position:fixed; z-index:1500; width:300px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow-y:auto; padding:6px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; box-shadow:0 16px 48px #0005; }
+.presence-context-head { display:grid; gap:5px; padding:9px 10px 11px; overflow-wrap:anywhere; }
+.presence-context-head strong { font-size:13px; line-height:1.4; }
+.presence-context-head > span { font-size:11px; color:var(--muted); }
+.presence-context-menu > button { display:flex; align-items:center; gap:9px; width:100%; min-height:36px; padding:8px 10px; text-align:left; color:inherit; font:inherit; font-size:13px; background:transparent; border:0; border-radius:6px; cursor:pointer; }
+.presence-context-menu > button:hover:not(:disabled),.presence-context-menu > button:focus-visible { background:var(--accent-soft); outline:2px solid var(--accent); outline-offset:-2px; }
+.presence-context-menu > button[aria-checked="true"] { background:var(--panel-soft); }
+.presence-context-menu > button:disabled { opacity:.5; cursor:default; }
+.presence-context-menu b { min-width:27px; font-size:11px; text-align:center; }
+.presence-context-check { margin-left:auto; color:var(--accent); }
+.presence-context-menu > .presence-context-delete { color:var(--status-missed,#df555d); }
+.presence-context-separator { height:1px; background:var(--line); margin:5px 4px; }
+.presence-cell[aria-expanded="true"] { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+.presence-training_online { color:#6887d8; }.presence-training_academy { color:#b383d9; }
+:root[data-theme="light"] .presence-training_online { color:#3b5ca4; }:root[data-theme="light"] .presence-training_academy { color:#79529d; }
 @media(max-width:900px) { .presence-period-title { font-size:15px; }.presence-summary { flex-basis:100%; }.presence-summary button { padding:8px 10px; } }

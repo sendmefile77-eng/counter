@@ -3,13 +3,14 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
   onsite: '#36bf76',
   zkp: '#36a8b7',
+  training_online:'#6887d8',training_academy:'#b383d9',
   working: '#36a8b7',
   planned_work: '#668ac9',
   pending: '#586b85',
@@ -1023,7 +1024,12 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
   const explicit = state.presenceRecords?.[key];
-  if (explicit && presence.absent.has(explicit.status) && !presence.absent.has(status)) {
+  if(explicit?.status==='zkp'&&status===STATUS.SUBMITTED){
+    if(date>=dateKeyFromDate(now)||presence.get(state,employeeId,dateKeyFromDate(now))?.status!=='onsite')
+      throw new Error('Роботу за ЗКП зараховують після повернення в офіс у наступний день. Позначте «На роботі» на дату повернення.');
+    if(!String(note).trim())throw new Error('Вкажіть пояснення: за які дні ЗКП отримано роботу.');
+  }
+  if (explicit && (presence.absent.has(explicit.status)||presence.learning.has(explicit.status)) && !presence.absent.has(status)) {
     throw new Error('Працівник відсутній за даними «Наявності». Спочатку змініть наявність із поясненням.');
   }
   if (previous?.receiptId) {
@@ -1039,7 +1045,7 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
     receiptId: null,
   };
   if (explicit && presence.absent.has(status)) presence.write(state,{employeeId,date,status,note},now);
-  appendAudit(state, 'status_set', { employeeId, date, status }, now);
+  appendAudit(state, 'status_set', { employeeId, date, status, note:String(note||'').trim(), actor:state.settings.operatorName||'Керівник' }, now);
   return state.records[key];
 }
 
@@ -1071,7 +1077,8 @@ function previewManualStatuses(state, input, now = new Date()) {
 }
 
 function clearManualRecord(state, employeeId, date, now = new Date()) {
-  if (state.presenceRecords?.[recordKey(employeeId,date)]) throw new Error('Цим днем керує «Наявність». Змініть або очистіть позначку в цьому розділі.');
+  const mark=state.presenceRecords?.[recordKey(employeeId,date)];
+  if (mark&&!presence.working.has(mark.status)) throw new Error('Цим днем керує «Наявність». Змініть або очистіть позначку в цьому розділі.');
   const key = recordKey(employeeId, date);
   const previous = state.records[key];
   if (!previous) return false;
@@ -1128,7 +1135,7 @@ function journalBatchPlan(state, input, now = new Date()) {
       skipped.push({ ...item, reason: 'Вихідний — включення вихідних вимкнене.' });
       continue;
     }
-    if (action === 'status' && input.replaceExisting === false && (state.presenceRecords?.[key] || previous && previous.status !== 'pending')) {
+    if (action === 'status' && input.replaceExisting === false && ((state.presenceRecords?.[key]&&!presence.working.has(state.presenceRecords[key].status)) || previous && previous.status !== 'pending')) {
       skipped.push({ ...item, reason: 'Уже має статус; заміну наявних позначок вимкнено.' });
       continue;
     }
@@ -1201,7 +1208,7 @@ function applyJournalBatch(state, input, now = new Date()) {
   state.presenceRecords = plan.draft.presenceRecords;
   state.workdayOverrides = plan.draft.workdayOverrides;
   appendAudit(state, 'journal_batch_applied', { action: plan.action, status: input.status || null, note: plan.note,
-    count: plan.result.count, cells: plan.result.changes.map(({ employeeId, date }) => ({ employeeId, date })),
+    actor:state.settings.operatorName||'Керівник', count: plan.result.count, cells: plan.result.changes.map(({ employeeId, date }) => ({ employeeId, date })),
     blocked: plan.result.blocked.length, skipped: plan.result.skipped.length }, now);
   return plan.result;
 }
