@@ -90,7 +90,7 @@ let ui = {
   tab: 'today',
   todayQuery: '', todayFilter: 'all', settingsDraft: null,
   plannerAnchor: localDateKey(), plannerView: 'month', plannerStatus: 'active', plannerEmployee: '', plannerQuery: '', plannerPriority: '',
-  plannerArchived: false, plannerPeriodOnly: false, plannerShowDuties: true, plannerFocus: '',
+  plannerArchived: false, plannerPeriodOnly: false, plannerFocus: '',
   weeklyAnchor: localDateKey(), weekly: null, weeklyLoading: false, weeklyError: '', weeklyRevision: 0,
   profile: null, profileView: 'overview', profileRevision: 0,
   month: localDateKey().slice(0, 7),
@@ -1111,11 +1111,37 @@ function renderEmployeesPage() {
       <section class="panel">
         <h2>Архів</h2>
         <div class="employee-list">
-          ${archived.map((employee) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>Історію збережено</small></div><button class="button small" data-restore-employee="${h(employee.id)}">Повернути</button></div>`).join('')}
+          ${archived.map((employee) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>Історію збережено</small></div><div class="button-row"><button class="button small" data-restore-employee="${h(employee.id)}">Повернути</button><button class="button small danger" data-delete-employee="${h(employee.id)}">Видалити</button></div></div>`).join('')}
         </div>
       </section>
     ` : ''}
   `;
+}
+
+async function openEmployeeDeletion(employeeId) {
+  openManagementModal('<header class="modal-head"><h2>Видалення з архіву</h2><button class="icon-button" data-close-modal>×</button></header><div class="modal-body" role="status">Перевіряємо пов’язані записи…</div>');
+  const revision=interfaceDialogRevision;
+  try {
+    const report=await window.counter.previewEmployeeDeletion(employeeId);
+    if(revision!==interfaceDialogRevision)return;
+    openManagementModal(`<header class="modal-head"><div><span class="page-eyebrow">Перевірка перед видаленням</span><h2>${h(report.name)}</h2></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Працівника буде видалено з архіву разом із його обліком. Це змінить історичні підсумки.</p><ul><li>Позначки табеля: ${report.records}; наявності: ${report.presence}.</li><li>Записи роботи: ${report.work}; відлучення: ${report.timeOff}; записи попереднього обліку: ${report.receipts}.</li><li>Призначення у графіках: ${report.duties.length}, з них реалізовані: ${report.duties.filter(item=>item.realized).length}.</li></ul>${report.tasks.length?`<h3>Завдання збережуться · ${report.tasks.length}</h3><ul>${report.tasks.map(task=>`<li>${h(task.title)}${task.needsAssignee?' — потрібен новий відповідальний':''}</li>`).join('')}</ul><p>Працівника буде знято зі складу виконавців. Відкриті завдання без відповідального отримають стан «Потрібне рішення».</p>`:''}${report.protocols?`<p>Імена й результати у ${report.protocols} збережених протоколах жеребкування залишаться як історичний факт.</p>`:''}<p class="muted">Після видалення можна скасувати дію кнопкою «Скасувати».</p></div><footer class="modal-foot"><button class="button" data-close-modal>Залишити в архіві</button><button class="button danger" data-delete-employee-apply="${h(employeeId)}" data-delete-token="${h(report.token)}">Видалити працівника та його облік</button></footer>`);
+  }catch(error){if(revision===interfaceDialogRevision){closeModal();showToast(error.message||String(error),{error:true});}}
+}
+
+async function handleEmployeeDeletionClick(event) {
+  const deleteEmployeeButton=event.target.closest('[data-delete-employee]');
+  if(deleteEmployeeButton){await openEmployeeDeletion(deleteEmployeeButton.dataset.deleteEmployee);return true;}
+  const deleteEmployeeApply=event.target.closest('[data-delete-employee-apply]');
+  if(deleteEmployeeApply){
+    const id=deleteEmployeeApply.dataset.deleteEmployeeApply,owner=deleteEmployeeApply.closest('.modal');
+    deleteEmployeeApply.disabled=true;
+    const result=await run(()=>window.counter.deleteEmployee({employeeId:id,expectedToken:deleteEmployeeApply.dataset.deleteToken}),null);
+    if(result){if(owner.isConnected)closeModal(owner);clearJournalSelection();ui.dutyFocusedEmployeeId='';ui.dutyStats=null;ui.dutyFairness=null;ui.analytics=null;ui.analyticsDraft=null;ui.analyticsEmployeeIds=null;ui.weekly=null;ui.profile=null;if(ui.plannerEmployee===id)ui.plannerEmployee='';if(ui.timeOffEmployee===id)ui.timeOffEmployee='';showToast('Працівника видалено з архіву.',{undo:true});}
+    else if(owner.isConnected){deleteEmployeeApply.disabled=false;deleteEmployeeApply.textContent='Перевірити видалення ще раз';deleteEmployeeApply.removeAttribute('data-delete-employee-apply');deleteEmployeeApply.dataset.deleteEmployee=id;}
+    return true;
+  }
+
+  return false;
 }
 
 function settingsFormInput(formElement) {
@@ -1946,7 +1972,7 @@ function updateAnalyticsDraftNotice(form) {
 
 function resetImportedViews() {
   presenceUi.revision++;
-  Object.assign(presenceUi,{date:null,query:'',filter:'all',view:'day',draft:null,report:null,busy:false});
+  Object.assign(presenceUi,{date:null,query:'',filter:'all',view:'month',draft:null,report:null,busy:false});
   workUi.filter='active';workUi.query='';
   Object.assign(ui, { settingsDraft:null, todayQuery:'', todayFilter:'all',
     analytics:null, analyticsEmployeeIds:null, analyticsDraft:null, analyticsDetail:null,
@@ -2039,6 +2065,7 @@ appRoot.addEventListener('click', async (event) => {
   if (await handlePresenceClick(event)) return;
   if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
+  if (await handleEmployeeDeletionClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   if (handleAnalyticsClick(event)) return;
@@ -2707,6 +2734,7 @@ modalRoot.addEventListener('click', async (event) => {
   if (await handlePresenceClick(event)) return;
   if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
+  if (await handleEmployeeDeletionClick(event)) return;
   if (await handleDrawClick(event)) return;
   if (isManagementClick(event) && await handleManagementClick(event)) return;
   const quick = event.target.closest('[data-quick-type]');

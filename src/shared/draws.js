@@ -29,12 +29,16 @@ function createDraw(state, input, now = new Date(), randomInt = crypto.randomInt
     if (!Number.isInteger(j) || j<0 || j>i) throw new Error('Не вдалося отримати випадковий результат. Спробуйте ще раз.');
     [pool[i],pool[j]] = [pool[j],pool[i]];
   }
-  const draw = { id:crypto.randomUUID(), number:state.draws.reduce((max,item)=>Math.max(max,item.number),0)+1,
+  const number = Math.max(state.drawSequence || 0, state.draws.reduce((max,item)=>Math.max(max,item.number),0)) + 1;
+  if (!Number.isSafeInteger(number)) throw new Error('Вичерпано лічильник протоколів.');
+  const draw = { id:crypto.randomUUID(), number,
     title, description, participants:people.map(person=>({ id:person.id, name:clean(person.name,160) })),
     selectedIds:pool.slice(0,count), count, createdAt:now.toISOString(),
     createdBy:clean(state.settings.operatorName,80)||'Керівник', method:METHOD,
-    previousDrawId:previousDrawId||null, rerollReason:previousDrawId?rerollReason:'', taskId:null };
+    previousDrawId:previousDrawId||null, previousDrawNumber:previousDrawId ? state.draws.find(item => item.id === previousDrawId).number : null,
+    previousDrawDeleted:false, rerollReason:previousDrawId?rerollReason:'', taskId:null };
   state.draws.push(draw);
+  state.drawSequence = number;
   audit(state,'draw_created',{ drawId:draw.id, number:draw.number, participantIds:ids, selectedIds:draw.selectedIds,
     count, previousDrawId:draw.previousDrawId, rerollReason:draw.rerollReason },now);
   return draw;
@@ -53,6 +57,19 @@ function taskFromDraw(state, id, input, now = new Date()) {
   draw.taskId = task.id;
   audit(state,'draw_task_created',{ drawId:draw.id, taskId:task.id },now);
   return task;
+}
+function deleteDraw(state, id, now = new Date()) {
+  const draw = state.draws.find(item => item.id === id);
+  if (!draw) throw new Error('Протокол не знайдено. Оновіть історію.');
+  const task = draw.taskId && state.tasks.find(item => item.id === draw.taskId);
+  if (task && planner.active(task)) throw new Error('Спочатку виконайте або скасуйте пов’язане завдання.');
+  state.drawSequence = Math.max(state.drawSequence || 0, state.draws.reduce((max, item) => Math.max(max, item.number), 0));
+  for (const child of state.draws.filter(item => item.previousDrawId === id)) {
+    child.previousDrawDeleted = true; child.previousDrawNumber = draw.number;
+  }
+  state.draws = state.draws.filter(item => item.id !== id);
+  audit(state, 'draw_deleted', { drawId:id, number:draw.number, title:draw.title, taskId:draw.taskId, actor:clean(state.settings.operatorName,80)||'Керівник' }, now);
+  return { id, number:draw.number, taskId:draw.taskId };
 }
 function normalizeDraws(input) {
   if (input == null) return [];
@@ -73,17 +90,24 @@ function normalizeDraws(input) {
     if (typeof raw.createdAt !== 'string' || !Number.isFinite(Date.parse(raw.createdAt)) || clean(raw.title,160).length<2 || raw.method && raw.method!==METHOD) throw new Error('У протоколі є некоректна дата, назва або спосіб жеребкування.');
     const previousDrawId=clean(raw.previousDrawId,100)||null, rerollReason=clean(raw.rerollReason,500);
     if (previousDrawId&&!rerollReason) throw new Error('Для повторного жеребкування не вказано причину.');
+    const previousDrawDeleted=raw.previousDrawDeleted===true, previousDrawNumber=raw.previousDrawNumber ?? null;
+    if (previousDrawNumber !== null && (!Number.isSafeInteger(previousDrawNumber) || previousDrawNumber < 1)
+      || previousDrawDeleted && (!previousDrawId || !previousDrawNumber)) throw new Error('Пошкоджено посилання на видалений протокол.');
     return { id:raw.id, number:raw.number, title:clean(raw.title,160), description:clean(raw.description,1500),
       participants, selectedIds:[...raw.selectedIds], count:raw.count, createdAt:raw.createdAt,
-      createdBy:clean(raw.createdBy,80)||'Керівник', method:METHOD, previousDrawId, rerollReason:previousDrawId?rerollReason:'', taskId:clean(raw.taskId,100)||null };
+      createdBy:clean(raw.createdBy,80)||'Керівник', method:METHOD, previousDrawId, previousDrawNumber, previousDrawDeleted,
+      rerollReason:previousDrawId?rerollReason:'', taskId:clean(raw.taskId,100)||null };
   });
   const byId = new Map(draws.map(draw => [draw.id,draw])), checked = new Set();
   for (const draw of draws) {
-    const seen = new Set([draw.id]); let parent=draw.previousDrawId;
-    while(parent && !checked.has(parent)) { if(seen.has(parent)||!ids.has(parent))throw new Error('Пошкоджений зв’язок повторних жеребкувань.');
-      seen.add(parent);parent=byId.get(parent).previousDrawId; }
+    const seen = new Set([draw.id]); let child=draw, parent=child.previousDrawId;
+    while(parent && !checked.has(parent)) {
+      if (!ids.has(parent) && child.previousDrawDeleted && child.previousDrawNumber) break;
+      if(seen.has(parent)||!ids.has(parent))throw new Error('Пошкоджений зв’язок повторних жеребкувань.');
+      seen.add(parent);child=byId.get(parent);parent=child.previousDrawId;
+    }
     for (const id of seen) checked.add(id);
   }
   return draws;
 }
-module.exports = { createDraw, taskFromDraw, normalizeDraws, METHOD };
+module.exports = { createDraw, taskFromDraw, deleteDraw, normalizeDraws, METHOD };

@@ -15,7 +15,7 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   const handlers = new Map(), calls = [],trays=[],shortcuts=new Map();
   const app = new EventEmitter();
   Object.assign(app, { whenReady: () => Promise.resolve(), getPath: () => directory,
-    getAppPath: () => directory, getVersion: () => '0.16.0', isPackaged: false, quit() {calls.push({type:'quit'});} });
+    getAppPath: () => directory, getVersion: () => '0.17.0', isPackaged: false, quit() {calls.push({type:'quit'});} });
   class Window extends EventEmitter {
     constructor(options) { super(); this.bounds={x:0,y:0,width:options.width,height:options.height};this.visible=false;this.full=false; Window.instances.push(this); this.events=[]; this.topChanges=[]; this.onTop=true; this.minimized=false; this.sent=[];this.webContents = { send:(...args)=>this.sent.push(args), on() {} }; }
     loadFile() {} setAlwaysOnTop(value) { this.onTop=value; this.topChanges.push(value); } isAlwaysOnTop() { return this.onTop; } isDestroyed() { return false; } center() { this.events.push('center'); }
@@ -386,4 +386,24 @@ test('shortcut conflicts are visible, and hiding without a tray leaves a taskbar
  const f=await fixture(t,{shortcutAvailable:false,trayAvailable:false}),window=f.windows[0];
  const snapshot=await f.call('snapshot:get');assert.equal(snapshot.widgetWindowStatus.shortcutRegistered,false);assert.equal(snapshot.widgetWindowStatus.trayAvailable,false);
  await f.call('window:hide');assert.equal(window.isMinimized(),true);assert.ok(!f.calls.some(call=>call.type==='quit'));
+});
+
+test('employee deletion IPC previews accounting, persists atomically and supports undo and restore',async t=>{
+  const f=await fixture(t),snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id;
+  const task=await f.call('tasks:create',{title:'Доручення перед видаленням',dueDate:domain.addDays(domain.dateKeyFromDate(),3),assigneeIds:[id],color:'teal',tags:['Контроль']});
+  const archive=await f.call('staff:preview-change',{kind:'archive',employeeId:id,reason:'Вибув зі складу'});
+  await f.call('staff:apply-change',{change:archive.change,expectedToken:archive.token});
+  const preview=await f.call('employee:delete-preview',{employeeId:id}),before=fs.readFileSync(f.database,'utf8');assert.ok(preview.tasks.some(item=>item.id===task.id));
+  assert.throws(()=>f.call('employee:delete',{employeeId:id,expectedToken:'stale'}),/змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  const refreshed=await f.call('employee:delete-preview',{employeeId:id});await f.call('employee:delete',{employeeId:id,expectedToken:refreshed.token});const saved=JSON.parse(fs.readFileSync(f.database,'utf8'));assert.equal(saved.employees.length,0);assert.equal(saved.tasks[0].status,'blocked');assert.equal(saved.tasks[0].color,'teal');
+  const deletedCopy=JSON.stringify(saved);await f.call('history:undo');assert.deepEqual(JSON.parse(fs.readFileSync(f.database,'utf8')),JSON.parse(before));
+  await f.call('data:import',{name:'deleted.json',content:deletedCopy});assert.equal((await f.call('snapshot:get')).employees.length,0);assert.equal((await f.call('snapshot:get')).tasks[0].status,'blocked');
+});
+test('protocol deletion IPC keeps completed tasks and undo, with no reused numbers after import',async t=>{
+  const f=await fixture(t),snap=await f.call('snapshot:get'),input={title:'Завершена робота',count:1,participantIds:snap.employees.map(person=>person.id)},draw=await f.call('draws:create',input);
+  const task=await f.call('draws:create-task',{id:draw.id,input:{dueDate:domain.dateKeyFromDate()}}),before=fs.readFileSync(f.database,'utf8');
+  assert.throws(()=>f.call('draws:delete',{id:draw.id}),/виконайте/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  await f.call('tasks:status',{id:task.id,input:{status:'done'}});await f.call('draws:delete',{id:draw.id});const saved=await f.call('snapshot:get');assert.equal(saved.draws.length,0);assert.equal(saved.tasks[0].status,'done');
+  await f.call('history:undo');assert.equal((await f.call('snapshot:get')).draws.length,1);
+  await f.call('data:import',{name:'protocols.json',content:JSON.stringify(saved)});assert.equal((await f.call('draws:create',input)).number,2);
 });

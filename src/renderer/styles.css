@@ -2595,6 +2595,19 @@ select option {
 .duty-matrix tbody tr td,
 .duty-matrix tbody tr:last-child td {
   border-bottom: var(--duty-line-width) solid rgba(var(--employee-row-rgb), 0.9);
+  background-image:linear-gradient(rgba(var(--employee-row-rgb), .19),rgba(var(--employee-row-rgb), .19));
+}
+
+.duty-matrix tbody tr .sticky-name,.duty-matrix tbody tr .duty-total {
+  background-image:linear-gradient(rgba(var(--employee-row-rgb), .23),rgba(var(--employee-row-rgb), .23));
+}
+.duty-matrix tbody tr td.duty-assigned,.duty-matrix tbody tr td.duty-realized,
+.duty-matrix tbody tr td.duty-a,.duty-matrix tbody tr td.duty-unavailable,
+.duty-matrix tbody tr td.duty-planning-block {
+  background-image:linear-gradient(rgba(var(--employee-row-rgb), .08),rgba(var(--employee-row-rgb), .08));
+}
+.duty-matrix tbody tr.duty-row-focused td {
+  background-image:linear-gradient(rgba(var(--employee-row-rgb), .3),rgba(var(--employee-row-rgb), .3));
 }
 
 .duty-matrix tbody tr:hover td,

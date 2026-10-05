@@ -6,6 +6,7 @@
   const STATUS_LABELS = Object.freeze({ open: 'Заплановано', in_progress: 'У роботі', blocked: 'Потрібне рішення', done: 'Виконано', cancelled: 'Скасовано' });
   const PRIORITY_LABELS = Object.freeze({ normal: 'Звичайний', high: 'Високий', urgent: 'Терміновий' });
   const RECURRENCE_LABELS = Object.freeze({ none: 'Без повторення', daily: 'Щодня', weekly: 'Щотижня', monthly: 'Щомісяця' });
+  const TASK_COLORS = Object.freeze({ blue:'Блакитний', teal:'Бірюзовий', green:'Зелений', gold:'Золотий', purple:'Фіолетовий', rose:'Рожевий' });
   function dateKey(date = new Date()) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
@@ -28,6 +29,11 @@
       start = `${anchor.slice(0, 7)}-01`;
       const [y, m] = anchor.split('-').map(Number);
       end = `${anchor.slice(0, 7)}-${new Date(Date.UTC(y, m, 0)).getUTCDate()}`;
+    }
+    if (view === 'quarter') {
+      const [y, m] = anchor.split('-').map(Number), first = Math.floor((m - 1) / 3) * 3;
+      start = `${y}-${String(first + 1).padStart(2, '0')}-01`;
+      end = dateKey(new Date(y, first + 3, 0, 12));
     }
     return { startDate: start, endDate: end };
   }
@@ -57,7 +63,7 @@
     if (filter.status && !['all', 'active'].includes(filter.status) && task.status !== filter.status) return false;
     if (filter.priority && task.priority !== filter.priority) return false;
     if (filter.urgency && urgency(task, now).key !== filter.urgency) return false;
-    return !filter.query || `${task.title} ${task.description} ${task.documentRef}`.toLocaleLowerCase('uk-UA').includes(filter.query.toLocaleLowerCase('uk-UA'));
+    return !filter.query || `${task.title} ${task.description} ${task.documentRef} ${(task.tags || []).join(' ')}`.toLocaleLowerCase('uk-UA').includes(filter.query.toLocaleLowerCase('uk-UA'));
   }
   function selectTasks(state, filter = {}, now = new Date()) {
     // "self" represents the leader's personal tasks, without assigned employees.
@@ -103,6 +109,6 @@
     const days = []; for (let day = first; day <= last; day = addDays(day, 1)) days.push(day);
     return { ...r, days };
   }
-  return { STATUS_LABELS, PRIORITY_LABELS, RECURRENCE_LABELS, dateKey, validDate, addDays, weekStart, range,
+  return { STATUS_LABELS, PRIORITY_LABELS, RECURRENCE_LABELS, TASK_COLORS, dateKey, validDate, addDays, weekStart, range,
     deadline, active, urgency, sortTasks, selectTasks, attention, nextDueDate, notificationCandidate, calendarDays };
 }));

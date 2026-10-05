@@ -25,9 +25,15 @@ function cleanInput(state, input, previous = null) {
   if (dutyScheduleId && !state.dutySchedules.some(schedule => schedule.id === dutyScheduleId) && dutyScheduleId !== previous?.dutyScheduleId) throw new Error('Пов’язаний графік не знайдено.');
   const reminderMinutes = input.reminderMinutes === null || input.reminderMinutes === '' ? null : Number(input.reminderMinutes ?? 60);
   if (reminderMinutes !== null && (!Number.isInteger(reminderMinutes) || reminderMinutes < 0 || reminderMinutes > 43200)) throw new Error('Нагадування: від 0 до 43200 хвилин до строку.');
+  const color = input.color ?? previous?.color ?? 'blue', rawTags = input.tags ?? previous?.tags ?? [];
+  if (!Object.hasOwn(planner.TASK_COLORS, color)) throw new Error('Оберіть колір завдання зі списку.');
+  if (!Array.isArray(rawTags) || rawTags.length > 5 || rawTags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.trim().length > 24)) {
+    throw new Error('До 5 міток, кожна від 1 до 24 символів.');
+  }
+  const tags = [...new Map(rawTags.map(tag => [tag.trim().toLocaleLowerCase('uk-UA'), tag.trim()])).values()];
   return { title, description: text(input.description, 3000), dueDate: input.dueDate, dueTime, assigneeIds,
     priority: input.priority || 'normal', recurrence: input.recurrence || 'none', reminderMinutes, receiptIds,
-    documentRef: text(input.documentRef, 200), dutyScheduleId, dutyDate,
+    documentRef: text(input.documentRef, 200), dutyScheduleId, dutyDate, color, tags,
     recurrenceDay: previous && previous.dueDate === input.dueDate ? previous.recurrenceDay : Number(input.dueDate.slice(-2)) };
 }
 function getTask(state, id) {
@@ -108,6 +114,18 @@ function snoozeTask(state, id, minutes, now = new Date()) {
   event(state, task, 'snoozed', { until: task.snoozedUntil }, now);
   return task;
 }
+function removeEmployee(state, employeeId, name, now = new Date()) {
+  for (const task of state.tasks || []) {
+    if (!task.assigneeIds.includes(employeeId)) continue;
+    task.assigneeIds = task.assigneeIds.filter(id => id !== employeeId);
+    const reason = `Працівника «${name}» видалено з архіву.`, before = task.status;
+    event(state, task, 'employee_removed', { employeeId, name, reason }, now);
+    if (planner.active(task) && !task.assigneeIds.length) {
+      task.status = 'blocked'; task.snoozedUntil = null; task.notificationKeys = [];
+      event(state, task, 'status', { before, status:'blocked', reason:reason + ' Потрібен новий відповідальний.' }, now);
+    }
+  }
+}
 function normalizeTasks(input, state, now = new Date()) {
   if (input == null) return [];
   if (!Array.isArray(input)) throw new Error('Розділ завдань має бути списком.');
@@ -137,4 +155,4 @@ function normalizeTasks(input, state, now = new Date()) {
       seriesId: raw.seriesId || raw.id, previousTaskId: raw.previousTaskId || null, nextTaskId: raw.nextTaskId || null };
   });
 }
-module.exports = { createTask, updateTask, setTaskStatus, archiveTask, snoozeTask, normalizeTasks, getTask };
+module.exports = { createTask, updateTask, setTaskStatus, archiveTask, snoozeTask, normalizeTasks, getTask, removeEmployee };

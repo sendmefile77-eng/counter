@@ -3,7 +3,7 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 
@@ -349,6 +349,7 @@ function defaultState(now = new Date()) {
     duties,
     tasks: [],
     draws: [],
+    drawSequence: 0,
     timeOffEntries: [],
     settings: normalizeGlobalSettings(),
     audit: [{
@@ -479,6 +480,8 @@ function normalizeState(input, now = new Date()) {
 
   state.tasks = normalizeTasks(input.tasks, state, now);
   state.draws = normalizeDraws(input.draws);
+  if (input.drawSequence != null && (!Number.isSafeInteger(input.drawSequence) || input.drawSequence < 0)) throw new Error('Некоректний лічильник протоколів.');
+  state.drawSequence = state.draws.reduce((maximum, draw) => Math.max(maximum, draw.number), input.drawSequence || 0);
   state.workEntries = work.normalize(input.workEntries, state);
   state.presenceRecords = presence.normalize(input.presenceRecords, state);
   return state;

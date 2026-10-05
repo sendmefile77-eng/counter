@@ -65,7 +65,7 @@ test('saved draw protocols survive reload, JSON import, and legacy schema migrat
   const reloaded=new DataStore(folder); reloaded.load(); assert.deepEqual(reloaded.state.draws,state.draws);
   assert.deepEqual(domain.normalizeState(JSON.parse(JSON.stringify(state)),now).draws,state.draws);
   const old=domain.clone(state); old.schemaVersion=8; delete old.draws;
-  const migrated=domain.normalizeState(old,now); assert.equal(migrated.schemaVersion,11); assert.deepEqual(migrated.draws,[]);
+  const migrated=domain.normalizeState(old,now); assert.equal(migrated.schemaVersion,12); assert.deepEqual(migrated.draws,[]);
 });
 test('import rejects corrupted selections, duplicate protocols, dangling parents and cycles',()=>{
   const {state,input} = fixture(); const first=draws.createDraw(state,input,now);
@@ -75,4 +75,15 @@ test('import rejects corrupted selections, duplicate protocols, dangling parents
     s=>{s.draws[0].previousDrawId=s.draws[1].id;s.draws[0].rerollReason='cycle';}]) {
     const broken=domain.clone(state); mutate(broken); assert.throws(()=>domain.normalizeState(broken,now));
   }
+});
+
+test('deleting a finished protocol preserves repeat reasons, names, task and sequence through reload',()=>{
+  const {state,input}=fixture(),first=draws.createDraw(state,input,now),second=draws.createDraw(state,{...input,previousDrawId:first.id,rerollReason:'Нові обставини'},now);
+  const task=draws.taskFromDraw(state,first.id,{dueDate:'2026-10-05'},now),before=domain.clone(state);
+  assert.throws(()=>draws.deleteDraw(state,first.id,now),/виконайте/);assert.deepEqual(state,before);
+  const tasksModule=require('../src/shared/tasks');tasksModule.setTaskStatus(state,task.id,{status:'done'},now);
+  draws.deleteDraw(state,first.id,now);assert.equal(state.tasks.length,1);assert.equal(state.tasks[0].status,'done');assert.equal(second.previousDrawNumber,1);assert.equal(second.previousDrawDeleted,true);assert.equal(second.rerollReason,'Нові обставини');
+  let loaded=domain.normalizeState(JSON.parse(JSON.stringify(state)),now);assert.equal(loaded.draws[0].previousDrawDeleted,true);
+  draws.deleteDraw(loaded,second.id,now);loaded=domain.normalizeState(JSON.parse(JSON.stringify(loaded)),now);assert.equal(loaded.draws.length,0);
+  assert.equal(draws.createDraw(loaded,input,now).number,3);
 });

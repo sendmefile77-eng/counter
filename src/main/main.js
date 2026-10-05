@@ -54,6 +54,7 @@ const { DataStore } = require('./store');
 const work = require('../shared/work');
 const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
+const employeeDeletion = require('../shared/employee-deletion');
 const staffChanges = require('../shared/staff-changes');
 const presence = require('../shared/presence');
 const presenceChanges = require('../shared/presence-changes');
@@ -436,6 +437,7 @@ function registerIpc() {
     if (existing && store.state.tasks.some(task=>task.id===existing)) return store.state.tasks.find(task=>task.id===existing);
     return mutate('draws:create-task', state => draws.taskFromDraw(state,id,input));
   });
+  ipcMain.handle('draws:delete', (_event, { id }) => mutate('draws:delete', state => draws.deleteDraw(state, id)));
   ipcMain.handle('dialog:confirm', async (_event, message) => {
     if (typeof message !== 'string' || !message.trim() || message.length>2500) throw new Error('Некоректний текст підтвердження.');
     if (!mainWindow || mainWindow.isDestroyed()) return false;
@@ -484,6 +486,8 @@ function registerIpc() {
   ipcMain.handle('employee:restore', (_event, { employeeId }) => (
     mutate('employee:restore', (state) => restoreEmployee(state, employeeId))
   ));
+  ipcMain.handle('employee:delete-preview', (_event, { employeeId }) => employeeDeletion.preview(store.state, employeeId));
+  ipcMain.handle('employee:delete', (_event, input) => mutate('employee:delete', state => employeeDeletion.apply(state, input)));
   ipcMain.handle('employee:rename', (_event, { employeeId, name }) => (
     mutate('employee:rename', (state) => renameEmployee(state, employeeId, name))
   ));

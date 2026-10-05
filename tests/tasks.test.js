@@ -213,3 +213,20 @@ test('reminder batching never loses the fourth task and all-day urgency remains 
   f.service.check();assert.equal(f.Notice.notices.length,3);f.service.check();assert.equal(f.Notice.notices.length,4);
   const task=input({status:'open',dueTime:''});assert.equal(planner.urgency(task,new Date(2026,9,2,23,59,30)).key,'today');
 });
+
+test('task colors and tags persist, remain searchable and follow monthly recurrence',()=>{
+  const d=require('../src/shared/domain'),p=require('../src/shared/planner'),t=require('../src/shared/tasks'),now=new Date('2026-10-05T12:00:00Z'),state=d.defaultState(now);
+  const task=t.createTask(state,{title:'Підготувати матеріали',dueDate:'2026-10-31',color:'purple',tags:['Перевірка','Звіт'],recurrence:'monthly'},now);
+  assert.equal(p.selectTasks(state,{query:'перевірка'}).length,1);
+  t.updateTask(state,task.id,{title:'Уточнити матеріали',dueDate:task.dueDate,recurrence:task.recurrence},now);assert.equal(task.color,'purple');assert.deepEqual(task.tags,['Перевірка','Звіт']);
+  const {nextTask}=t.setTaskStatus(state,task.id,{status:'done'},now);assert.equal(nextTask.dueDate,'2026-11-30');assert.equal(nextTask.color,'purple');assert.deepEqual(nextTask.tags,task.tags);
+  const loaded=d.normalizeState(JSON.parse(JSON.stringify(state)),now);assert.deepEqual(loaded.tasks.map(item=>[item.color,item.tags]),state.tasks.map(item=>[item.color,item.tags]));
+  for(const patch of [{color:'invalid'},{tags:'Звіт'},{tags:['a'.repeat(25)]},{tags:['1','2','3','4','5','6']}]){const before=d.clone(state);assert.throws(()=>t.createTask(state,{title:'Нове завдання',dueDate:'2026-10-06',...patch},now));assert.deepEqual(state,before);}
+});
+
+test('presence calendar quarter boundaries cover leap day and year end',()=>{
+  const p=require('../src/shared/planner');
+  assert.deepEqual(p.range('2024-02-29','quarter'),{startDate:'2024-01-01',endDate:'2024-03-31'});
+  assert.deepEqual(p.range('2026-12-31','quarter'),{startDate:'2026-10-01',endDate:'2026-12-31'});
+  assert.deepEqual(p.range('2027-01-01','quarter'),{startDate:'2027-01-01',endDate:'2027-03-31'});
+});
