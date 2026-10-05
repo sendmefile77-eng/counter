@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('counter', {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
   previewPresence: input => ipcRenderer.invoke('presence:preview',input),
   applyPresence: input => ipcRenderer.invoke('presence:apply',input),
+  savePresence: input => ipcRenderer.invoke('presence:save',input),
   acknowledgeRecovery: () => ipcRenderer.invoke('data:ack-recovery'),
   enterTraining: () => ipcRenderer.invoke('training:enter'),
   exitTraining: () => ipcRenderer.invoke('training:exit'),

@@ -3,14 +3,14 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
   onsite: '#36bf76',
   zkp: '#36a8b7',
-  training_online:'#6887d8',training_academy:'#b383d9',
+  training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',
   working: '#36a8b7',
   planned_work: '#668ac9',
   pending: '#586b85',
@@ -58,6 +58,7 @@ const STATUS = Object.freeze({
   VACATION: 'vacation',
   DAY_OFF: 'day_off',
   HOLIDAY: 'holiday',
+  BUSINESS_TRIP: 'business_trip',
 });
 
 const STATUS_LABELS = Object.freeze({...presence.labels,...Object.fromEntries(Object.values(STATUS).map(status=>[status,work.labels[status]])),planned_work:work.labels.planned_work});
@@ -72,6 +73,7 @@ const MANUAL_STATUSES = new Set([
   STATUS.VACATION,
   STATUS.DAY_OFF,
   STATUS.HOLIDAY,
+  STATUS.BUSINESS_TRIP,
 ]);
 
 const SUBMITTED_STATUSES = new Set([
@@ -95,6 +97,7 @@ const DUTY_BLOCKING_RECORD_STATUSES = new Set([
   STATUS.VACATION,
   STATUS.DAY_OFF,
   STATUS.HOLIDAY,
+  STATUS.BUSINESS_TRIP,
 ]);
 
 function dateKeyFromDate(date = new Date()) {
@@ -1030,7 +1033,7 @@ function setManualStatus(state, { employeeId, date, status, note = '' }, now = n
     if(!String(note).trim())throw new Error('Вкажіть пояснення: за які дні ЗКП отримано роботу.');
   }
   if (explicit && (presence.absent.has(explicit.status)||presence.learning.has(explicit.status)) && !presence.absent.has(status)) {
-    throw new Error('Працівник відсутній за даними «Наявності». Спочатку змініть наявність із поясненням.');
+    throw new Error('Працівник відсутній за даними «Наявності». Спочатку змініть наявність.');
   }
   if (previous?.receiptId) {
     throw new Error('День уже пов’язаний із запитом. Спочатку скасуйте зарахування.');

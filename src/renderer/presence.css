@@ -55,6 +55,7 @@
 .presence-context-menu > .presence-context-delete { color:var(--status-missed,#df555d); }
 .presence-context-separator { height:1px; background:var(--line); margin:5px 4px; }
 .presence-cell[aria-expanded="true"] { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
-.presence-training_online { color:#6887d8; }.presence-training_academy { color:#b383d9; }
-:root[data-theme="light"] .presence-training_online { color:#3b5ca4; }:root[data-theme="light"] .presence-training_academy { color:#79529d; }
+.presence-training_online { color:var(--status-training-online,#6887d8); }.presence-training_academy { color:var(--status-training-academy,#b383d9); }
+:root[data-theme="light"] .presence-training_online { color:color-mix(in srgb,var(--status-training-online,#6887d8) 70%,#0b2038); }:root[data-theme="light"] .presence-training_academy { color:color-mix(in srgb,var(--status-training-academy,#b383d9) 70%,#0b2038); }
+.presence-business_trip { color:var(--status-business-trip,#c28b54); }:root[data-theme="light"] .presence-business_trip { color:color-mix(in srgb,var(--status-business-trip,#c28b54) 70%,#0b2038); }
 @media(max-width:900px) { .presence-period-title { font-size:15px; }.presence-summary { flex-basis:100%; }.presence-summary button { padding:8px 10px; } }

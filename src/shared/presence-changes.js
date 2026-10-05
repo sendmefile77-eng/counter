@@ -11,7 +11,7 @@ function preview(state,input,now=new Date()) {
   if(!presence.validDate(startDate)||!presence.validDate(endDate)||endDate<startDate||endDate>d.addDays(startDate,365))throw Error('Оберіть період до 366 календарних днів.');
   const status=input.status||null,action=input.action||'set',reason=String(input.reason||'').trim();
   if(!['set','clear'].includes(action)||action==='set'&&!Object.hasOwn(presence.labels,status))throw Error('Оберіть статус наявності.');
-  if(!reason||reason.length>500)throw Error('Вкажіть підставу або пояснення від 1 до 500 символів.');
+  if(reason.length>500)throw Error('Пояснення має містити не більше 500 символів.');
   const change={employeeIds:ids,startDate,endDate,status,action,reason},cells=[],skipped=[],duties=[],tasks=new Map(),blockers=[];
   for(const id of ids) {
     const person=d.getEmployee(state,id),dates=[];
@@ -20,7 +20,7 @@ function preview(state,input,now=new Date()) {
       const before=presence.get(state,id,date);
       if(action==='clear'&&!before)continue;
       if(action==='clear'&&state.records[d.recordKey(id,date)]?.receiptId&&presence.absent.has(state.records[d.recordKey(id,date)].status)) {
-        blockers.push(`${person.name}, ${date}: захищена історична відсутність. Змініть наявність із поясненням.`);continue;
+        blockers.push(`${person.name}, ${date}: захищена історична відсутність. Змініть статус у «Наявності».`);continue;
       }
       cells.push({employeeId:id,name:person.name,date,before,after:action==='clear'?null:status});dates.push(date);
     }
@@ -40,7 +40,8 @@ function apply(state,input,now=new Date()) {
   if(!report.canApply)throw Error(report.blockers.join('\n'));
   const draft=d.clone(state),active=draft.dutySchedules.find(schedule=>schedule.id===draft.activeDutyScheduleId);
   if(active)active.data=draft.duties;
-  for(const id of report.change.employeeIds)staff.removeAffectedDuties(draft,report.duties.filter(duty=>duty.employeeId===id),id,report.change.reason,now);
+  const dutyReason=report.change.reason||`Наявність: ${presence.labels[report.change.status]||'позначку очищено'}.`;
+  for(const id of report.change.employeeIds)staff.removeAffectedDuties(draft,report.duties.filter(duty=>duty.employeeId===id),id,dutyReason,now);
   for(const cell of report.cells) {
     if(report.change.action==='clear')presence.clear(draft,cell.employeeId,cell.date);
     else presence.write(draft,{employeeId:cell.employeeId,date:cell.date,status:report.change.status,note:report.change.reason},now);
@@ -52,4 +53,8 @@ function apply(state,input,now=new Date()) {
   draft.audit.push({id:crypto.randomUUID(),at:now.toISOString(),action:'presence_changed',details:{...report.change,actor:state.settings.operatorName||'Керівник',cells:report.cells,duties:report.duties,tasks:report.tasks}});
   draft.audit=draft.audit.slice(-5000);Object.assign(state,draft);return report;
 }
-module.exports={preview,apply};
+function save(state,input,now=new Date()) {
+  const report=preview(state,input,now);
+  return apply(state,{change:report.change,expectedToken:report.token},now);
+}
+module.exports={preview,apply,save};

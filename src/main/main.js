@@ -381,6 +381,7 @@ async function applyWindowMode(mode) {
 function registerIpc() {
   ipcMain.handle('presence:preview', (_event,input) => presenceChanges.preview(store.state,input));
   ipcMain.handle('presence:apply', (_event,input) => mutate('presence:apply',state=>presenceChanges.apply(state,input)));
+  ipcMain.handle('presence:save', (_event,input) => mutate('presence:save',state=>presenceChanges.save(state,input)));
   ipcMain.handle('work:create', (_event,input) => mutate('work:create',state=>work.create(state,input)));
   ipcMain.handle('work:update', (_event,{id,input}) => mutate('work:update',state=>work.update(state,id,input)));
   ipcMain.handle('work:progress', (_event,{id,input}) => mutate('work:progress',state=>work.progress(state,id,input)));
@@ -529,9 +530,9 @@ function registerIpc() {
       filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
     });
     if (result.canceled || !result.filePath) return { canceled: true };
-    const header = ['Працівник', ...report.dates, 'Подав', 'Пропуски', 'Інші завдання', 'Відсутність', 'Очікує до сьогодні'];
+    const header = ['Працівник', ...report.dates, 'Здано', 'Не здано', 'Відсутність', 'Навчання'];
     const rows = report.rows.map((row) => [row.name, ...row.cells.map((cell) => cell.symbol), row.totals.submitted,
-      row.totals.missed, row.totals.other, row.totals.absent, row.totals.pending]);
+      row.totals.notSubmitted, row.totals.absent, row.totals.training]);
     const safeCsv = (value) => csvEscape(typeof value === 'string' && /^[=+@-]/.test(value) ? `'${value}` : value);
     fs.writeFileSync(result.filePath, `\uFEFF${[header, ...rows].map((row) => row.map(safeCsv).join(';')).join('\r\n')}\r\n`, 'utf8');
     return { canceled: false, filePath: result.filePath };

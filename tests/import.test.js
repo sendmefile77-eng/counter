@@ -282,6 +282,38 @@ test('malformed presence cannot replace the live database during import',async t
  await assert.rejects(async()=>f.call('data:import',{name:'Зіпсована.json',content:JSON.stringify(state)}),/Наявність/);assert.equal(fs.readFileSync(f.database,'utf8'),before);assert.equal(f.calls.length,0);
 });
 
+test('direct presence IPC saves and clears without reason or preview, persists and supports undo and restore',async t=>{
+ const f=await fixture(t),snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,date=domain.dateKeyFromDate(),before=fs.readFileSync(f.database,'utf8');
+ await f.call('presence:save',{employeeId:id,date,status:'business_trip'});
+ const saved=fs.readFileSync(f.database,'utf8'),record=JSON.parse(saved).presenceRecords[id+'|'+date];
+ assert.equal(record.status,'business_trip');assert.equal(record.note,'');assert.ok(record.actor);assert.ok(record.recordedAt);assert.equal(f.calls.length,0);
+ await f.call('presence:save',{employeeId:id,date,action:'clear'});assert.equal((await f.call('snapshot:get')).presenceRecords[id+'|'+date],undefined);
+ await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),saved);
+ await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ await f.call('data:import',{name:'Відрядження.json',content:saved});assert.equal((await f.call('snapshot:get')).presenceRecords[id+'|'+date].status,'business_trip');
+});
+
+test('direct presence IPC cannot change a locked duty or its saved database and remains usable after rejection',async t=>{
+ const f=await fixture(t),snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,date=domain.addDays(domain.dateKeyFromDate(),1);
+ await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});
+ await f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true});await f.call('duties:week-lock',{date,locked:true});
+ const before=fs.readFileSync(f.database,'utf8');await assert.rejects(async()=>f.call('presence:save',{employeeId:id,date,status:'sick'}),/заблоковано/);
+ assert.equal(fs.readFileSync(f.database,'utf8'),before);
+ await f.call('presence:save',{employeeId:id,date,status:'zkp'});const after=await f.call('snapshot:get');assert.equal(after.presenceRecords[id+'|'+date].status,'zkp');assert.deepEqual(after.duties.assignments[date].employeeIds,[id]);
+});
+
+test('journal CSV exports confirmation symbols and four matching totals without attendance codes',async t=>{
+ const f=await fixture(t);await f.call('settings:update',{workdays:[0,1,2,3,4,5,6]});
+ const snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,today=domain.dateKeyFromDate(),past=domain.addDays(today,-1),future=domain.addDays(today,1);
+ await f.call('presence:save',{employeeId:id,startDate:past,endDate:today,status:'onsite'});
+ await f.call('work:mark-day',{employeeId:id,date:past,status:'submitted'});
+ const filePath=path.join(f.directory,'journal.csv');f.dialog.saveResult={canceled:false,filePath};
+ await f.call('journal:export',{startDate:past,endDate:future,employeeIds:[id]});
+ const lines=fs.readFileSync(filePath,'utf8').replace(/^\uFEFF/,'').trim().split('\r\n').map(line=>line.split(';').map(value=>value.replace(/^"|"$/g,'').replaceAll('""','"')));
+ assert.deepEqual(lines[0],['Працівник',past,today,future,'Здано','Не здано','Відсутність','Навчання']);
+ assert.deepEqual(lines[1].slice(1),['✓','×','','1','1','0','0']);
+});
+
 test('office-return acceptance stores selected ZKP days atomically, preserves presence and supports undo and import',async t=>{
  const f=await fixture(t);await f.call('settings:update',{workdays:[0,1,2,3,4,5,6]});
  const snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,today=domain.dateKeyFromDate(),past=domain.addDays(today,-1);

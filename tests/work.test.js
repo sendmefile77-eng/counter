@@ -21,7 +21,7 @@ test('overlapping work counts a day once and explicit absence/manual facts have 
  domain.setManualStatus(state,{employeeId:employee.id,date:'2026-09-30',status:'other_tasks'},now);
  const report=work.report(state,{startDate:'2026-09-28',endDate:'2026-10-02'},now);
  assert.equal(report.total.calendarWorkdays,5);assert.equal(report.total.workedDays,4);assert.equal(report.total.workingDays,3);assert.equal(report.total.coveragePercent,100);assert.equal(report.total.projectsStarted,7);
- const attendance=journal.report(state,{startDate:'2026-09-28',endDate:'2026-10-02'},'2026-10-09');assert.equal(attendance.totals.worked,4);assert.equal(attendance.totals.working,3);
+ const attendance=journal.report(state,{startDate:'2026-09-28',endDate:'2026-10-02'},'2026-10-09');assert.equal(attendance.totals.worked,0);assert.equal(attendance.totals.notSubmitted,4);assert.equal(attendance.totals.working,3);
 });
 test('progress is cumulative, does not finish work, and correction and extension preserve reasons',()=>{
  const {state,employee}=fixture(),entry=work.create(state,input(employee),now);

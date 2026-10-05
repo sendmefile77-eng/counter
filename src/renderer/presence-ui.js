@@ -1,4 +1,4 @@
-const presenceUi={date:null,query:'',filter:'all',view:'month',draft:null,report:null,busy:false,revision:0};
+const presenceUi={date:null,query:'',filter:'all',view:'month',draft:null,report:null,busy:false,revision:0,pendingCells:new Set(),quickQueue:Promise.resolve()};
 const presenceMark=(id,date)=>LadPresence.get(snapshot,id,date);
 function presenceBadge(mark,date) {
   const status=mark?.status,label=LadPresence.labels[status]||'Не позначено';
@@ -10,11 +10,12 @@ function presenceShiftDate(date, direction) {
   const last=LadPlanner.range(month+'-01','month').endDate;
   return `${month}-${String(Math.min(Number(date.slice(-2)),Number(last.slice(-2)))).padStart(2,'0')}`;
 }
-const presenceContext={menu:null,cell:null};
+const presenceContext={menu:null,cell:null,scrollPositions:new Map()};
 function closePresenceContext(restoreFocus=false) {
   const {menu,cell}=presenceContext;
   menu?.remove();cell?.removeAttribute('aria-expanded');cell?.removeAttribute('aria-controls');
   presenceContext.menu=null;presenceContext.cell=null;
+  presenceContext.scrollPositions.clear();
   if(restoreFocus&&cell?.isConnected)cell.focus({preventScroll:true});
 }
 function presenceContextCell(target) {
@@ -34,10 +35,16 @@ function openPresenceContext(cell,x,y) {
   menu.style.top=Math.max(8,Math.min(y??anchor.bottom,window.innerHeight-box.height-8))+'px';
   menu.querySelector('[aria-checked="true"]')?.focus({preventScroll:true});
   if(!menu.contains(document.activeElement))menu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+  // A right click can deliver an already completed scroll after the menu opens.
+  // Dismiss only when a container actually moves from its opening position.
+  for(let ancestor=cell.parentElement;ancestor;ancestor=ancestor.parentElement)
+    presenceContext.scrollPositions.set(ancestor,{left:ancestor.scrollLeft,top:ancestor.scrollTop});
+  if(document.scrollingElement)presenceContext.scrollPositions.set(document.scrollingElement,{left:document.scrollingElement.scrollLeft,top:document.scrollingElement.scrollTop});
   menu.addEventListener('click',event=>{
     const action=event.target.closest('[data-presence-context-action]');if(!action||action.disabled)return;
     const status=action.dataset.presenceContextAction;closePresenceContext(true);
-    openPresenceForm({employeeId:id,date,...(status==='edit'?{}:{status,reason:''})});
+    if(status==='edit')openPresenceForm({employeeId:id,date});
+    else void saveQuickPresence(id,date,status);
   });
   menu.addEventListener('contextmenu',event=>event.preventDefault());
   menu.addEventListener('keydown',event=>{
@@ -46,6 +53,29 @@ function openPresenceContext(cell,x,y) {
     const next={ArrowDown:(index+1)%items.length,ArrowUp:(index-1+items.length)%items.length,Home:0,End:items.length-1}[event.key];
     if(next!==undefined){event.preventDefault();event.stopPropagation();items[next].focus();}
   });
+}
+async function saveQuickPresence(employeeId,date,status) {
+  const key=employeeId+'|'+date,mark=presenceMark(employeeId,date);
+  if(presenceUi.pendingCells.has(key)||status===mark?.status||status==='clear'&&!mark)return;
+  presenceUi.pendingCells.add(key);
+  const cell=appRoot.querySelector('[data-presence-edit="'+CSS.escape(employeeId)+'"][data-presence-cell-date="'+date+'"]');
+  const restoreFocus=cell===document.activeElement;
+  if(cell){cell.disabled=true;cell.setAttribute('aria-busy','true');}
+  const input={employeeIds:[employeeId],startDate:date,endDate:date,action:status==='clear'?'clear':'set',status:status==='clear'?null:status,reason:''};
+  const save=async()=>{
+    try{
+      const result=await run(()=>window.counter.savePresence(input),null);
+      if(result)showToast(status==='clear'?'Позначку видалено.':'Наявність: '+LadPresence.labels[status]+'.',{undo:true});
+    }finally{
+      presenceUi.pendingCells.delete(key);
+      if(ui.tab==='presence') {
+        const focusEmpty=document.activeElement===document.body;
+        renderShell();
+        if(restoreFocus&&focusEmpty)appRoot.querySelector('[data-presence-edit="'+CSS.escape(employeeId)+'"][data-presence-cell-date="'+date+'"]')?.focus({preventScroll:true});
+      }
+    }
+  };
+  presenceUi.quickQueue=presenceUi.quickQueue.then(save,save);await presenceUi.quickQueue;
 }
 function handlePresenceContextMenu(event) {
   const cell=presenceContextCell(event.target);if(!cell)return false;
@@ -57,14 +87,19 @@ function handlePresenceContextKey(event) {
   event.preventDefault();openPresenceContext(cell);return true;
 }
 document.addEventListener('pointerdown',event=>{if(presenceContext.menu&&!presenceContext.menu.contains(event.target))closePresenceContext();},true);
-document.addEventListener('scroll',event=>{if(presenceContext.menu&&!presenceContext.menu.contains(event.target))closePresenceContext(true);},true);
+document.addEventListener('scroll',event=>{
+  if(!presenceContext.menu||presenceContext.menu.contains(event.target))return;
+  const target=event.target===document?document.scrollingElement:event.target,before=presenceContext.scrollPositions.get(target);
+  if(before&&before.left===target.scrollLeft&&before.top===target.scrollTop)return;
+  closePresenceContext(true);
+},true);
 document.addEventListener('focusin',event=>{if(presenceContext.menu&&!presenceContext.menu.contains(event.target))closePresenceContext();});
 window.addEventListener('resize',()=>closePresenceContext(true));
 function presenceCalendar(people,startDate,endDate,compact=false) {
   const dates=LadWork.dates(startDate,endDate),today=localDateKey(),selected=presenceUi.date||today;
   return `<div class="table-scroll presence-calendar-scroll" data-scroll-key="presence-${startDate.slice(0,7)}"><table class="data-table presence-table ${compact?'presence-month-table':''}"><thead><tr><th class="presence-name">Працівник</th>${dates.map(day=>`<th class="presence-calendar-day ${day===today?'is-today':''} ${day===selected?'selected':''} ${[0,6].includes(dateFromKey(day).getDay())?'presence-weekend':''}"><button data-presence-select-date="${day}" aria-label="Стан команди на ${h(formatDate(day))}"><strong>${Number(day.slice(-2))}</strong><small>${h(formatDate(day,{weekday:'short'}))}</small></button></th>`).join('')}</tr></thead><tbody>${people.map(person=>`<tr data-employee-row-color="${activeEmployees().findIndex(item=>item.id===person.id)%DUTY_ROW_COLORS.length}"><th class="presence-name"><span>${h(shortName(person.name))}</span></th>${dates.map(day=>{
     const valid=LadWork.trackableOn(person,day),item=valid?presenceMark(person.id,day):null,label=valid?(LadPresence.labels[item?.status]||'Не позначено'):'Поза періодом роботи';
-    return `<td class="presence-calendar-day ${day===today?'is-today':''} ${day===selected?'selected':''} ${[0,6].includes(dateFromKey(day).getDay())?'presence-weekend':''}"><button class="presence-cell presence-${h(item?.status||'pending')}" aria-haspopup="menu" data-presence-edit="${h(person.id)}" data-presence-cell-date="${day}" ${valid?'':'disabled'} aria-label="${h(person.name+', '+formatDate(day)+': '+label)}" title="${h(label+(item?.note?' · '+item.note:''))}">${h(valid?(LadPresence.symbols[item?.status]||'·'):'—')}</button></td>`;
+    return `<td class="presence-calendar-day ${day===today?'is-today':''} ${day===selected?'selected':''} ${[0,6].includes(dateFromKey(day).getDay())?'presence-weekend':''}"><button class="presence-cell presence-${h(item?.status||'pending')}" aria-haspopup="menu" data-presence-edit="${h(person.id)}" data-presence-cell-date="${day}" ${valid&&!presenceUi.pendingCells.has(person.id+'|'+day)?'':'disabled'} aria-label="${h(person.name+', '+formatDate(day)+': '+label)}" title="${h(label+(item?.note?' · '+item.note:''))}">${h(valid?(LadPresence.symbols[item?.status]||'·'):'—')}</button></td>`;
   }).join('')}</tr>`).join('')||`<tr><td colspan="${dates.length+1}" class="muted">Працівників за цими умовами немає.</td></tr>`}</tbody></table></div>`;
 }
 function renderPresencePage() {
@@ -78,7 +113,7 @@ function renderPresencePage() {
   const range=LadPlanner.range(date,presenceUi.view),history=(snapshot.audit||[]).filter(item=>item.action==='presence_changed').slice(-8).reverse();
   const title=presenceUi.view==='month'?formatMonth(date.slice(0,7)):presenceUi.view==='quarter'?`${Math.floor((Number(date.slice(5,7))-1)/3)+1} квартал ${date.slice(0,4)}`:presenceUi.view==='week'?`${formatDate(range.startDate)} — ${formatDate(range.endDate)}`:formatDate(date);
   let content='';
-  if(presenceUi.view==='day')content=`<div class="table-scroll"><table class="data-table presence-table"><thead><tr><th>Працівник</th><th>Наявність</th><th>Чергування</th><th>Підстава / примітка</th><th>Дія</th></tr></thead><tbody>${filtered.map(({person,mark})=>`<tr><th>${h(person.name)}</th><td>${presenceBadge(mark,date)}${mark?.status==='zkp'?'<small>Працює в іншому офісі</small>':''}</td><td>${LadPresence.absent.has(mark?.status)?'<span class="presence-unavailable">Недоступний</span>':mark?'<span>Наявність дозволяє</span>':'<span class="muted">Немає обмеження</span>'}</td><td>${h(mark?.note||'—')}${mark?.actor?`<small>${h(mark.actor)}</small>`:''}</td><td><button class="button small" aria-haspopup="menu" data-presence-edit="${h(person.id)}" data-presence-cell-date="${date}">${mark?'Змінити':'Позначити'}</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">Працівників за цими умовами немає.</td></tr>'}</tbody></table></div>`;
+  if(presenceUi.view==='day')content=`<div class="table-scroll"><table class="data-table presence-table"><thead><tr><th>Працівник</th><th>Наявність</th><th>Чергування</th><th>Підстава / примітка</th><th>Дія</th></tr></thead><tbody>${filtered.map(({person,mark})=>`<tr><th>${h(person.name)}</th><td>${presenceBadge(mark,date)}${mark?.status==='zkp'?'<small>Працює в іншому офісі</small>':''}</td><td>${LadPresence.absent.has(mark?.status)?'<span class="presence-unavailable">Недоступний</span>':mark?'<span>Наявність дозволяє</span>':'<span class="muted">Немає обмеження</span>'}</td><td>${h(mark?.note||'—')}${mark?.actor?`<small>${h(mark.actor)}</small>`:''}</td><td><button class="button small" aria-haspopup="menu" data-presence-edit="${h(person.id)}" data-presence-cell-date="${date}" ${presenceUi.pendingCells.has(person.id+'|'+date)?'disabled aria-busy="true"':''}>${mark?'Змінити':'Позначити'}</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">Працівників за цими умовами немає.</td></tr>'}</tbody></table></div>`;
   else if(presenceUi.view==='quarter')content=Array.from({length:3},(_,i)=>{
     const month=monthShift(range.startDate.slice(0,7),i),period=LadPlanner.range(month+'-01','month');
     return `<section class="presence-quarter-month"><button class="presence-month-link" data-presence-month="${month}">${h(formatMonth(month))} ↗</button>${presenceCalendar(filtered.map(row=>row.person),period.startDate,period.endDate,true)}</section>`;
@@ -88,7 +123,7 @@ function renderPresencePage() {
   <section class="panel presence-controls"><div class="presence-toolbar"><div class="button-row"><button class="button small" data-presence-shift="-1" aria-label="Попередній період">←</button><strong class="presence-period-title">${h(title)}</strong><button class="button small" data-presence-shift="1" aria-label="Наступний період">→</button><button class="button small" data-presence-today>Сьогодні</button></div><div class="button-row" role="group" aria-label="Період наявності">${[['week','Тиждень'],['month','Місяць'],['quarter','Квартал'],['day','День']].map(([key,label])=>`<button class="button small ${presenceUi.view===key?'primary':''}" data-presence-view="${key}" aria-pressed="${presenceUi.view===key}">${label}</button>`).join('')}</div></div>
   <div class="presence-filter-line"><label class="field presence-date-field"><span>Стан на дату</span><input type="date" data-presence-date value="${date}" required></label><label class="field presence-search"><span class="sr-only">Знайти працівника</span><input type="search" data-presence-query value="${h(presenceUi.query)}" placeholder="Знайти працівника"></label><div class="presence-summary" aria-label="Фільтри за наявністю на вибрану дату">${[['all','Усі',people.length],['working','Працюють',present],['zkp','ЗКП',zkp],['learning','Навчання',learning],['absent','Відсутні',absent],['pending','Без позначки',missing]].map(([key,label,count])=>`<button data-presence-filter="${key}" class="${presenceUi.filter===key?'active':''}" aria-pressed="${presenceUi.filter===key}"><span>${label}</span><strong>${count}</strong></button>`).join('')}</div></div></section>
   ${date>localDateKey()?'<p class="presence-plan-note">Майбутні позначки — план. До фактичних днів роботи вони ще не додаються.</p>':''}${renderConsequenceBanner()}
-  <section class="panel presence-calendar-panel">${content}<div class="presence-legend" aria-label="Позначки наявності">${Object.entries(LadPresence.labels).map(([key,label])=>`<span><b class="presence-${key}">${h(LadPresence.symbols[key])}</b>${h(label)}</span>`).join('')}<span><b>·</b>Не позначено</span></div><p class="muted presence-hint">Ліва кнопка — змінити день. Права кнопка — призначити статус або видалити позначку (з клавіатури: Shift+F10). «+ День / період» — для кількох людей і дат. ЗКП дозволяє чергування.</p></section>
+  <section class="panel presence-calendar-panel">${content}<div class="presence-legend" aria-label="Позначки наявності">${Object.entries(LadPresence.labels).map(([key,label])=>`<span><b class="presence-${key}">${h(LadPresence.symbols[key])}</b>${h(label)}</span>`).join('')}<span><b>·</b>Не позначено</span></div><p class="muted presence-hint">Ліва кнопка — змінити день. Права кнопка — одразу зберегти статус або видалити позначку (з клавіатури: Shift+F10). «+ День / період» — для кількох людей і дат. ЗКП дозволяє чергування.</p></section>
   <details class="panel presence-explainer"><summary>Як працює наявність</summary><p>Позначки тут мають пріоритет над ручним обліком і роботою над проєктами. Відсутність охоплює календарні дні, включно з вихідними, виключає людину з чергувань і не стає пропуском.</p><p>«На роботі» та «ЗКП» визначають місце роботи. ЗКП не зараховує роботу автоматично: після повернення в офіс підтвердьте ті дні, за які отримано роботу. Обидва види навчання дозволяють чергування; навчання рахується окремо й не стає пропуском. Для роботи у вихідний зробіть дату робочою в табелі. Без позначки зберігається поточний облік роботи. Інші правила графіка діють окремо.</p></details>
   <details class="panel presence-history-panel"><summary>Останні зміни наявності <span class="count-pill">${history.length}</span></summary>${history.map(item=>`<article class="presence-history"><strong>${h(item.details.employeeIds.map(id=>employeeById(id)?.name||'Працівник з історії').join(', '))}</strong><span>${h(formatDate(item.details.startDate))} — ${h(formatDate(item.details.endDate))} · ${h(item.details.action==='clear'?'Позначку очищено':LadPresence.labels[item.details.status])}</span><p>${h(item.details.reason)}</p><small>${h(item.details.actor)} · ${h(new Date(item.at).toLocaleString('uk-UA'))}</small></article>`).join('')||'<p class="muted">Зміни зберігатимуть тут підставу, автора й час.</p>'}</details>`;
 }
@@ -111,12 +146,12 @@ function presencePreviewHtml(report) {
 }
 function renderPresenceForm() {
   const draft=presenceUi.draft,people=snapshot.employees.filter(person=>person.active||draft.employeeIds.includes(person.id));
-  openManagementModal(`<form id="presence-form"><header class="modal-head"><div><span class="page-eyebrow">Єдина позначка для всіх розділів</span><h2>Наявність працівників</h2><p>Один день або період до 366 календарних днів.</p></div><button class="icon-button" type="button" data-close-modal>×</button></header><div class="modal-body task-form-body"><fieldset class="presence-picker"><legend>Працівники</legend><button class="button small" type="button" data-presence-pick-all>Вибрати / зняти всіх</button><div>${people.map(person=>`<label class="check-row"><input type="checkbox" name="employeeIds" value="${h(person.id)}" ${draft.employeeIds.includes(person.id)?'checked':''}><span>${h(person.name)}${person.active?'':' · архів'}</span></label>`).join('')}</div></fieldset><div class="form-grid"><label class="field"><span>Від</span><input type="date" name="startDate" value="${h(draft.startDate)}" required></label><label class="field"><span>До включно</span><input type="date" name="endDate" value="${h(draft.endDate)}" required></label></div><label class="field"><span>Наявність</span><select name="status">${[...Object.entries(LadPresence.labels),['clear','Очистити позначку наявності']].map(([value,label])=>`<option value="${value}" ${draft.status===value?'selected':''}>${h(label)}</option>`).join('')}</select></label><p class="muted">ЗКП: працює в іншому офісі та може чергувати; роботу зараховують окремо після повернення в офіс. Обидва види навчання також дозволяють чергування. Очищення поверне облік за роботою й ручними позначками; минулий день без роботи може знову потребувати позначки.</p><label class="field"><span>Підстава / пояснення *</span><textarea name="reason" rows="2" maxlength="500" required placeholder="Наприклад, відпустка за наказом або робота на ЗКП">${h(draft.reason)}</textarea></label>${presenceUi.report?presencePreviewHtml(presenceUi.report):'<p class="muted">Перевірте наслідки перед збереженням: будуть враховані всі графіки.</p>'}<p data-presence-error role="alert" hidden></p></div><footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="submit" ${presenceUi.busy?'disabled':''}>Перевірити наслідки</button><button class="button primary" type="button" data-presence-apply ${!presenceUi.report?.canApply||presenceUi.busy?'disabled':''}>Зберегти наявність</button></footer></form>`,true);
+  openManagementModal(`<form id="presence-form"><header class="modal-head"><div><span class="page-eyebrow">Єдина позначка для всіх розділів</span><h2>Наявність працівників</h2><p>Один день або період до 366 календарних днів.</p></div><button class="icon-button" type="button" data-close-modal>×</button></header><div class="modal-body task-form-body"><fieldset class="presence-picker"><legend>Працівники</legend><button class="button small" type="button" data-presence-pick-all>Вибрати / зняти всіх</button><div>${people.map(person=>`<label class="check-row"><input type="checkbox" name="employeeIds" value="${h(person.id)}" ${draft.employeeIds.includes(person.id)?'checked':''}><span>${h(person.name)}${person.active?'':' · архів'}</span></label>`).join('')}</div></fieldset><div class="form-grid"><label class="field"><span>Від</span><input type="date" name="startDate" value="${h(draft.startDate)}" required></label><label class="field"><span>До включно</span><input type="date" name="endDate" value="${h(draft.endDate)}" required></label></div><label class="field"><span>Наявність</span><select name="status">${[...Object.entries(LadPresence.labels),['clear','Очистити позначку наявності']].map(([value,label])=>`<option value="${value}" ${draft.status===value?'selected':''}>${h(label)}</option>`).join('')}</select></label><p class="muted">ЗКП: працює в іншому офісі та може чергувати; роботу зараховують окремо після повернення в офіс. Обидва види навчання також дозволяють чергування. Очищення поверне облік за роботою й ручними позначками; минулий день без роботи може знову потребувати позначки.</p><label class="field"><span>Підстава / пояснення · необов’язково</span><textarea name="reason" rows="2" maxlength="500" placeholder="Наприклад, відпустка за наказом або робота на ЗКП">${h(draft.reason)}</textarea></label>${presenceUi.report?presencePreviewHtml(presenceUi.report):'<p class="muted">Можна зберегти одразу. «Перевірити наслідки» — за бажанням; обмеження перевіряються під час збереження.</p>'}<p data-presence-error role="alert" hidden></p></div><footer class="modal-foot three-way"><button class="button" type="button" data-close-modal>Скасувати</button><button class="button" type="submit" ${presenceUi.busy?'disabled':''}>Перевірити наслідки</button><button class="button primary" type="button" data-presence-apply ${presenceUi.busy||presenceUi.report&&!presenceUi.report.canApply?'disabled':''}>Зберегти наявність</button></footer></form>`,true);
 }
 function invalidatePresence(form) {
   if(!form)return;
   const input=presenceInput(form);presenceUi.draft={...input,status:input.action==='clear'?'clear':input.status};presenceUi.report=null;
-  form.querySelector('[data-presence-apply]').disabled=true;form.querySelector('[data-presence-impact]')?.remove();
+  form.querySelector('[data-presence-apply]').disabled=presenceUi.busy;form.querySelector('[data-presence-impact]')?.remove();
 }
 async function handlePresenceClick(event) {
   const target=event.target;
@@ -130,13 +165,13 @@ async function handlePresenceClick(event) {
   const view=target.closest('[data-presence-view]');if(view){presenceUi.view=view.dataset.presenceView;renderShell();return true;}
   if(target.closest('[data-presence-pick-all]')){const form=target.closest('form'),inputs=[...form.querySelectorAll('[name="employeeIds"]')],check=inputs.some(input=>!input.checked);inputs.forEach(input=>input.checked=check);invalidatePresence(form);return true;}
   const apply=target.closest('[data-presence-apply]');if(apply){
-    if(presenceUi.busy||!presenceUi.report?.canApply)return true;
-    presenceUi.busy=true;const form=apply.form,report=presenceUi.report,revision=presenceUi.revision;
+    if(presenceUi.busy||!apply.form.reportValidity())return true;
+    presenceUi.busy=true;const form=apply.form,report=presenceUi.report,revision=presenceUi.revision,input=presenceInput(form);
     form.querySelectorAll('input,select,textarea,button').forEach(control=>control.disabled=true);
-    const result=await run(()=>window.counter.applyPresence({change:report.change,expectedToken:report.token}),null);
+    const result=await run(()=>report?window.counter.applyPresence({change:report.change,expectedToken:report.token}):window.counter.savePresence(input),null);
     if(revision===presenceUi.revision){presenceUi.busy=false;presenceUi.report=null;}
     if(result){if(form.isConnected){closeModal(form);ui.tab='presence';presenceUi.date=result.change.startDate;renderShell();}showToast('Наявність збережено для всіх розділів.',{undo:true});}
-    else if(form.isConnected){form.querySelectorAll('input,select,textarea,button').forEach(control=>control.disabled=false);invalidatePresence(form);const error=form.querySelector('[data-presence-error]');error.hidden=false;error.textContent='Не вдалося зберегти. Перевірте наслідки ще раз.';}
+    else if(form.isConnected){form.querySelectorAll('input,select,textarea,button').forEach(control=>control.disabled=false);invalidatePresence(form);const error=form.querySelector('[data-presence-error]');error.hidden=false;error.textContent='Зміну не збережено. Усуньте вказану причину й спробуйте ще раз.';}
     return true;
   }
   return false;
@@ -158,11 +193,12 @@ async function handlePresenceSubmit(event) {
   if(presenceUi.busy)return true;
   presenceUi.busy=true;const revision=presenceUi.revision,input=presenceInput(form),submitted=JSON.stringify(input);presenceUi.draft={...input,status:input.action==='clear'?'clear':input.status};
   form.querySelector('[type="submit"]').disabled=true;
+  form.querySelector('[data-presence-apply]').disabled=true;
   try {
     const report=await window.counter.previewPresence(input);
     if(revision===presenceUi.revision&&form.isConnected&&submitted===JSON.stringify(presenceInput(form))){presenceUi.report=report;presenceUi.busy=false;renderPresenceForm();modalRoot.querySelector('[data-presence-impact]')?.scrollIntoView({block:'nearest'});}
     else if(form.isConnected)form.querySelector('[type="submit"]').disabled=false;
   }catch(error){if(form.isConnected){const notice=form.querySelector('[data-presence-error]');notice.textContent=error.message;notice.hidden=false;form.querySelector('[type="submit"]').disabled=false;}}
-  finally{if(revision===presenceUi.revision)presenceUi.busy=false;}
+  finally{if(revision===presenceUi.revision){presenceUi.busy=false;if(form.isConnected)form.querySelector('[data-presence-apply]').disabled=Boolean(presenceUi.report&&!presenceUi.report.canApply);}}
   return true;
 }

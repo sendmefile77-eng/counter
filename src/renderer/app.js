@@ -1,7 +1,7 @@
 const STATUS_LABELS = LadWork.labels;
 
 const STATUS_COLORS = {
-  onsite:'#36bf76',zkp:'#36a8b7',training_online:'#6887d8',training_academy:'#b383d9',
+  onsite:'#36bf76',zkp:'#36a8b7',training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',
   working: '#36a8b7', planned_work: '#668ac9',
   pending: '#586b85',
   submitted: '#36bf76',
@@ -17,7 +17,7 @@ const STATUS_COLORS = {
 };
 
 const STATUS_SYMBOLS = {
-  onsite:'Р',zkp:'ЗКП',training_online:'НО',training_academy:'НА',working:'Р', planned_work:'П',
+  onsite:'Р',zkp:'ЗКП',training_online:'НО',training_academy:'НА',business_trip:'ВД',working:'Р', planned_work:'П',
   pending: '·',
   submitted: '✓',
   submitted_late: '◷',
@@ -548,14 +548,14 @@ function journalVisibleReport() {
   const employees = snapshot.employees.filter((employee) => ui.journalArchived || employee.active);
   const report = CounterJournal.report(snapshot, { ...journalRange(), employeeIds: employees.map(({ id }) => id) }, localDateKey());
   report.rows = report.rows.filter((row) => row.name.toLocaleLowerCase('uk-UA').includes(ui.journalQuery.toLocaleLowerCase('uk-UA'))
-    && (ui.journalFilter === 'all' || (ui.journalFilter === 'missed' && row.totals.missed > 0)
-      || (ui.journalFilter === 'pending' && row.totals.pending > 0) || (ui.journalFilter === 'absent' && row.totals.absent > 0)));
+    && (ui.journalFilter === 'all' || (ui.journalFilter === 'missed' && row.totals.notSubmitted > 0)
+      || (ui.journalFilter === 'pending' && row.cells.some(cell=>cell.date===localDateKey()&&cell.displayStatus==='not_submitted')) || (ui.journalFilter === 'absent' && row.totals.absent+row.totals.training > 0)));
   if (ui.journalHideWeekends) report.dates = report.dates.filter((date) => configuredWorkday(date)
     || report.rows.some((row) => row.cells.find((cell) => cell.date === date)?.override));
   report.totals = report.rows.reduce((totals, row) => {
     for (const [key, value] of Object.entries(row.totals)) totals[key] = (totals[key] || 0) + value;
     return totals;
-  }, { submitted: 0, missed: 0, other: 0, absent: 0, pending: 0 });
+  }, { submitted: 0, notSubmitted:0,missed: 0, other: 0, absent: 0,training:0,pending: 0 });
   return report;
 }
 
@@ -566,9 +566,9 @@ function renderJournalPage() {
   ui.journalSelected = ui.journalSelected.filter((cell) => visibleIds.has(cell.employeeId) && visibleDates.has(cell.date));
   const selected = new Set(ui.journalSelected.map((cell) => `${cell.employeeId}|${cell.date}`));
   const range = journalRange();
-  const metricLabels = [['submitted', 'Відпрацьовано'], ['working', 'У роботі'], ['missed', 'Без обліку'], ['other', 'ІЗ'], ['absent', 'Відсутність'], ['pending', 'Очікує']];
+  const metricLabels = [['submitted','Здано'],['notSubmitted','Не здано'],['absent','Відсутність'],['training','Навчання']];
   return `
-    <div class="page-header"><div><h1>Табель виконання</h1><p>Натисніть клітинку, щоб відкрити статус дня. Для кількох днів скористайтеся масовою зміною або виділенням.</p></div><div class="button-row"><button class="button primary small" data-status-period>Масова зміна</button><button class="button small" data-export-journal ${!report.rows.length ? 'disabled' : ''}>Експорт CSV</button></div></div>
+    <div class="page-header"><div><h1>Табель здачі роботи</h1><p>Зелений ✓ — роботу / документи здано. Червоний × — здачу ще не підтверджено. Натисніть клітинку, щоб зарахувати роботу за день. Для кількох днів скористайтеся масовою зміною або виділенням.</p></div><div class="button-row"><button class="button primary small" data-status-period>Масова зміна</button><button class="button small" data-export-journal ${!report.rows.length ? 'disabled' : ''}>Експорт CSV</button></div></div>
     <div class="journal-view-bar">
       <div class="button-row">${[['month', 'Місяць'], ['week', 'Тиждень'], ['period', 'Період']].map(([view, label]) => `<button class="button small ${ui.journalView === view ? 'primary' : ''}" data-journal-view="${view}" aria-pressed="${ui.journalView === view}">${label}</button>`).join('')}<button class="button small" data-journal-today>Сьогодні</button></div>
       ${ui.journalView === 'month' ? `<label class="field journal-date-field"><span>Перейти до місяця</span><input type="month" data-journal-month value="${ui.month}"></label>` : ui.journalView === 'week' ? `<label class="field journal-date-field"><span>Тиждень за датою</span><input type="date" data-journal-anchor value="${ui.journalAnchor}"></label>` : `<form id="journal-range-form" class="journal-range-form"><label class="field"><span>Від</span><input name="startDate" type="date" value="${ui.journalFrom}" required></label><label class="field"><span>До</span><input name="endDate" type="date" value="${ui.journalTo}" required></label><button class="button small" type="submit">Показати</button></form>`}
@@ -576,23 +576,23 @@ function renderJournalPage() {
     <div class="table-toolbar journal-period-toolbar"><button class="button small" data-month-shift="-1" ${ui.journalView === 'period' ? 'disabled' : ''}>← Попередній</button><div class="month-title">${ui.journalView === 'month' ? h(formatMonth(ui.month)) : `${h(formatDate(range.startDate))} — ${h(formatDate(range.endDate))}`}</div><button class="button small" data-month-shift="1" ${ui.journalView === 'period' ? 'disabled' : ''}>Наступний →</button></div>
     <div class="journal-controls">
       <label class="field journal-search"><span>Знайти працівника</span><input type="search" data-journal-search value="${h(ui.journalQuery)}" placeholder="Ім’я або прізвище"></label>
-      <div class="button-row journal-filters">${[['all', 'Усі'], ['missed', 'З пропусками'], ['pending', 'Очікують'], ['absent', 'Відсутні']].map(([value, label]) => `<button class="button small ${ui.journalFilter === value ? 'primary' : ''}" data-journal-filter="${value}" aria-pressed="${ui.journalFilter === value}">${label}</button>`).join('')}</div>
+      <div class="button-row journal-filters">${[['all', 'Усі'], ['missed','Не здано'],['pending','Не здано сьогодні'],['absent','Винятки']].map(([value, label]) => `<button class="button small ${ui.journalFilter === value ? 'primary' : ''}" data-journal-filter="${value}" aria-pressed="${ui.journalFilter === value}">${label}</button>`).join('')}</div>
       <details class="journal-display"><summary>Вигляд</summary><label><input type="checkbox" data-journal-setting="journalCompact" ${ui.journalCompact ? 'checked' : ''}>Компактні рядки</label><label><input type="checkbox" data-journal-setting="journalHideWeekends" ${ui.journalHideWeekends ? 'checked' : ''}>Сховати неробочі дні</label><label><input type="checkbox" data-journal-setting="journalArchived" ${ui.journalArchived ? 'checked' : ''}>Показати архів</label></details>
     </div>
-    <div class="journal-summary">${metricLabels.map(([key, label]) => `<span>${label}: <strong>${report.totals[key]}</strong></span>`).join('')}<small>Підсумки у днях за період для показаних працівників. «Очікує» — лише до сьогодні.</small></div>
+    <div class="journal-summary">${metricLabels.map(([key, label]) => `<span>${label}: <strong>${report.totals[key]}</strong></span>`).join('')}<small>Підсумки у днях за період для показаних працівників. Здача враховується лише до сьогодні. Майбутні робочі клітинки порожні.</small></div>
     <details class="journal-selection-bar" ${ui.journalSelecting || selected.size ? 'open' : ''}><summary>Виділення та масові дії${selected.size ? ` · вибрано ${selected.size} клітинок` : ''}</summary><div class="button-row"><button class="button small ${ui.journalSelecting ? 'primary' : ''}" data-journal-select-mode aria-pressed="${ui.journalSelecting}">${ui.journalSelecting ? 'Вийти з виділення' : 'Виділення клітинок'}</button><button class="button small" data-journal-select-all ${!report.rows.length ? 'disabled' : ''}>Вибрати показані</button><span data-journal-selection-count aria-live="polite">Виділено: ${selected.size}</span><button class="button small" data-journal-batch="status" ${!selected.size ? 'disabled' : ''}>Змінити статус</button><button class="button small" data-journal-batch="clear" ${!selected.size ? 'disabled' : ''}>Очистити ручні</button><button class="button small" data-journal-batch="make_workday" ${!selected.size ? 'disabled' : ''}>Зробити робочими</button><button class="button small" data-journal-batch="restore_weekend" ${!selected.size ? 'disabled' : ''}>Повернути вихідні</button><button class="button small ghost" data-journal-clear-selection ${!selected.size ? 'disabled' : ''}>Зняти вибір</button></div></details>
     <div class="table-scroll journal-scroll" data-scroll-key="journal-matrix">
       <table class="matrix journal-matrix ${ui.journalCompact ? 'journal-compact' : ''} ${ui.journalFocusedEmployeeId ? 'has-focused-row' : ''}"><thead><tr><th class="sticky-name">Працівник</th>${report.dates.map((date) => `<th class="${date === localDateKey() ? 'is-today' : ''} ${!configuredWorkday(date) ? 'weekend' : ''} ${dateFromKey(date).getDay() === 1 ? 'journal-week-start' : ''}"><button data-journal-column="${date}" title="Вибрати цей день для всіх показаних працівників"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[dateFromKey(date).getDay()]}${ui.journalView !== 'month' ? ` · ${date.slice(5, 7)}` : ''}</small></button></th>`).join('')}${metricLabels.map(([, label]) => `<th class="journal-total">${label}</th>`).join('')}</tr></thead>
         <tbody>${report.rows.map((row, rowIndex) => `<tr class="${ui.journalFocusedEmployeeId === row.employeeId ? 'journal-row-focused' : ''}"><td class="sticky-name"><button data-journal-row="${h(row.employeeId)}" title="${h(row.name)} · у режимі виділення вибирає всі показані дні">${h(row.name)}</button></td>${report.dates.map((date, colIndex) => {
           const cell = row.cells.find((item) => item.date === date);
           const chosen = selected.has(`${row.employeeId}|${date}`);
-          const tooltip = `${row.name}\n${formatDate(date)}\n${cell.status === 'outside' ? 'Поза періодом роботи' : STATUS_LABELS[cell.status] || 'Очікується'}${cell.override ? '\nОкремий робочий вихідний' : ''}${cell.protected ? '\nЗапис попереднього обліку' : ''}${cell.documentRef ? `\n${cell.documentRef}` : ''}${cell.note ? `\n${cell.note}` : ''}`;
-          return `<td class="matrix-cell cell-${cell.status}${cell.override && cell.status === 'pending' ? ' cell-workday-override' : ''}${chosen ? ' journal-cell-selected' : ''}${cell.protected ? ' journal-cell-protected' : ''}${date === localDateKey() ? ' is-today' : ''}${dateFromKey(date).getDay() === 1 ? ' journal-week-start' : ''}" data-cell-employee="${h(row.employeeId)}" data-date="${date}" role="button" tabindex="${rowIndex === 0 && colIndex === 0 ? '0' : '-1'}" aria-pressed="${chosen}" aria-label="${h(tooltip.replaceAll('\n', ' · '))}" title="${h(tooltip)}">${cell.symbol}</td>`;
+          const tooltip = `${row.name}\n${formatDate(date)}\n${cell.status === 'outside' ? 'Поза періодом роботи' : CounterJournal.labels[cell.displayStatus] || 'Очікується'}${cell.override ? '\nОкремий робочий вихідний' : ''}${cell.protected ? '\nЗапис попереднього обліку' : ''}${cell.documentRef ? `\n${cell.documentRef}` : ''}${cell.note ? `\n${cell.note}` : ''}`;
+          return `<td class="matrix-cell cell-${cell.displayStatus}${cell.override ? ' cell-workday-override' : ''}${chosen ? ' journal-cell-selected' : ''}${cell.protected ? ' journal-cell-protected' : ''}${date === localDateKey() ? ' is-today' : ''}${dateFromKey(date).getDay() === 1 ? ' journal-week-start' : ''}" data-cell-employee="${h(row.employeeId)}" data-date="${date}" role="button" tabindex="${rowIndex === 0 && colIndex === 0 ? '0' : '-1'}" aria-pressed="${chosen}" aria-label="${h(tooltip.replaceAll('\n', ' · '))}" title="${h(tooltip)}">${cell.symbol}</td>`;
         }).join('')}${metricLabels.map(([key]) => `<td class="journal-total" title="${h(row.name)} · за показаний період">${row.totals[key]}</td>`).join('')}</tr>`).join('')}</tbody>
       </table>
       ${!report.rows.length ? '<div class="empty-state">За цими умовами працівників немає. Змініть пошук або фільтр.</div>' : ''}
     </div>
-    <details class="journal-legend"><summary>Позначення та керування</summary><div>${Object.entries(STATUS_SYMBOLS).map(([key, symbol]) => `<span><strong>${symbol}</strong> ${h(STATUS_LABELS[key])}</span>`).join('')}<span><strong>ВХ</strong> Вихідний</span><span><strong>РД</strong> Окремий робочий вихідний</span><span><strong>—</strong> Поза періодом роботи</span><span><strong>Крапка в кутку</strong> Запис попереднього обліку</span></div><p>У режимі виділення натискайте клітинки, імена та заголовки днів. Shift вибирає прямокутник. Звичайний клік поза цим режимом відкриває окремий день.</p></details>
+    <details class="journal-legend"><summary>Позначення та керування</summary><div>${Object.entries(CounterJournal.symbols).map(([key,symbol])=>`<span><strong>${h(symbol||'Порожньо')}</strong> ${h(CounterJournal.labels[key])}</span>`).join('')}<span><strong>Рамка</strong> Окремий робочий вихідний</span><span><strong>Крапка в кутку</strong> Запис попереднього обліку</span></div><p>У режимі виділення натискайте клітинки, імена та заголовки днів. Shift вибирає прямокутник. Звичайний клік поза цим режимом відкриває окремий день.</p></details>
   `;
 }
 
@@ -667,10 +667,8 @@ function dutyCell(employee, date) {
     sick: 'ЛК',
     vacation: 'ВП',
     day_off: 'ВГ',
-    holiday: 'В',
+    holiday: 'В',business_trip:'ВД',
   };
-  const availability=presenceMark(employee.id,date);
-  if (availability&&!LadPresence.absent.has(availability.status)) return {symbol:LadPresence.symbols[availability.status],className:'duty-presence',title:`Наявність: ${LadPresence.labels[availability.status]}. Чергування дозволено за наявністю.`};
   if (linkedMarks[record?.status]) {
     return { symbol: linkedMarks[record.status], className: 'duty-unavailable', title: STATUS_LABELS[record.status] };
   }
@@ -1181,6 +1179,7 @@ function renderDataPage() {
     [1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [0, 'Нд'],
   ];
   const colorLabels = {
+    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження',
     onsite:'На роботі',zkp:'ЗКП',working:'У роботі', planned_work:'Запланована робота', pending:'Без позначки',submitted:'Відпрацьовано',submitted_late:'Роботу зараховано',
     submitted_advance:'Раніше зараховано',missed:'Роботу не позначено',other_tasks:'Інша робота',
     personal_permission: 'Особисті справи', sick: 'Лікарняний', vacation: 'Відпустка',

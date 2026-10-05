@@ -1622,6 +1622,16 @@ body.mode-widget #app {
 .cell-submitted_late { background: color-mix(in srgb, var(--status-submitted-late) 22%, transparent); color: var(--status-submitted-late); box-shadow: inset 0 0 0 1px #d6a74a; }
 .cell-submitted_advance { background: color-mix(in srgb, var(--status-submitted-advance) 20%, transparent); color: var(--status-submitted-advance); }
 .cell-missed { background: color-mix(in srgb, var(--status-missed) 25%, transparent); color: var(--status-missed); }
+.journal-matrix .cell-not_submitted { background:color-mix(in srgb,var(--status-missed) 25%,transparent); color:var(--status-missed); }
+.journal-matrix .cell-future { background:transparent; }
+.journal-matrix .cell-workday-override { box-shadow:inset 0 0 0 1px var(--accent); }
+.journal-matrix .cell-training_online { background:color-mix(in srgb,var(--status-training-online) 18%,transparent); color:var(--status-training-online); }
+.journal-matrix .cell-training_academy { background:color-mix(in srgb,var(--status-training-academy) 18%,transparent); color:var(--status-training-academy); }
+.journal-matrix .cell-business_trip { background:color-mix(in srgb,var(--status-business-trip) 18%,transparent); color:var(--status-business-trip); }
+:root[data-theme="light"] .journal-matrix .cell-not_submitted { color:color-mix(in srgb,var(--status-missed) 72%,#172b45); }
+:root[data-theme="light"] .journal-matrix .cell-training_online { color:color-mix(in srgb,var(--status-training-online) 70%,#0b2038); }
+:root[data-theme="light"] .journal-matrix .cell-training_academy { color:color-mix(in srgb,var(--status-training-academy) 70%,#0b2038); }
+:root[data-theme="light"] .journal-matrix .cell-business_trip { color:color-mix(in srgb,var(--status-business-trip) 70%,#0b2038); }
 .cell-other_tasks { background: color-mix(in srgb, var(--status-other-tasks) 22%, transparent); color: var(--status-other-tasks); }
 .cell-personal_permission { background: color-mix(in srgb, var(--status-personal-permission) 22%, transparent); color: var(--status-personal-permission); }
 .cell-sick { background: color-mix(in srgb, var(--status-sick) 22%, transparent); color: var(--status-sick); }

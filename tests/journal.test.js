@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const domain = require('../src/shared/domain');
 const journal = require('../src/shared/journal');
+const presence=require('../src/shared/presence'),work=require('../src/shared/work');
 const now = new Date(2026, 9, 2, 9);
 function fixture() {
   const state = domain.defaultState(new Date(2026, 8, 1, 9));
@@ -15,6 +16,24 @@ function statusInput(people, overrides = {}) {
 function protectedRecord(state, employeeId, date) {
   state.records[domain.recordKey(employeeId, date)] = { employeeId, date, status: 'submitted', source: 'receipt', receiptId: 'document-1' };
 }
+
+test('delivery ledger distinguishes confirmation from attendance and ongoing work, keeps exceptions and leaves future working cells empty',()=>{
+ const {state,people}=fixture(),person=people[0];state.settings.automaticClose=false;
+ work.create(state,{employeeId:person.id,title:'Поточна робота',projectCount:5,startDate:'2026-09-28',estimatedEndDate:'2026-10-09'},now);
+ presence.write(state,{employeeId:person.id,date:'2026-09-28',status:'onsite'},now);
+ presence.write(state,{employeeId:person.id,date:'2026-09-29',status:'zkp'},now);
+ domain.setManualStatus(state,{employeeId:person.id,date:'2026-09-30',status:'other_tasks'},now);
+ domain.setManualStatus(state,{employeeId:person.id,date:'2026-10-01',status:'submitted'},now);
+ let report=journal.report(state,{startDate:'2026-09-28',endDate:'2026-10-09',employeeIds:[person.id]},'2026-10-02');
+ assert.deepEqual(report.rows[0].cells.map(cell=>cell.symbol),['×','×','×','✓','×','ВХ','ВХ','','','','','']);
+ assert.equal(report.totals.submitted,1);assert.equal(report.totals.notSubmitted,4);assert.equal(report.totals.worked,1);
+ for(const [status,symbol] of Object.entries(presence.symbols).filter(([status])=>presence.absent.has(status)||presence.learning.has(status))) {
+  presence.write(state,{employeeId:person.id,date:'2026-10-02',status},now);
+  const cell=journal.cell(state,person,'2026-10-02','2026-10-02');assert.equal(cell.symbol,symbol);assert.equal(cell.displayStatus,status);
+ }
+ const history=domain.clone(state.presenceRecords);journal.report(state,{startDate:'2026-09-28',endDate:'2026-10-09'},'2026-10-02');assert.deepEqual(state.presenceRecords,history);
+ assert.ok(!Object.hasOwn(journal.symbols,'onsite'));assert.ok(!Object.hasOwn(journal.symbols,'zkp'));assert.ok(!Object.hasOwn(journal.symbols,'other_tasks'));
+});
 
 test('multi-worker period respects weekdays, omits weekends and commits one audit entry', () => {
   const { state, people } = fixture(); const input = statusInput(people, { weekdays: [1, 3, 5] });
@@ -151,7 +170,7 @@ test('report counts only current and past pending, preserves history and can inc
   domain.archiveEmployee(state, people[2].id, new Date(2026, 8, 30, 9));
   const report = domain.calculateJournalReport(state, { startDate: '2026-09-28', endDate: '2026-10-09' }, now);
   assert.equal(report.rows.length, 2);
-  assert.deepEqual(report.rows[0].totals, { submitted: 1, missed: 1, other: 1, absent: 1, pending: 1, working: 0, onsite: 0, zkp: 0, training:0, worked: 2 });
+  assert.deepEqual(report.rows[0].totals, { submitted: 1, missed: 1, other: 1, absent: 1, pending: 1, working: 0, onsite: 0, zkp: 0, training:0,notSubmitted:3, worked: 1 });
   const archived = domain.calculateJournalReport(state, { startDate: '2026-09-28', endDate: '2026-10-09', employeeIds: [people[2].id] }, now);
   assert.equal(archived.rows.length, 1); assert.equal(archived.rows[0].totals.pending, 2);
   assert.equal(archived.rows[0].cells.find((cell) => cell.date === '2026-10-02').status, 'outside');
@@ -164,7 +183,9 @@ test('historical records before employment and individual working weekends remai
   domain.setWorkdayOverride(state, person.id, '2026-10-03', '', now);
   const report = domain.calculateJournalReport(state, { startDate: '2026-08-30', endDate: '2026-10-04', employeeIds: [person.id] }, now);
   assert.equal(report.rows[0].cells[0].status, 'outside'); assert.equal(report.rows[0].cells[1].status, 'submitted');
-  assert.equal(report.rows[0].cells.find((cell) => cell.date === '2026-10-03').symbol, 'РД');
+  const futureWeekend=report.rows[0].cells.find((cell) => cell.date === '2026-10-03');
+  assert.equal(futureWeekend.symbol,'');assert.equal(futureWeekend.override,true);
+  assert.equal(journal.cell(state,person,'2026-10-03','2026-10-05').symbol,'×');
 });
 
 test('rectangle selection covers reversed row and date bounds and ignores stale anchors', () => {

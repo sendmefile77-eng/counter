@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  SCHEMA_VERSION,
   STATUS,
   addDays,
   allocateReceiptBackward,
@@ -779,7 +780,7 @@ test('база попередньої версії автоматично отр
   oldState.schemaVersion = 1;
 
   const normalized = normalizeState(oldState, localDate(2026, 7, 20, 9, 0));
-  assert.equal(normalized.schemaVersion, 13);
+  assert.equal(normalized.schemaVersion, SCHEMA_VERSION);
   assert.equal(normalized.employees[0].id, employee.id);
   assert.deepEqual(normalized.workdayOverrides, {});
   assert.equal(normalized.duties.initialized, false);
