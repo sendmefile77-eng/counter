@@ -3,7 +3,7 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 const coins=require('./coins');
@@ -342,6 +342,7 @@ function defaultState(now = new Date()) {
     records: {},
     receipts: [],
     workEntries: [],
+    workIntakes: [],
     presenceRecords: {},
     workdayOverrides: {},
     dutySchedules: [{
@@ -496,6 +497,7 @@ function normalizeState(input, now = new Date()) {
   state.drawSequence = state.draws.reduce((maximum, draw) => Math.max(maximum, draw.number), input.drawSequence || 0);
   state.workEntries = work.normalize(input.workEntries, state);
   state.presenceRecords = presence.normalize(input.presenceRecords, state);
+  state.workIntakes = work.normalizeIntakes(input.workIntakes, state);
   return state;
 }
 

@@ -388,6 +388,10 @@ function registerIpc() {
   ipcMain.handle('work:update', (_event,{id,input}) => mutate('work:update',state=>work.update(state,id,input)));
   ipcMain.handle('work:progress', (_event,{id,input}) => mutate('work:progress',state=>work.progress(state,id,input)));
   ipcMain.handle('work:finish', (_event,{id,input}) => mutate('work:finish',state=>work.finish(state,id,input)));
+  ipcMain.handle('work:receive-objects', (_event,input) => {
+    if(store.state.workIntakes?.some(item=>item.id===input?.id))return clone(work.receiveObjects(store.state,input));
+    return mutate('work:receive-objects',state=>work.receiveObjects(state,input));
+  });
   ipcMain.handle('work:mark-day', (_event,input) => mutate('work:mark-day',state=>{
     if(!['working','submitted'].includes(input.status)||input.date>dateKeyFromDate())throw new Error('Позначити роботу можна до сьогодні включно.');
     const employee=state.employees.find(person=>person.id===input.employeeId);

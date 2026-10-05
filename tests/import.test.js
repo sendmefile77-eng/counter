@@ -520,3 +520,30 @@ test('protocol deletion IPC keeps completed tasks and undo, with no reused numbe
   await f.call('history:undo');assert.equal((await f.call('snapshot:get')).draws.length,1);
   await f.call('data:import',{name:'protocols.json',content:JSON.stringify(saved)});assert.equal((await f.call('draws:create',input)).number,2);
 });
+
+test('widget intake IPC persists each object and undo restores quantity together with the closed day',async t=>{
+ const f=await fixture(t),id=(await f.call('snapshot:get')).employees[0].id,today=domain.dateKeyFromDate();
+ await f.call('presence:save',{employeeId:id,date:today,status:'onsite'});
+ const before=fs.readFileSync(f.database,'utf8');
+ for(let index=0;index<10;index++)await f.call('work:receive-objects',{id:'widget-click-'+index,employeeId:id,date:today,objectCount:1});
+ const savedBytes=fs.readFileSync(f.database,'utf8'),saved=JSON.parse(savedBytes);
+ await f.call('work:receive-objects',{id:'widget-click-9',employeeId:id,date:today,objectCount:1});
+ assert.equal(fs.readFileSync(f.database,'utf8'),savedBytes);
+ assert.equal(saved.workIntakes.length,10);assert.equal(saved.workIntakes.reduce((sum,item)=>sum+item.objectCount,0),10);
+ assert.equal(saved.records[id+'|'+today].status,'submitted');assert.equal(saved.workIntakes.slice(1).every(item=>item.unallocatedCount===1),true);
+ for(let index=0;index<10;index++)await f.call('history:undo');
+ assert.equal(fs.readFileSync(f.database,'utf8'),before);
+});
+
+test('widget object quantity and closed dates survive import and backup restore; malformed history leaves the database intact',async t=>{
+ const f=await fixture(t),work=require('../src/shared/work'),id=f.incoming.employees[0].id;
+ work.receiveObjects(f.incoming,{id:'backup-widget-click',employeeId:id,date:'2026-10-05',objectCount:3},new Date(2026,9,5,12));
+ fs.writeFileSync(f.filePath,JSON.stringify(f.incoming));await f.call('data:import');
+ assert.deepEqual((await f.call('snapshot:get')).workIntakes,f.incoming.workIntakes);
+ const saved=fs.readFileSync(f.database,'utf8'),backups=await f.call('data:backups');
+ assert.ok(backups.length);
+ await f.call('data:restore-backup',{id:'previous'});await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),saved);
+ const bad=domain.clone(f.incoming);bad.workIntakes[0].objectCount=100;
+ await assert.rejects(f.call('data:import',{name:'bad-intake.json',content:JSON.stringify(bad)}),/об’єктів/);
+ assert.equal(fs.readFileSync(f.database,'utf8'),saved);
+});

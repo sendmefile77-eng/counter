@@ -18,6 +18,7 @@ function preview(state, employeeId) {
     records:Object.entries(state.records || {}).filter(owns).length,
     presence:Object.entries(state.presenceRecords || {}).filter(owns).length,
     work:(state.workEntries || []).filter(item => item.employeeId === employeeId).length,
+    objects:(state.workIntakes || []).filter(item => item.employeeId === employeeId).reduce((sum,item)=>sum+item.objectCount,0),
     receipts:(state.receipts || []).filter(item => item.employeeId === employeeId).length,
     timeOff:(state.timeOffEntries || []).filter(item => item.employeeId === employeeId).length,
     duties, tasks:(state.tasks || []).filter(task => task.assigneeIds.includes(employeeId)).map(task => ({ id:task.id, title:task.title, active:planner.active(task), needsAssignee:planner.active(task) && task.assigneeIds.length === 1 })),
@@ -32,7 +33,7 @@ function apply(state, input, now = new Date()) {
   for (const field of ['records', 'presenceRecords', 'workdayOverrides']) {
     for (const [key, value] of Object.entries(draft[field] || {})) if (key.startsWith(id + '|') || value?.employeeId === id) delete draft[field][key];
   }
-  for (const field of ['receipts', 'workEntries', 'timeOffEntries']) draft[field] = (draft[field] || []).filter(item => item.employeeId !== id);
+  for (const field of ['receipts', 'workEntries', 'workIntakes', 'timeOffEntries']) draft[field] = (draft[field] || []).filter(item => item.employeeId !== id);
   for (const schedule of d.dutySchedules(draft)) {
     const data = replacements.scheduleView(draft, schedule.id).duties;
     data.participantIds = data.participantIds.filter(value => value !== id);

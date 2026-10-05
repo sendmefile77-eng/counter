@@ -61,6 +61,11 @@ async function run(reportPath) {
       if(work.completedProjects!==5||work.history.length!==4||work.status!=='done')throw Error('Облік роботи не зберіг прогрес, пояснення та завершення.');
       const workReport=await api.getAnalyticsReport({startDate:today,endDate:today,scope:'all'});if(workReport.total.projectsCompleted<5)throw Error('Завершені проєкти не потрапили до статистики.');
       for(let undo=0;undo<4;undo++)await api.undo();if((await api.getSnapshot()).workEntries.length!==workBefore)throw Error('Облік роботи не скасовано.');checks.push('work-through-preload-progress-reason-completion-analytics-undo');
+      const intakeBefore=JSON.stringify((await api.getSnapshot()).workIntakes);
+      await api.savePresence({employeeId:scenario.employeeId,date:today,status:'onsite'});
+      for(let click=0;click<3;click++)await api.receiveWorkObjects({id:crypto.randomUUID(),employeeId:scenario.employeeId,date:today,objectCount:1});
+      const intakeSaved=await api.getSnapshot();if(LadWork.intakeSummary(intakeSaved,scenario.employeeId,today).objectCount!==3||!LadWork.confirmed.has(intakeSaved.records[scenario.employeeId+'|'+today]?.status))throw Error('Віджет не зберіг кількість об’єктів і закритий день.');
+      for(let undo=0;undo<4;undo++)await api.undo();if(JSON.stringify((await api.getSnapshot()).workIntakes)!==intakeBefore)throw Error('Скасування не відновило облік об’єктів.');checks.push('widget-objects-through-preload-quantity-day-and-undo');
       const widgetSettings=(await api.getSnapshot()).settings;
       await api.updateWidgetPreferences({widgetShape:'panel',widgetMode:'tasks',widgetLocked:true});await api.setWindowMode('widget');ui.mode='widget';await refresh();
       if(!document.querySelector('.widget-panel')||!document.querySelector('[data-widget-mode="tasks"][aria-pressed="true"]')||document.querySelector('[data-widget-resize]')||await api.resizeWidget(500,true)!==null)throw Error('Налаштування панелі або фіксація не працюють.');

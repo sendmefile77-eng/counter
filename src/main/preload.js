@@ -120,6 +120,7 @@ contextBridge.exposeInMainWorld('counter', {
   updateWorkProgress: (id,input) => ipcRenderer.invoke('work:progress',{id,input}),
   finishWork: (id,input) => ipcRenderer.invoke('work:finish',{id,input}),
   markWorkDay: input => ipcRenderer.invoke('work:mark-day',input),
+  receiveWorkObjects: input => ipcRenderer.invoke('work:receive-objects',input),
   updateWidgetPreferences: input => ipcRenderer.invoke('widget:preferences',input),
   hideWindow: () => ipcRenderer.invoke('window:hide'),
   listBackups: () => ipcRenderer.invoke('data:backups'),

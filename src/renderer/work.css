@@ -45,3 +45,16 @@
 .work-widget:not(.widget-panel) .widget-alerts{bottom:28.5%}
 
 .work-widget[data-widget-drag]{-webkit-app-region:drag;cursor:default}.work-widget .widget-work-team,.work-widget .widget-mode-content,.work-widget .widget-alerts{-webkit-app-region:no-drag}.work-widget .sector text{font-size:24px}.work-widget:not(.widget-panel) .widget-alerts{top:9%;bottom:auto;max-width:62%;flex-wrap:nowrap}.work-widget:not(.widget-panel) .widget-alert{font-size:clamp(7px,2.4vw,10px);padding:2px 4px;white-space:nowrap}
+
+/* Object intake is independent from presence and daily work status. */
+.work-widget .sector .sector-name{font-size:24px;font-weight:650;fill:#dce6ee;stroke-width:1.5px}
+.work-widget .sector .sector-count{font-size:30px;font-weight:800;fill:#f3d99b;stroke-width:1.5px}
+.work-widget .sector.is-empty path{stroke:#0b1723;stroke-width:5px}
+.work-widget .sector.has-objects path{stroke:#0b1723;stroke-width:5px}
+.work-widget .sector:focus-visible{outline:none}.work-widget .sector:focus-visible path{stroke:#e4c17e;stroke-width:6px}
+.widget-work-person.has-objects{background:#153d30;border-color:#347c5b}.widget-work-person.has-objects span{color:#f3d99b;font-weight:750}
+.work-intake-history article{padding:10px 0;border-bottom:1px solid var(--line)}.work-intake-history small{display:block;color:var(--muted-strong);margin-top:4px}.work-intake-history p{margin:6px 0;font-size:12px}
+.work-widget:not(.widget-panel) .widget-work-team:not(.is-list){inset:23% 7% 19%}
+.work-widget:not(.widget-panel) .widget-center{top:52%;width:24%;height:24%}
+.work-widget:not(.widget-panel) .widget-work-tools{bottom:10%}
+.work-widget:not(.widget-panel) .widget-center strong{font-size:clamp(22px,7vw,34px)}

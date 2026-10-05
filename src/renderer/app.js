@@ -350,6 +350,11 @@ function applyAppearance() {
 }
 
 function renderShell({ preserveDrafts = false } = {}) {
+  // Keep the petal nodes alive during counting: replacing a button between
+  // pointer-down and pointer-up can discard a fast click or keyboard focus.
+  if(ui.mode==='widget'&&snapshot.settings.widgetMode==='team'&&appRoot.dataset.widgetLayoutKey===widgetLayoutKey()) {
+    updateWidgetObjectCounts();return;
+  }
   closePresenceContext();
   const pageDrafts = preserveDrafts ? rememberPageDrafts() : [];
   rememberScrollPositions();
@@ -394,6 +399,7 @@ function renderShell({ preserveDrafts = false } = {}) {
   restorePageDrafts(pageDrafts);
   applyInterfacePendingForms();
   restoreScrollPositions();
+  appRoot.dataset.widgetLayoutKey=ui.mode==='widget'?widgetLayoutKey():'';
 }
 
 function polar(cx, cy, radius, angleDegrees) {
@@ -421,26 +427,19 @@ function annularSectorPath(index, count, outerRadius = 270, innerRadius = 116) {
 }
 
 function renderRadial(employees) {
-  const labels=employees.map(person=>employees.length>11?person.name.trim().split(/\s+/).slice(0,2).map(word=>word[0]).join('.')+'.':shortName(person.name));
-  const sectors = employees.map((employee, index) => {
-    const status = statusFor(employee.id, localDateKey());
-    const sweep = 360 / employees.length;
-    const labelPoint = polar(300, 300, employees.length > 11 ? 195 : 202, (index + 0.5) * sweep);
-    const dotPoint = polar(300, 300, employees.length > 11 ? 232 : 238, (index + 0.5) * sweep);
-    return `
-      <g class="sector" data-employee-id="${h(employee.id)}" tabindex="0" role="button" aria-label="${h(employee.name)}: ${h(STATUS_LABELS[status])}">
-        <title>${h(employee.name)} · ${h(STATUS_LABELS[status])}\nКлік — дії з роботою. Правий клік — статус дня.</title>
-        <path d="${annularSectorPath(index, employees.length)}" fill="${statusColor(status)}" opacity="0.91"></path>
-        <circle class="status-dot" cx="${dotPoint.x}" cy="${dotPoint.y}" r="5" fill="${statusColor(status)}"></circle>
-        <text x="${labelPoint.x}" y="${labelPoint.y}" text-anchor="middle" dominant-baseline="central">${h(labels.filter(label=>label===labels[index]).length>1?labels[index]+(index+1):labels[index])}</text>
-      </g>
-    `;
+  const today=localDateKey(),labels=employees.map(person=>person.name.trim().split(/\s+/).slice(0,2).map(word=>word[0].toLocaleUpperCase('uk-UA')).join('.')+'.');
+  const sectors=employees.map((employee,index)=>{
+    const count=LadWork.intakeSummary(snapshot,employee.id,today).objectCount,status=statusFor(employee.id,today),sweep=360/employees.length;
+    const labelPoint=polar(300,300,220,(index+.5)*sweep),countPoint={...labelPoint};
+    labelPoint.y-=10;countPoint.y+=22;
+    const label=labels.filter(value=>value===labels[index]).length>1?labels[index].replaceAll('.','')+(labels.slice(0,index).filter(value=>value===labels[index]).length+1):labels[index];
+    const copy=`${employee.name} · ${count} об’єктів сьогодні. Клік: +1 об’єкт. Правий клік: статус дня. Наявність: ${STATUS_LABELS[status]||LadWork.labels[status]}`;
+    return `<g class="sector ${count?'has-objects':'is-empty'}" data-employee-id="${h(employee.id)}" data-object-count="${count}" tabindex="0" role="button" aria-label="${h(copy)}">
+      <title>${h(copy)}</title><path d="${annularSectorPath(index,employees.length)}" fill="${count?'#267857':'#172c3e'}"></path>
+      <text class="sector-name" x="${labelPoint.x}" y="${labelPoint.y}" text-anchor="middle" dominant-baseline="central">${h(label)}</text>
+      ${count?`<text class="sector-count" x="${countPoint.x}" y="${countPoint.y}" text-anchor="middle" dominant-baseline="central">${count}</text>`:''}</g>`;
   }).join('');
-  return `
-    <svg class="radial-svg" viewBox="0 0 600 600" aria-label="Стан працівників на сьогодні">
-      ${sectors}
-    </svg>
-  `;
+  return `<svg class="radial-svg" viewBox="0 0 600 600" aria-label="Отримані об’єкти сьогодні. Клік по пелюстці додає один об’єкт.">${sectors}</svg>`;
 }
 
 function renderWidget() {
@@ -1127,7 +1126,7 @@ async function openEmployeeDeletion(employeeId) {
   try {
     const report=await window.counter.previewEmployeeDeletion(employeeId);
     if(revision!==interfaceDialogRevision)return;
-    openManagementModal(`<header class="modal-head"><div><span class="page-eyebrow">Перевірка перед видаленням</span><h2>${h(report.name)}</h2></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Працівника буде видалено з архіву разом із його обліком. Це змінить історичні підсумки.</p><ul><li>Позначки табеля: ${report.records}; наявності: ${report.presence}.</li><li>Записи роботи: ${report.work}; відлучення: ${report.timeOff}; записи попереднього обліку: ${report.receipts}.</li><li>Призначення у графіках: ${report.duties.length}, з них реалізовані: ${report.duties.filter(item=>item.realized).length}.</li></ul>${report.tasks.length?`<h3>Завдання збережуться · ${report.tasks.length}</h3><ul>${report.tasks.map(task=>`<li>${h(task.title)}${task.needsAssignee?' — потрібен новий відповідальний':''}</li>`).join('')}</ul><p>Працівника буде знято зі складу виконавців. Відкриті завдання без відповідального отримають стан «Потрібне рішення».</p>`:''}${report.protocols?`<p>Імена й результати у ${report.protocols} збережених протоколах жеребкування залишаться як історичний факт.</p>`:''}<p class="muted">Після видалення можна скасувати дію кнопкою «Скасувати».</p></div><footer class="modal-foot"><button class="button" data-close-modal>Залишити в архіві</button><button class="button danger" data-delete-employee-apply="${h(employeeId)}" data-delete-token="${h(report.token)}">Видалити працівника та його облік</button></footer>`);
+    openManagementModal(`<header class="modal-head"><div><span class="page-eyebrow">Перевірка перед видаленням</span><h2>${h(report.name)}</h2></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Працівника буде видалено з архіву разом із його обліком. Це змінить історичні підсумки.</p><ul><li>Позначки табеля: ${report.records}; наявності: ${report.presence}.</li><li>Записи роботи: ${report.work}; отримані об’єкти: ${report.objects}; відлучення: ${report.timeOff}; записи попереднього обліку: ${report.receipts}.</li><li>Призначення у графіках: ${report.duties.length}, з них реалізовані: ${report.duties.filter(item=>item.realized).length}.</li></ul>${report.tasks.length?`<h3>Завдання збережуться · ${report.tasks.length}</h3><ul>${report.tasks.map(task=>`<li>${h(task.title)}${task.needsAssignee?' — потрібен новий відповідальний':''}</li>`).join('')}</ul><p>Працівника буде знято зі складу виконавців. Відкриті завдання без відповідального отримають стан «Потрібне рішення».</p>`:''}${report.protocols?`<p>Імена й результати у ${report.protocols} збережених протоколах жеребкування залишаться як історичний факт.</p>`:''}<p class="muted">Після видалення можна скасувати дію кнопкою «Скасувати».</p></div><footer class="modal-foot"><button class="button" data-close-modal>Залишити в архіві</button><button class="button danger" data-delete-employee-apply="${h(employeeId)}" data-delete-token="${h(report.token)}">Видалити працівника та його облік</button></footer>`);
   }catch(error){if(revision===interfaceDialogRevision){closeModal();showToast(error.message||String(error),{error:true});}}
 }
 
@@ -1256,7 +1255,7 @@ function renderHelpPage() {
   return `<div class="page-header"><div><h1>Як працює ЛАД</h1><p>Облік роботи, доступності, чергувань і завдань команди.</p></div></div>
   <section class="panel"><h2>Навчання з підказками</h2><p>Екскурсія підсвічує кнопки. Окремий навчальний приклад із вигаданими людьми допомагає перевірити відсутність, підміну й передачу завдання; після виходу повертаються ваші дані.</p><div class="button-row"><button class="button" data-start-guide="tour">Показати кнопки</button><button class="button primary" data-start-guide="practice">Пройти навчальний приклад</button></div></section><section class="panel"><h2>Почніть із роботи співробітника</h2><p>Вкажіть, над чим він працює, кількість проєктів, початок і орієнтовний строк. Наприклад, 5 проєктів можуть зайняти 7 робочих днів: кількість проєктів і тривалість можна змінювати незалежно.</p><p>Оновлюйте загальний прогрес, а після виконання підтвердьте завершення фактичною датою. Зміна обсягу, строку або зменшення прогресу потребує пояснення; воно залишається в історії.</p><button class="button primary" data-work-new>+ Додати роботу</button></section>
   <section class="panel"><h2>Табель і статистика</h2><p>Активна робота враховується за робочими днями від початку до фактичного завершення. Вихідні, відсутність і ручні позначки мають пріоритет. Орієнтовний строк лише нагадує перевірити роботу; після нього робота триває.</p><p>Кілька робіт в один день не множать робочі дні. Проєкти у завершених роботах рахуються за фактичною датою завершення. Майбутні дні не входять до фактичної статистики.</p><p>Для роботи без проєктів достатньо позначки «У роботі» або «Відпрацьовано» у табелі. Старі дані з резервних копій зберігаються.</p><div class="button-row"><button class="button" data-tab="journal">Табель</button><button class="button" data-tab="analytics">Статистика</button></div></section>
-  <section class="panel"><h2>Ваш віджет</h2><p>Перемикайте «Команда», «Чергування» і «Завдання». Клік по співробітнику відкриває дії. Швидке зарахування дня вмикається окремо в налаштуваннях.</p><p>Круглий віджет можна замінити панеллю зі списком. Положення можна зафіксувати; перетягування доступне за заголовок. «Сховати» залишає програму й нагадування працювати, «Вийти» закриває ЛАД. Ctrl+Shift+L повертає віджет, якщо комбінація доступна.</p><button class="button" data-widget-options>Налаштувати віджет</button></section>
+  <section class="panel"><h2>Ваш віджет</h2><p>Перемикайте «Команда», «Чергування» і «Завдання». На початку дня пелюстки порожні. Кожен клік по співробітнику додає один отриманий об’єкт і закриває сьогодні або найближчий незакритий робочий день назад. Правий клік відкриває статус дня. Кнопка ↶ скасовує помилковий клік.</p><p>Круглий віджет можна замінити панеллю зі списком. Положення можна зафіксувати; перетягування доступне за заголовок. «Сховати» залишає програму й нагадування працювати, «Вийти» закриває ЛАД. Ctrl+Shift+L повертає віджет, якщо комбінація доступна.</p><button class="button" data-widget-options>Налаштувати віджет</button></section>
   <section class="panel"><h2>Чергування, строки й резервні копії</h2><p>Пояснення кожного чергування відкривається з дати графіка. Зміни доступності перевіряють потребу в підміні. Завдання мають строки й нагадування. Зберігайте JSON-копію перед перенесенням на інший комп’ютер.</p><button class="button" data-tab="data">Налаштування та резервні копії</button></section>`;
 }
 
@@ -1829,7 +1828,7 @@ function openFutureApproval(receipt) {
 function openStatusModal(employeeId, date) {
   const employee=employeeById(employeeId),record=recordFor(employeeId,date),override=hasWorkdayOverride(employeeId,date);
   const weekend=!configuredWorkday(date),editable=!weekend||override,mark=presenceMark(employeeId,date),absent=LadPresence.absent.has(mark?.status)||LadPresence.learning.has(mark?.status),zkpCanAccept=mark?.status!=='zkp'||date<localDateKey()&&presenceMark(employeeId,localDateKey())?.status==='onsite';
-  openModal(`<header class="modal-head"><div><h2>Статус робочого дня</h2><p>${h(employee?.name||'')} · ${h(formatDate(date))}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Поточний статус: ${statusBadge(statusFor(employeeId,date))}</p>
+  openModal(`<header class="modal-head"><div><h2>Статус робочого дня</h2><p>${h(employee?.name||'')} · ${h(formatDate(date))}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Поточний статус: ${statusBadge(statusFor(employeeId,date))}</p><details class="modal-details"><summary>Отримано ${h(formatDate(date))}: ${LadWork.intakeSummary(snapshot,employeeId,date).objectCount} об’єктів</summary>${renderIntakeHistory(LadWork.intakeSummary(snapshot,employeeId,date).entries)}</details>
   ${weekend&&!override?`<p class="confirm-box">Це неробочий день календаря. Якщо людина працювала, спочатку зробіть його робочим.</p><button class="button primary" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>`:''}
   ${editable?`<label class="field"><span>Пояснення нової позначки</span><textarea id="status-note" maxlength="500">${h(record?.source==='work'?'':record?.note||'')}</textarea></label>${record?.receiptId?'<p class="confirm-box">Позначку перенесено з попереднього обліку. Для ручного виправлення роботи вкажіть пояснення; попередня база залишається в резервній копії.</p>':''}<div class="status-grid">
   ${date<=localDateKey()?`<button class="status-choice" data-work-mark="working" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent?'disabled':''}><strong>У роботі</strong><span>Робота триває цього дня</span></button><button class="status-choice submitted-choice" data-work-mark="submitted" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent||!zkpCanAccept?'disabled':''}><strong>Відпрацьовано</strong><span>Підтверджена робота за день</span></button>`:''}
@@ -1885,9 +1884,23 @@ async function run(action, successMessage, { undo = true, refreshAnalytics = fal
   }
 }
 
-async function submitOne(employeeId) {
-  if(snapshot.settings.widgetQuickMode) return markEmployeeWork(employeeId,'submitted');
-  return openWorkActions(employeeId);
+let widgetIntakeQueue=Promise.resolve();
+function submitOne(employeeId) {
+  const input={id:crypto.randomUUID(),employeeId,date:localDateKey(),objectCount:1};
+  // Queue every deliberate click, including rapid clicks on the same petal.
+  // A pending flag here would silently discard objects.
+  widgetIntakeQueue=widgetIntakeQueue.then(async()=>{
+    const result=await run(()=>window.counter.receiveWorkObjects(input),null);
+    if(!result)return;
+    const total=LadWork.intakeSummary(snapshot,employeeId,input.date).objectCount;
+    const message=`${employeeById(employeeId)?.name||'Працівник'}: ${total} об’єктів сьогодні. ${result.dates.length?`Закрито ${result.dates.map(formatDate).join(', ')}.`:'Незакритих доступних днів немає; об’єкт збережено.'}`;
+    if(ui.mode==='widget'){
+      let live=toastRoot.querySelector('[data-widget-intake-live]');
+      if(!live){live=document.createElement('span');live.className='sr-only';live.dataset.widgetIntakeLive='';toastRoot.append(live);}
+      live.textContent=message;
+    }else showToast(message,{undo:true});
+  }).catch(error=>showToast(error.message||String(error),{error:true}));
+  return widgetIntakeQueue;
 }
 
 async function resizeWidgetBy(delta) {
@@ -2121,7 +2134,8 @@ appRoot.addEventListener('click', async (event) => {
     if (action === 'minimize') return window.counter.minimize();
     if (action === 'close') return window.counter.close();
     if (action === 'undo') {
-      await run(() => window.counter.undo(), 'Останню дію скасовано.', { undo: false });
+      widgetIntakeQueue=widgetIntakeQueue.then(()=>run(() => window.counter.undo(), ui.mode==='widget'?null:'Останню дію скасовано.', { undo: false }));
+      await widgetIntakeQueue;
       return;
     }
     if (action === 'reset-all-data') {
@@ -2153,7 +2167,7 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
 
-  const sector = event.target.closest('.sector[data-employee-id]');
+  const sector = event.target.closest('.sector[data-employee-id], [data-widget-object]');
   if (sector) return submitOne(sector.dataset.employeeId);
 
   const submitButton = event.target.closest('[data-submit-one]');
@@ -2501,10 +2515,10 @@ appRoot.addEventListener('contextmenu', (event) => {
     openDutyEmployeeModal(dutyCell.dataset.employeeId, dutyCell.dataset.date);
     return;
   }
-  const sector = event.target.closest('.sector[data-employee-id]');
+  const sector = event.target.closest('.sector[data-employee-id], [data-widget-object]');
   if (!sector) return;
   event.preventDefault();
-  openStatusModal(sector.dataset.employeeId, localDateKey());
+  openStatusModal(sector.dataset.employeeId||sector.dataset.widgetObject, localDateKey());
 });
 
 appRoot.addEventListener('keydown', (event) => {
@@ -2515,7 +2529,7 @@ appRoot.addEventListener('keydown', (event) => {
   const sector = event.target.closest('.sector[data-employee-id]');
   if (sector && (event.key === 'Enter' || event.key === ' ')) {
     event.preventDefault();
-    openWorkActions(sector.dataset.employeeId);
+    if(!event.repeat)void submitOne(sector.dataset.employeeId);
     return;
   }
   const cell = event.target.closest('[data-cell-employee], [data-duty-cell]');
