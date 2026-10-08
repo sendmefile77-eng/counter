@@ -11,6 +11,11 @@ const tasks = require('../src/shared/tasks');
 const coins = require('../src/shared/coins');
 
 async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true, trayAvailable = true } = {}) {
+  // These scenarios use 6–7 October as future duties and task deadlines.
+  // Freeze Date in both the host modules and the VM so CI does not turn
+  // them into protected historical duties as the real calendar advances.
+  // The test context automatically restores the real clock after each test.
+  t.mock.timers.enable({ apis:['Date'], now:new Date(2026,9,5,12).getTime() });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lad-import-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const handlers = new Map(), calls = [],trays=[],shortcuts=new Map();
