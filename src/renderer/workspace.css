@@ -51,7 +51,7 @@
   --overview-arc:#a07332;
 }
 
-/* Chrome and navigation. All surfaces are static; movement accompanies an action. */
+/* Chrome and navigation retain their geometry during decorative feedback. */
 .window-shell.dashboard,.window-shell.fullscreen { border-color:var(--line); border-radius:16px; }
 .titlebar { background:var(--workspace-sidebar); border-bottom-color:var(--line); }
 .brand-mark { width:30px; height:30px; }
