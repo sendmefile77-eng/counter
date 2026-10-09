@@ -243,6 +243,7 @@ function normalizeGlobalSettings(input = {}) {
     interfaceTheme: ['navy', 'light'].includes(source.interfaceTheme) ? source.interfaceTheme : 'navy',
     interfaceDensity: source.interfaceDensity === 'compact' ? 'compact' : 'comfortable',
     interfaceTextSize: source.interfaceTextSize === 'large' ? 'large' : 'standard',
+    interfaceMotion: ['full', 'reduced', 'off'].includes(source.interfaceMotion) ? source.interfaceMotion : 'full',
     taskRemindersEnabled: source.taskRemindersEnabled !== false,
     taskAttentionDays: clampInteger(source.taskAttentionDays, 1, 14, 3),
     onboardingSeen: source.onboardingSeen === true,

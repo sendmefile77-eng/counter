@@ -12,21 +12,70 @@ function workTodaySummary() {
 function workEntriesHtml(entries, compact=false) {
   return entries.map(entry=>`<article class="work-entry ${compact?'work-entry-compact':''}"><button class="work-entry-title" data-work-detail="${h(entry.id)}"><strong>${h(entry.title)}</strong><span>${h(employeeById(entry.employeeId)?.name||'Працівник з історії')} · ${h(workStateLabel(entry))}</span></button><div class="work-entry-progress"><strong>${entry.completedProjects}/${entry.projectCount}</strong><span>проєктів виконано</span><progress max="${entry.projectCount}" value="${entry.completedProjects}" aria-label="Виконано ${entry.completedProjects} з ${entry.projectCount} проєктів"></progress></div><div class="work-entry-dates"><span>Початок: ${h(formatDate(entry.startDate))}</span><span>${entry.finishedDate?'Фактичне завершення':'Орієнтир'}: ${h(formatDate(entry.finishedDate||entry.estimatedEndDate))}</span>${entry.status==='active'&&entry.estimatedEndDate<localDateKey()?'<small class="work-review">Перевірити строк · робота триває</small>':''}</div><button class="button small" data-work-detail="${h(entry.id)}">Відкрити</button></article>`).join('')||'<p class="muted">Робіт за цими умовами немає.</p>';
 }
-function renderWorkTodayPage() {
-  const summary=workTodaySummary(),entries=(snapshot.workEntries||[]).filter(entry=>(workUi.filter==='all'||entry.status===workUi.filter)
-    && `${entry.title} ${employeeById(entry.employeeId)?.name||''}`.toLocaleLowerCase('uk-UA').includes(workUi.query.toLocaleLowerCase('uk-UA')));
-  const assignment=snapshot.duties?.assignments?.[localDateKey()];
-  const dutyNames=(assignment?.employeeIds||[]).map(id=>employeeById(id)?.name||'Працівник з історії');
-  return `<div class="page-header"><div><span class="page-eyebrow">Робота команди</span><h1>${h(formatDate(localDateKey(),{weekday:'long',day:'numeric',month:'long'}))}</h1><p>Робочі дні, проєкти та поточні завдання співробітників.</p></div><div class="button-row"><button class="button primary" data-work-new>+ Додати роботу</button><button class="button" data-presence-new>Наявність</button><button class="button" data-tab="journal">Табель →</button></div></div>
-  <div class="today-summary"><button data-work-today-filter="all" aria-pressed="${ui.todayFilter==='all'}"><span>Роботу зараховано</span><strong>${summary.covered}/${summary.expected}</strong><small>після підтвердження роботи</small></button><button data-work-today-filter="working" aria-pressed="${ui.todayFilter==='working'}"><span>У роботі</span><strong>${summary.working}</strong><small>робота ще не завершена</small></button><button data-work-today-filter="unmarked" aria-pressed="${ui.todayFilter==='unmarked'}"><span>Очікує підтвердження</span><strong>${summary.unmarked}</strong><small>потрібно перевірити статус</small></button><button data-work-today-filter="absent" aria-pressed="${ui.todayFilter==='absent'}"><span>Відсутні</span><strong>${summary.absent}</strong><small>за даними наявності</small></button></div>
-  <section class="today-duty"><span class="nav-icon">${NAV_ICONS.duties}</span><div><small>Чергування сьогодні · ${h(activeDutySchedule().name)}</small><strong>${h(dutyNames.join(' · ')||'Призначень немає')}</strong></div><button class="button small" ${dutyNames.length?`data-duty-day="${localDateKey()}"`:'data-tab="duties"'}>${dutyNames.length?'Пояснення складу':'Графік'}</button></section>
-  ${renderConsequenceBanner()}${renderAttentionPanel()}
-  <section class="panel"><div class="work-section-head"><h2>Співробітники сьогодні</h2><label class="field"><span class="sr-only">Знайти співробітника</span><input type="search" data-today-search value="${h(ui.todayQuery)}" placeholder="Знайти співробітника"></label></div><div class="work-people">${summary.rows.filter(row=>row.person.name.toLocaleLowerCase('uk-UA').includes(ui.todayQuery.toLocaleLowerCase('uk-UA'))&&(ui.todayFilter==='all'||ui.todayFilter==='working'&&row.status==='working'||ui.todayFilter==='unmarked'&&['pending','missed','onsite','zkp'].includes(row.status)||ui.todayFilter==='absent'&&LadWork.absence.has(row.status))).map(({person,status})=>{
-    const active=(snapshot.workEntries||[]).filter(entry=>entry.employeeId===person.id&&entry.status==='active'&&entry.startDate<=localDateKey());
-    return `<article class="work-person"><button class="work-person-name" data-work-person="${h(person.id)}"><strong>${h(person.name)}</strong>${statusBadge(status)}</button><p>${h(active.map(entry=>`${entry.title} · ${entry.completedProjects}/${entry.projectCount}`).join(' · ')||'Активну роботу не додано')}</p><div class="button-row"><button class="button small" data-work-person="${h(person.id)}">Дії</button><button class="button small" data-work-new="${h(person.id)}">+ Робота</button></div></article>`;
-  }).join('')||'<p class="muted">Співробітників за цими умовами немає.</p>'}</div></section>
-  <section class="panel"><div class="work-section-head"><div><h2>Облік роботи</h2><p class="muted">Орієнтовний строк нагадує про перевірку. Завершення фіксується окремо.</p></div><button class="button" data-work-new>+ Робота</button></div><div class="work-list-tools"><div class="button-row">${[['active','У роботі'],['done','Завершені'],['cancelled','Скасовані'],['all','Усі']].map(([key,label])=>`<button class="button small ${workUi.filter===key?'primary':''}" data-work-filter="${key}" aria-pressed="${workUi.filter===key}">${label}</button>`).join('')}</div><input type="search" data-work-search value="${h(workUi.query)}" aria-label="Знайти роботу" placeholder="Робота або співробітник"></div>${workEntriesHtml(entries)}</section>`;
+function renderDayOverview(summary) {
+  const activeWork = (snapshot.workEntries || []).filter(entry => entry.status === 'active');
+  const activeTasks = (snapshot.tasks || []).filter(task => LadPlanner.active(task) && !task.archived);
+  const attention = LadPlanner.attention(snapshot);
+  const percent = summary.expected ? Math.round(summary.covered / summary.expected * 100) : 0;
+  const description = summary.expected
+    ? `${summary.covered} із ${summary.expected} очікуваних робочих днів зараховано`
+    : 'На сьогодні немає робочих днів, що очікують підтвердження';
+  return `<section class="day-overview" aria-label="Стан команди сьогодні">
+    <div class="day-overview-art" aria-hidden="true"><img src="lad-mark.svg" alt=""></div>
+    <div class="day-overview-copy"><span class="day-overview-kicker"><i aria-hidden="true"></i> ${snapshot.training?.active ? 'Навчальний простір' : 'Ваш робочий простір'}</span>
+      <h2>${summary.people.length ? 'Команда сьогодні' : 'Почніть зі своєї команди'}</h2>
+      <p>${summary.people.length ? 'Люди, робота і строки — в одному просторі.' : 'Додайте співробітників, щоб бачити їхню роботу та планувати чергування.'}</p>
+      <div class="day-overview-stats">
+        <button data-tab="employees"><strong>${summary.people.length}</strong><span>Співробітників</span></button>
+        <button data-work-overview><strong>${activeWork.length}</strong><span>Активних робіт</span></button>
+        <button data-tab="planner"><strong>${activeTasks.length}</strong><span>Завдань у плані</span></button>
+      </div>
+      <div class="day-overview-foot">${attention.tasks.length ? `<button class="overview-attention" data-planner-attention>${NAV_ICONS.planner}<span>Потребує уваги: ${attention.tasks.length}</span><span aria-hidden="true">→</span></button>` : `<span>${NAV_ICONS.today} Найближчі строки: без термінових завдань</span>`}</div>
+    </div>
+    <div class="day-progress" role="img" aria-label="${h(description)}">
+      <svg viewBox="0 0 144 144" aria-hidden="true"><circle class="day-progress-track" cx="72" cy="72" r="60"></circle><circle class="day-progress-arc" data-progress-arc cx="72" cy="72" r="60" pathLength="100" stroke-dasharray="${percent} 100"></circle></svg>
+      <div class="day-progress-value"><strong>${summary.expected ? `${percent}<small>%</small>` : '—'}</strong><span>Роботу<br>зараховано</span></div>
+      <p>${summary.expected ? `${summary.covered} із ${summary.expected} робочих днів` : 'Немає очікуваних днів'}</p>
+    </div>
+  </section>`;
 }
+
+function workPersonAvatar(person) {
+  const initials = person.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toLocaleUpperCase('uk-UA');
+  const tone = [...person.id].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 5;
+  return `<span class="person-avatar person-tone-${tone}" aria-hidden="true">${h(initials)}</span>`;
+}
+
+function renderWorkTodayPage() {
+  const summary = workTodaySummary();
+  const entries = (snapshot.workEntries || []).filter(entry => (workUi.filter === 'all' || entry.status === workUi.filter)
+    && `${entry.title} ${employeeById(entry.employeeId)?.name || ''}`.toLocaleLowerCase('uk-UA').includes(workUi.query.toLocaleLowerCase('uk-UA')));
+  const assignment = snapshot.duties?.assignments?.[localDateKey()];
+  const dutyNames = (assignment?.employeeIds || []).map(id => employeeById(id)?.name || 'Працівник з історії');
+  const metrics = [
+    ['all', 'confirmed', 'Роботу зараховано', `${summary.covered}/${summary.expected}`, 'після підтвердження роботи', NAV_ICONS.today],
+    ['working', 'working', 'У роботі', summary.working, 'робота ще не завершена', NAV_ICONS.analytics],
+    ['unmarked', 'pending', 'Очікує підтвердження', summary.unmarked, 'потрібно перевірити статус', NAV_ICONS.journal],
+    ['absent', 'absent', 'Відсутні', summary.absent, 'за даними наявності', NAV_ICONS.timeoff],
+  ];
+  const people = summary.rows.filter(row => row.person.name.toLocaleLowerCase('uk-UA').includes(ui.todayQuery.toLocaleLowerCase('uk-UA'))
+    && (ui.todayFilter === 'all' || ui.todayFilter === 'working' && row.status === 'working'
+      || ui.todayFilter === 'unmarked' && ['pending','missed','onsite','zkp'].includes(row.status)
+      || ui.todayFilter === 'absent' && LadWork.absence.has(row.status)));
+  return `<div class="page-header"><div><span class="page-eyebrow">${h(formatDate(localDateKey(), {weekday:'long', day:'numeric', month:'long'}))}</span><h1>Огляд дня</h1><p>Робочі дні, проєкти та поточні завдання співробітників.</p></div><div class="button-row"><button class="button primary" data-work-new>+ Додати роботу</button><button class="button" data-presence-new>Наявність</button><button class="button" data-tab="journal">Табель →</button></div></div>
+    ${renderDayOverview(summary)}
+    <div class="today-summary">${metrics.map(([filter, tone, label, value, copy, icon]) => `<button class="day-metric metric-${tone}" data-work-today-filter="${filter}" aria-pressed="${ui.todayFilter === filter}"><span class="day-metric-top"><span>${label}</span><i aria-hidden="true">${icon}</i></span><strong>${value}</strong><small>${copy}</small></button>`).join('')}</div>
+    <section class="today-duty"><div class="today-duty-copy"><span class="today-duty-icon" aria-hidden="true">${NAV_ICONS.duties}</span><div><span>Сьогодні чергують</span><strong>${h(dutyNames.join(' · ') || 'Призначень немає')}</strong></div></div><button class="button small" ${dutyNames.length ? `data-duty-day="${localDateKey()}"` : 'data-tab="duties"'}>${dutyNames.length ? 'Пояснення складу →' : 'Відкрити графік →'}</button></section>
+    ${renderConsequenceBanner()}${renderAttentionPanel()}
+    <section class="panel team-panel"><div class="work-section-head"><div><span class="section-kicker">Люди</span><h2>Співробітники сьогодні <span class="count-pill">${people.length}</span></h2></div><label class="field"><span class="sr-only">Знайти співробітника</span><input type="search" data-today-search value="${h(ui.todayQuery)}" placeholder="Знайти співробітника"></label></div><div class="work-people">${people.map(({person, status}) => {
+      const active = (snapshot.workEntries || []).filter(entry => entry.employeeId === person.id && entry.status === 'active' && entry.startDate <= localDateKey());
+      const total = active.reduce((sum, entry) => sum + entry.projectCount, 0);
+      const completed = active.reduce((sum, entry) => sum + entry.completedProjects, 0);
+      return `<article class="work-person"><button class="work-person-name" data-work-person="${h(person.id)}">${workPersonAvatar(person)}<span class="work-person-copy"><strong>${h(person.name)}</strong>${statusBadge(status)}</span></button><p>${h(active.map(entry => entry.title).join(' · ') || 'Активну роботу не додано')}</p>${total ? `<div class="person-progress"><span>Проєкти <strong>${completed}/${total}</strong></span><progress max="${total}" value="${completed}" aria-label="${h(person.name)}: виконано ${completed} із ${total} проєктів"></progress></div>` : ''}<div class="button-row"><button class="button small" data-work-person="${h(person.id)}">Дії</button><button class="button small ghost" data-work-new="${h(person.id)}">+ Робота</button></div></article>`;
+    }).join('') || `<div class="workspace-empty"><span aria-hidden="true">${NAV_ICONS.employees}</span><strong>${summary.people.length ? 'Нікого за цими умовами' : 'Команда ще не додана'}</strong><p>${summary.people.length ? 'Змініть фільтр або пошуковий запит.' : 'Додайте першого співробітника, щоб почати облік.'}</p><button class="button small" ${summary.people.length ? 'data-work-reset' : 'data-tab="employees"'}>${summary.people.length ? 'Очистити фільтри' : '+ Додати співробітника'}</button></div>`}</div></section>
+    <section class="panel work-log-panel"><div class="work-section-head"><div><span class="section-kicker">Робота</span><h2>Облік роботи</h2><p class="muted">Орієнтовний строк нагадує про перевірку. Завершення фіксується окремо.</p></div><button class="button" data-work-new>+ Робота</button></div><div class="work-list-tools"><div class="button-row">${[['active','У роботі'],['done','Завершені'],['cancelled','Скасовані'],['all','Усі']].map(([key, label]) => `<button class="button small ${workUi.filter === key ? 'primary' : ''}" data-work-filter="${key}" aria-pressed="${workUi.filter === key}">${label}</button>`).join('')}</div><input type="search" data-work-search value="${h(workUi.query)}" aria-label="Знайти роботу" placeholder="Робота або співробітник"></div>${workEntriesHtml(entries) || '<div class="workspace-empty compact"><strong>Роботи за цими умовами немає</strong><p>Додайте роботу або змініть фільтр.</p></div>'}</section>`;
+}
+
 function openWorkForm(employeeId='',id='') {
   const entry=id?workById(id):null;
   if(id&&!entry){showToast('Роботу не знайдено.',{error:true});return;}
@@ -101,9 +150,14 @@ async function applyWorkAcceptance(form) {
 }
 for(const type of ['input','change'])document.addEventListener(type,event=>{const form=event.target.closest('#work-accept-form');if(form)invalidateWorkAcceptance(form);});
 async function handleWorkClick(event) {
-  const button=event.target.closest('[data-widget-object],[data-work-accept],[data-work-office],[data-work-accept-preview],[data-work-new],[data-work-person],[data-work-detail],[data-work-edit],[data-work-progress],[data-work-finish],[data-work-cancel],[data-work-mark],[data-work-tab-status],[data-work-filter],[data-work-today-filter],[data-widget-mode],[data-widget-shape],[data-widget-setting],[data-widget-hide],[data-widget-options],[data-work-analytics-detail]');
+  const button=event.target.closest('[data-work-reset],[data-work-overview],[data-widget-object],[data-work-accept],[data-work-office],[data-work-accept-preview],[data-work-new],[data-work-person],[data-work-detail],[data-work-edit],[data-work-progress],[data-work-finish],[data-work-cancel],[data-work-mark],[data-work-tab-status],[data-work-filter],[data-work-today-filter],[data-widget-mode],[data-widget-shape],[data-widget-setting],[data-widget-hide],[data-widget-options],[data-work-analytics-detail]');
   if(!button)return false;if(button.disabled)return true;
-  if(button.dataset.widgetObject)await submitOne(button.dataset.widgetObject);
+  if(button.hasAttribute('data-work-reset')) {ui.todayQuery='';ui.todayFilter='all';renderShell();}
+  else if(button.hasAttribute('data-work-overview')) {
+    workUi.filter='active';workUi.query='';renderShell();
+    appRoot.querySelector('.work-log-panel')?.scrollIntoView({behavior:typeof LadMotion !== 'undefined' && LadMotion.level()==='full'?'smooth':'auto',block:'start'});
+  }
+  else if(button.dataset.widgetObject)await submitOne(button.dataset.widgetObject);
   else if(button.dataset.workAccept)openWorkAcceptance(button.dataset.workAccept);
   else if(button.dataset.workOffice)openPresenceForm({employeeId:button.dataset.workOffice,date:localDateKey(),status:'onsite',reason:''});
   else if(button.hasAttribute('data-work-accept-preview'))await previewWorkAcceptance(button.form);
@@ -183,6 +237,7 @@ function updateWidgetObjectCounts() {
   appRoot.querySelectorAll('.sector[data-employee-id], [data-widget-object]').forEach(element=>{
     const id=element.dataset.employeeId||element.dataset.widgetObject,person=employeeById(id),count=LadWork.intakeSummary(snapshot,id,today).objectCount;
     const copy=`${person.name} · ${count} об’єктів сьогодні. Клік: +1 об’єкт. Правий клік: статус дня. Наявність: ${LadWork.labels[statusFor(id,today)]}`;
+    const previousCount = Number(element.dataset.objectCount || 0);
     element.dataset.objectCount=count;element.setAttribute('aria-label',copy);
     element.classList.toggle('has-objects',count>0);element.classList.toggle('is-empty',count===0);
     if(element.matches('.sector')) {
@@ -198,6 +253,7 @@ function updateWidgetObjectCounts() {
       }
       if(text){if(count)text.textContent=count;else text.remove();}
     }else{element.title=copy;element.querySelector('span').textContent=count?`${count} об’єктів`:'—';}
+    if (previousCount !== count && typeof LadMotion !== 'undefined') LadMotion.countChanged(element.querySelector('.sector-count') || element.querySelector('span'));
   });
   const intake=LadWork.intakeSummary(snapshot,null,today),summary=appRoot.querySelector('.widget-work-summary');
   summary.querySelector('strong').textContent=intake.objectCount||'—';

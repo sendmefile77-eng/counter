@@ -347,6 +347,8 @@ function applyAppearance() {
   document.documentElement.dataset.theme = settings.interfaceTheme === 'light' ? 'light' : 'navy';
   document.documentElement.dataset.density = settings.interfaceDensity === 'compact' ? 'compact' : 'comfortable';
   document.documentElement.dataset.textSize = settings.interfaceTextSize === 'large' ? 'large' : 'standard';
+  document.documentElement.dataset.motion = ['reduced', 'off'].includes(settings.interfaceMotion) ? settings.interfaceMotion : 'full';
+  if (typeof LadMotion !== 'undefined') LadMotion.sync();
 }
 
 function renderShell({ preserveDrafts = false } = {}) {
@@ -400,6 +402,7 @@ function renderShell({ preserveDrafts = false } = {}) {
   applyInterfacePendingForms();
   restoreScrollPositions();
   appRoot.dataset.widgetLayoutKey=ui.mode==='widget'?widgetLayoutKey():'';
+  if (typeof LadMotion !== 'undefined') LadMotion.enterPage(ui.mode, ui.tab);
 }
 
 function polar(cx, cy, radius, angleDegrees) {
@@ -509,7 +512,7 @@ function renderDashboard() {
         </div>
       </aside>
       <section class="dashboard-content" data-scroll-key="page-${ui.tab}" aria-label="${h(NAV_ITEMS.find(([id]) => id === ui.tab)?.[1] || 'Огляд дня')}">
-        <div class="page-view">${renderLearningIntro()}${renderRecoveryNotice()}${renderActivePage()}</div>
+        <div class="page-view" data-page="${h(ui.tab)}">${renderLearningIntro()}${renderRecoveryNotice()}${renderActivePage()}</div>
       </section>
     </div>
   `;
@@ -1160,6 +1163,7 @@ function settingsFormInput(formElement) {
     interfaceTheme: String(form.get('interfaceTheme') || 'navy'),
     interfaceDensity: String(form.get('interfaceDensity') || 'comfortable'),
     interfaceTextSize: String(form.get('interfaceTextSize') || 'standard'),
+    interfaceMotion: String(form.get('interfaceMotion') || 'full'),
     operatorName: String(form.get('operatorName') || 'Керівник'),
     taskRemindersEnabled: form.get('taskRemindersEnabled') === 'on',
     taskAttentionDays: Number(form.get('taskAttentionDays') || 3),
@@ -1197,6 +1201,7 @@ function renderDataPage() {
       <section class="panel settings-appearance" id="settings-appearance"><h2>Ваш робочий простір</h2><p class="panel-copy">Зовнішній вигляд можна оцінити одразу. Збережіть налаштування, щоб використати їх наступного запуску.</p>
         <fieldset class="appearance-options"><legend>Тема</legend><div>${[['navy', 'Нічний ЛАД', 'Глибокий синій, сталь і золоті акценти'], ['light', 'Світла сталь', 'Світлі поверхні та контрастні таблиці']].map(([key, title, copy]) => `<label class="appearance-choice"><input type="radio" name="interfaceTheme" value="${key}" ${(settings.interfaceTheme || 'navy') === key ? 'checked' : ''}><span class="theme-swatch swatch-${key}" aria-hidden="true"><i></i><i></i><i></i></span><strong>${title}</strong><small>${copy}</small></label>`).join('')}</div></fieldset>
         <div class="appearance-row"><fieldset class="appearance-options"><legend>Щільність інтерфейсу</legend><div class="appearance-segments">${[['comfortable', 'Комфортна'], ['compact', 'Компактна']].map(([key, title]) => `<label><input type="radio" name="interfaceDensity" value="${key}" ${(settings.interfaceDensity || 'comfortable') === key ? 'checked' : ''}><span>${title}</span></label>`).join('')}</div></fieldset><fieldset class="appearance-options"><legend>Розмір тексту</legend><div class="appearance-segments">${[['standard', 'Звичайний'], ['large', 'Збільшений']].map(([key, title]) => `<label><input type="radio" name="interfaceTextSize" value="${key}" ${(settings.interfaceTextSize || 'standard') === key ? 'checked' : ''}><span>${title}</span></label>`).join('')}</div></fieldset></div>
+        <fieldset class="appearance-options motion-options"><legend>Анімації</legend><div class="appearance-segments">${[['full', 'Плавні'], ['reduced', 'Мінімальні'], ['off', 'Вимкнені']].map(([key, title]) => `<label><input type="radio" name="interfaceMotion" value="${key}" ${(settings.interfaceMotion || 'full') === key ? 'checked' : ''}><span>${title}</span></label>`).join('')}</div><p class="panel-copy">Короткі переходи й відгук на дії. Системне обмеження руху має пріоритет.</p></fieldset>
       </section>
       <section class="panel" id="settings-tasks"><h2>Завдання й нагадування</h2><div class="form-grid"><label class="field"><span>Ім’я керівника / автора змін</span><input name="operatorName" value="${h(settings.operatorName || 'Керівник')}" maxlength="80"><small>Локальна позначка в історії завдань; це не обліковий запис.</small></label><label class="field"><span>Показувати найближчі строки за N днів</span><input type="number" name="taskAttentionDays" min="1" max="14" value="${settings.taskAttentionDays || 3}" required></label></div><label class="check-row"><input type="checkbox" name="taskRemindersEnabled" ${settings.taskRemindersEnabled !== false ? 'checked' : ''}><span><strong>Системні сповіщення про завдання</strong><span>Працюють, поки ЛАД запущений, зокрема коли вікно згорнуте. У Windows буде створено ярлик «ЛАД» у меню «Пуск» для сповіщень; автозапуск не вмикається.</span></span></label><p class="panel-copy">Відкладення нагадування не змінює строк. Після повного закриття програми прострочені завдання буде перевірено при наступному запуску. Блок «Потребує уваги» доступний навіть без системних сповіщень.</p>${snapshot.reminderStatus?.lastError ? `<p class="confirm-box">${h(snapshot.reminderStatus.lastError)}</p>` : ''}<button class="button small" type="button" data-test-reminder>Перевірити сповіщення</button></section>
       <section class="panel" id="settings-workdays">
@@ -1283,6 +1288,7 @@ function openModal(content, wide = false) {
   dialog.querySelectorAll('[data-close-modal]').forEach((button) => { if (button.textContent.trim() === '×'&&!button.hasAttribute('aria-label')) button.setAttribute('aria-label', 'Закрити діалог'); });
   appRoot.setAttribute('inert', '');
   dialog.focus();
+  if (typeof LadMotion !== 'undefined') LadMotion.enterDialog(dialog);
   if (ui.mode === 'widget' && !widgetDialogExpanded) {
     widgetDialogExpanded = true;
     queueWidgetWindowMode('dialog');
@@ -2290,7 +2296,7 @@ appRoot.addEventListener('click', async (event) => {
         showArchivedEmployees: true,
         dateStyle: 'long',
         backupRetention: 7,
-        interfaceTheme: 'navy', interfaceDensity: 'comfortable', interfaceTextSize: 'standard',
+        interfaceTheme: 'navy', interfaceDensity: 'comfortable', interfaceTextSize: 'standard', interfaceMotion: 'full',
         statusColors: { ...STATUS_COLORS },
     };
     renderShell();

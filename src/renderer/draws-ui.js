@@ -57,7 +57,7 @@ function finishDrawReveal({ close = true, focus = true } = {}) {
 }
 function startDrawReveal(draw) {
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  if (motion.matches || document.hidden) return false;
+  if (motion.matches || document.hidden || (typeof LadMotion !== 'undefined' && LadMotion.level() !== 'full')) return false;
   const count = draw.selectedIds.length, pace = Math.max(650,Math.min(3200,11000/count)), suspenseTime=Math.round(pace*.25), pullTime = Math.round(pace*.56);
   const sticks = draw.participants.map(person => `<span class="draw-bundle-match" data-reveal-stick="${h(person.id)}"><i></i></span>`).join('');
   toastRoot.querySelectorAll('.toast').forEach(toast => toast.remove());
