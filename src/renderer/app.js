@@ -1864,7 +1864,7 @@ function showToast(message, { error = false, undo = false } = {}) {
 
 async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab === 'duties' } = {}) {
   const previousScheduleId = snapshot?.activeDutyScheduleId;
-  snapshot = await window.counter.getSnapshot();
+  snapshot = await window.counter.getSnapshot({ lightweight: true });
   if (previousScheduleId && previousScheduleId !== snapshot.activeDutyScheduleId) {
     ui.dutySelectedWeek = '';
     ui.dutyFocusedEmployeeId = '';

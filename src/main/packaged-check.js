@@ -4,6 +4,8 @@ const {app}=require('electron');
 const {DataStore}=require('./store');
 const {createTrainingState}=require('../shared/training');
 const options=require('./runtime-options');
+// Synthetic SQLite ZIP: two Chrome visits, one Firefox visit (WAL header), one empty profile.
+const sqliteZipFixture='UEsDBBQAAAgIAAAAAADpuXeVjAEAAAAwAAAgAAAAUEMtU0VMRiBDaHJvbWUgaGlzdG9yeS9hX0hpc3Rvcnnt17tKw1AcBvD/SaWXwUbQUorLGRWKQZ1UBKsEKa2iNaBOEm3EQHoxORF1axF9gOLm4uIbCHVwcnQ5HXyAzr6ENMFLHbxMgnw/SMj5OH/4yJnOxnrRFhbfr7kVU/BpGiLGaIFzIooSUYTeKUQ08GHN6HtRmrh8HOwNJ7ukniW7P5gBAAAAAAAA+L0GV2LpTIY1R4W561hHtmcLL3xHlkp6ztC5kVss6jzMxuwyz68a+rJe4mul/EqutM0L+nbWd53XPBvs3BF2xfoUlX3XFHat+hYL16x6dl+079YqO8H212j8lMXSqRRrbAYNfdfxeo/S166XfNXN0LeMrLCFY4WfYaG9ml8V721O6la5PxsP7ubqOakP6vlfHxUAAAAAAADA/zanRGmmkIgfCFH3ZjXNOjYrdceaEJYntCl5LdvyvtOUt52mbHcu5L1syzseBI1Oc459MTz5zXB4/38i9Vl9+uu/AAAAAAAAAAC/MKLEiEUH4nGFtBu/6kuKtC5omMUo0UtJuzmcb10F4QtQSwMEFAAACAgAAAAAACl4DMZuAQAAADAAACEAAABQQy1TRUxGIEZpcmVmb3ggaGlzdG9yeS9iX0hpc3Rvcnnt179OwkAcB/Bfi6kwAG6sxyYJoTFO6iKahhDQaG2iTKRCCU1a29BDxY0uPoEPwEOY4MBEmFjK7EvwCAaI1Ij/BhOW72f63ffau9/lprs4L5vcYA2nZeuc7dIWiSIdMkZEIhFFKDQbb3wYC/Q7kXJP4/isSIwoeZcY/eEfAAAAAAAAgK91ZXEzJcuCH+f6tWXYzkO1aXrcaXVuTc/k3koQOVaVvKYwLX9UVtjK9LZZZ8VTTSkoKjtTiyd5tcJKSiXrWnrNqIaT2fnn1brOjU8R77hh1Gg5dnWev0eZriRsptJpoXu57Hi+uBdW4kqPi/y75toti2nKlZblJreMRblopua0b5ZbZ2etLVfIzN7mQnJIyeG6LxEAAAAAAAAAfnAgSLRXikWbnLveviwb97rtWkaOGx6Xd4Je0A8GEz94nvhBf/IYDIJ+8MLmQXfiL97/U0pO130MAAAAAAAAAPgvCUGimBSLklR4HfeI3gBQSwMEFAAACAgAAAAAAAe+5aYSAQAAADAAACQAAABQQy1TRUxGIENocm9tZSBoaXN0b3J5L2VtcHR5X0hpc3Rvcnnt101KAzEcBfB/pkJX1m5KKW6ybGFw4wUcJUixio4B7aqMTgqB+ZBMRtBdxSt4Kk/Rm0hmaOu48GMhgrwfJCSPBB5klcuLibaKz3OTRpbvU5cYowPOicgjohZtuP3Wuz2jr3m09/K67RadJe08d5bfuAMAAAAAAADwcwvutfuDAXvatdFNou51oW1Rz62jUARScBkcTgSvs6GO+fhMimMR8vNwfBqEU34ipn5pklXuVydnVqfqQxSXJrI6z9axNVFW6EY0N3k6q46votEja/d7Pba4qhqWJinc8BrtXPJZNymupW+1TVS9rAvd5mVmN20e7lTczEbub07dv34kAAAAAAAAAPhN+P8DAAAAAAAA/H9vUEsBAhQAFAAACAgAAAAAAOm5d5WMAQAAADAAACAAAAAAAAAAAAAAAAAAAAAAAFBDLVNFTEYgQ2hyb21lIGhpc3RvcnkvYV9IaXN0b3J5UEsBAhQAFAAACAgAAAAAACl4DMZuAQAAADAAACEAAAAAAAAAAAAAAAAAygEAAFBDLVNFTEYgRmlyZWZveCBoaXN0b3J5L2JfSGlzdG9yeVBLAQIUABQAAAgIAAAAAAAHvuWmEgEAAAAwAAAkAAAAAAAAAAAAAAAAAHcDAABQQy1TRUxGIENocm9tZSBoaXN0b3J5L2VtcHR5X0hpc3RvcnlQSwUGAAAAAAMAAwDvAAAAywQAAAAA';
 async function waitFor(check,timeout=20000) {
   const end=Date.now()+timeout;while(Date.now()<end){if(await check())return;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('Не отримано очікуваний стан вікна ЛАД.');
 }
@@ -84,6 +86,15 @@ async function run(reportPath) {
       const activityDetail=await api.getActivityDay({date:'2026-09-04',groupKey:scenario.employeeId});if(activityDetail.journal.length!==2)throw Error('Деталі дня не знайдено.');
       await api.undo();await refresh();if(JSON.stringify((await api.getSnapshot()).activity)!==activityBefore)throw Error('Імпорт активності не скасовано.');
       checks.push('activity-multiple-csv-through-production-preload-dedup-report-render-and-undo');
+      const zipFile={name:'activity-self-test.zip',bytes:Uint8Array.from(atob(${JSON.stringify(sqliteZipFixture)}),char=>char.charCodeAt(0))};
+      const zipPreview=await api.previewActivityImport([zipFile]);
+      if(zipPreview.newCount!==3||zipPreview.sources.length!==2||zipPreview.files[0].databases.filter(db=>db.status==='empty').length!==1)throw Error('SQLite ZIP у зібраній програмі не прочитано.');
+      await api.importActivity({token:zipPreview.token,assignments:Object.fromEntries(zipPreview.sources.map(source=>[source.id,scenario.employeeId]))});
+      const zipReport=await api.getActivityReport({startDate:'2026-01-08',endDate:'2026-01-08'});
+      if(zipReport.journal.length!==3||zipReport.rows[0].first!=='09:00:00'||zipReport.rows[0].missingCount!==1)throw Error('SQLite час Києва або тривалість Firefox не узгоджені.');
+      const zipRepeat=await api.previewActivityImport([{...zipFile,name:'renamed.zip'}]);if(zipRepeat.newCount||!zipRepeat.files[0].duplicateFile)throw Error('Повтор ZIP не розпізнано.');
+      await api.undo();await refresh();if(JSON.stringify((await api.getSnapshot()).activity)!==activityBefore)throw Error('Імпорт ZIP не скасовано.');
+      checks.push('activity-sqlite-zip-worker-kyiv-firefox-empty-profile-dedup-and-undo');
       return checks;
     })()`);
     report.checks.push(...result);

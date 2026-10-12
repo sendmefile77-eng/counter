@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
-  getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
+  getSnapshot: input => ipcRenderer.invoke('snapshot:get', input),
   previewActivityImport: files => ipcRenderer.invoke('activity:preview', files),
   importActivity: input => ipcRenderer.invoke('activity:import', input),
   getActivityReport: filter => ipcRenderer.invoke('activity:report', filter),

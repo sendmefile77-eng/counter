@@ -1,8 +1,9 @@
-// Browser-history observations use the clock printed in the CSV. The numeric
-// timestamps below are wall-clock coordinates, not a claim that CSV time is UTC.
+// History timestamps use wall-clock coordinates: CSV preserves its printed
+// clock, while SQLite UTC timestamps are converted to Europe/Kyiv.
 const crypto = require('node:crypto');
 const presence = require('./presence');
 const work = require('./work');
+const { kyivWallClock } = require('./activity-time');
 
 const MINUTE = 60000;
 const DAY = 86400000;
@@ -178,20 +179,68 @@ const importFingerprint = state => digest(JSON.stringify([state.activity || empt
 function previewImports(state, files) {
   if (!Array.isArray(files) || !files.length || files.length > 50) throw Error('Виберіть від 1 до 50 файлів CSV.');
   if (files.reduce((sum, file) => sum + (file.bytes?.length || 0), 0) > MAX_BATCH_BYTES) throw Error('Загальний розмір файлів перевищує 64 МБ.');
+  return previewParsedImports(state, files.map(parseFile));
+}
+
+// A profile's earliest record can disappear when the browser trims history.
+// Reuse an existing source only when at least two exact records agree and there
+// is exactly one candidate on the same computer/browser. Ambiguous profiles
+// stay separate, and employee assignments are never inferred from a PC name.
+const sourceComputer = source => clean(source.computer || source.profile?.match(/^(.*?)\s+(?:Chrome|Edge|Firefox|Opera|Brave|Vivaldi)\s+history$/i)?.[1], 500).toLowerCase();
+const overlapKey = (source, visit) => JSON.stringify([sourceComputer(source), source.browser.toLowerCase(), visit.recordId, visit.timestamp, visit.url]);
+function previewParsedImports(state, staged) {
   const activity = state.activity || empty(), hashes = new Set(activity.imports.map(item => item.hash));
   const ids = new Set(activity.visits.map(item => item.id)), knownSources = new Map(activity.sources.map(item => [item.id, item]));
-  const staged = files.map(parseFile), sources = new Map();
+  const sources = new Map(), overlaps = new Map();
+  const indexVisit = visit => {
+    const source = knownSources.get(visit.sourceId);
+    if (!source || !sourceComputer(source)) return;
+    const key = overlapKey(source, visit);
+    if (!overlaps.has(key)) overlaps.set(key, new Set());
+    overlaps.get(key).add(source.id);
+  };
+  activity.visits.forEach(indexVisit);
   const reports = staged.map(file => {
     const duplicateFile = hashes.has(file.hash); hashes.add(file.hash);
     let newCount = 0, duplicateCount = 0;
     if (!duplicateFile) {
+      const bySource = new Map();
+      for (const visit of file.visits) {
+        if (!bySource.has(visit.sourceId)) bySource.set(visit.sourceId, []);
+        bySource.get(visit.sourceId).push(visit);
+      }
+      const claimed = new Set(file.sources.filter(source => knownSources.has(source.id)).map(source => source.id));
+      for (const source of file.sources) {
+        if (knownSources.has(source.id) || !sourceComputer(source)) continue;
+        const counts = new Map();
+        for (const visit of bySource.get(source.id) || []) {
+          const key = overlapKey(source, visit);
+          for (const id of overlaps.get(key) || []) {
+            if (source.format !== 'sqlite' && knownSources.get(id)?.format !== 'sqlite') continue;
+            if (!counts.has(id)) counts.set(id, new Set());
+            counts.get(id).add(key);
+          }
+        }
+        const candidates = [...counts].filter(([, records]) => records.size >= 2);
+        if (candidates.length !== 1 || claimed.has(candidates[0][0])) continue;
+        const existing = knownSources.get(candidates[0][0]); claimed.add(existing.id);
+        for (const visit of bySource.get(source.id) || []) {
+          visit.sourceId = existing.id;
+          visit.id = digest(JSON.stringify([existing.id, visit.recordId, visit.timestamp, visit.url]));
+        }
+        Object.assign(source, existing);
+      }
       for (const visit of file.visits) {
         if (ids.has(visit.id)) duplicateCount++;
         else { ids.add(visit.id); newCount++; }
       }
-      for (const source of file.sources) sources.set(source.id, knownSources.get(source.id) || source);
+      for (const source of file.sources) {
+        const saved = knownSources.get(source.id) || source;
+        sources.set(source.id, saved); knownSources.set(source.id, saved);
+      }
+      file.visits.forEach(indexVisit);
     }
-    return { name: file.name, hash: file.hash, encoding: file.encoding, rowCount: file.rowCount,
+    return { name: file.name, hash: file.hash, encoding: file.encoding, format: file.format || 'csv', databases: file.databases || [], ignoredFiles: file.ignoredFiles || 0, rowCount: file.rowCount,
       validCount: file.visits.length, newCount, duplicateCount, duplicateFile,
       startDate: file.startDate, endDate: file.endDate, issues: file.issues };
   });
@@ -238,6 +287,7 @@ function applyImports(state, prepared, input = {}, now = new Date()) {
       }
     }
     activity.imports.push({ id: importId, name: file.name, hash: file.hash, encoding: file.encoding,
+      format: file.format || 'csv', databases: file.databases || [], ignoredFiles: file.ignoredFiles || 0,
       importedAt: now.toISOString(), rowCount: file.rowCount, validCount: file.visits.length, newCount: added,
       duplicateCount: reused, issues: file.issues, startDate: file.startDate, endDate: file.endDate });
     importedFiles++; newCount += added; duplicateCount += reused;
@@ -305,6 +355,13 @@ function normalize(input, employees = []) {
     if (!item || typeof item.id !== 'string' || importIds.has(item.id) || typeof item.name !== 'string'
       || !/^[a-f0-9]{64}$/.test(item.hash) || !work.validDate(item.startDate) || !work.validDate(item.endDate)
       || !Array.isArray(item.issues) || !Number.isFinite(Date.parse(item.importedAt))) fail();
+    if (item.format !== undefined && !['csv', 'zip'].includes(item.format)) fail();
+    if (item.ignoredFiles !== undefined && (!Number.isSafeInteger(item.ignoredFiles) || item.ignoredFiles < 0)) fail();
+    if (item.databases !== undefined && (!Array.isArray(item.databases) || item.databases.some(db => !db
+      || typeof db.name !== 'string' || !['read', 'empty', 'error'].includes(db.status)
+      || (db.records !== null && (!Number.isSafeInteger(db.records) || db.records < 0))
+      || !Number.isSafeInteger(db.readRecords) || db.readRecords < 0
+      || (db.records !== null && db.readRecords > db.records)))) fail();
     importIds.add(item.id);
   }
   for (const visit of value.visits) {
@@ -362,8 +419,8 @@ function dayReport(state, group, date, visits, rules, now = new Date()) {
   const start = midnight + timeMinutes(rules.startTime) * MINUTE, end = midnight + timeMinutes(rules.endTime) * MINUTE;
   const lunchStart = midnight + timeMinutes(rules.lunchStart) * MINUTE, lunchEnd = midnight + timeMinutes(rules.lunchEnd) * MINUTE;
   const windows = [[start, lunchStart], [lunchEnd, end]];
-  const today = work.dateKey(now), future = date > today;
-  const currentTime = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
+  const currentTime = kyivWallClock(now.getTime());
+  const today = dateOf(currentTime), future = date > today;
   const inProgress = date === today && currentTime < end;
   const observedWindows = future ? [] : inProgress ? intersect(windows, [[midnight, currentTime]]) : windows;
   const person = group.employeeId && state.employees.find(person => person.id === group.employeeId);
@@ -413,7 +470,7 @@ function dayReport(state, group, date, visits, rules, now = new Date()) {
 
 function report(state, filter = {}, now = new Date()) {
   const activity = state.activity || empty();
-  const today = work.dateKey(now);
+  const today = dateOf(kyivWallClock(now.getTime()));
   const startDate = filter.startDate || today, endDate = filter.endDate || today;
   if (!work.validDate(startDate) || !work.validDate(endDate) || startDate > endDate) throw Error('Перевірте початок і кінець періоду.');
   if ((Date.parse(endDate) - Date.parse(startDate)) / DAY > 365) throw Error('Оберіть період не довше одного року.');
@@ -477,6 +534,21 @@ function report(state, filter = {}, now = new Date()) {
       recordCount: filteredJournal.length, unassignedSources: activity.sources.filter(source => !source.employeeId).length } };
 }
 
+// Screen clients request a page; exports and callers without a page retain the
+// complete journal. Data on disk and undo snapshots always keep every visit.
+function screenReport(state, filter = {}, now = new Date()) {
+  const data = report(state, filter, now);
+  if (!Object.hasOwn(filter, 'journalPage')) return data;
+  const journalCount = data.journal.length;
+  const requested = Number.isSafeInteger(filter.journalPage) ? Math.max(0, filter.journalPage) : 0;
+  const journalPage = Math.min(requested, Math.max(0, Math.ceil(journalCount / 50) - 1));
+  return { ...data, journal: data.journal.slice(journalPage * 50, journalPage * 50 + 50), journalCount, journalPage };
+}
+function screenSummary(state) {
+  const activity = state.activity || empty();
+  return { settings: activity.settings, sources: activity.sources, imports: activity.imports, visitCount: activity.visits.length };
+}
+
 function dailyDetail(state, input) {
   const data = report(state, { startDate: input.date, endDate: input.date });
   const row = data.rows.find(row => row.groupKey === input.groupKey);
@@ -498,5 +570,5 @@ function reportCsv(data) {
 }
 
 module.exports = { DEFAULT_SETTINGS, MAX_FILE_BYTES, MAX_BATCH_BYTES, settings, empty, normalize,
-  parseTime, parseDuration, decode, csvRows, parseFile, previewImports, applyImports, removeImport,
-  assignSource, updateSettings, removeEmployee, effectiveVisit, mergeIntervals, dayReport, report, dailyDetail, reportCsv };
+  parseTime, parseDuration, decode, csvRows, parseFile, previewImports, previewParsedImports, applyImports, removeImport,
+  assignSource, updateSettings, removeEmployee, effectiveVisit, mergeIntervals, dayReport, report, screenReport, screenSummary, dailyDetail, reportCsv };

@@ -1,5 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, screen, Notification, shell, Tray, nativeImage, globalShortcut } = require('electron');
 const fs = require('node:fs');
+const { readActivityFiles } = require('./activity-reader');
+let readingActivity = false;
 const path = require('node:path');
 const {
   STATUS_LABELS,
@@ -253,13 +255,13 @@ function createMainWindow() {
   });
 }
 
-function currentSnapshot() {
+function currentSnapshot({ lightweight = false } = {}) {
   const now = new Date();
   const changed = ensureAutomaticMisses(store.state, now);
   if (changed) store.save();
   lastBroadcastDate = dateKeyFromDate(now);
   return {
-    ...store.snapshot(),
+    ...clone(lightweight ? { ...store.state, activity: activity.screenSummary(store.state) } : store.state),
     generatedAt: now.toISOString(),
     appVersion: app.getVersion(),
     dataFilePath: store.filePath,
@@ -274,7 +276,7 @@ function currentSnapshot() {
 function broadcast() {
   configureWidget();
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('counter:changed', currentSnapshot());
+    mainWindow.webContents.send('counter:changed', currentSnapshot({ lightweight: true }));
   }
 }
 
@@ -384,11 +386,15 @@ async function applyWindowMode(mode) {
 }
 
 function registerIpc() {
-  ipcMain.handle('activity:preview', (_event, files) => {
+  ipcMain.handle('activity:preview', async (_event, files) => {
+    if (readingActivity) throw Error('Інша перевірка історії ще триває. Зачекайте її завершення.');
+    readingActivity = true;
+    let parsed;
+    try { parsed = await readActivityFiles(files); } finally { readingActivity = false; }
     const now = Date.now();
     for (const [token, prepared] of activityPreviews) if (now - prepared.preparedAt > 15 * 60000) activityPreviews.delete(token);
     while (activityPreviews.size >= 3) activityPreviews.delete(activityPreviews.keys().next().value);
-    const prepared = activity.previewImports(store.state, files);
+    const prepared = activity.previewParsedImports(store.state, parsed);
     const token = require('node:crypto').randomUUID();
     activityPreviews.set(token, { ...prepared, preparedAt: now });
     return { ...prepared.report, token };
@@ -400,7 +406,7 @@ function registerIpc() {
     activityPreviews.delete(input.token);
     return result;
   });
-  ipcMain.handle('activity:report', (_event, filter) => activity.report(store.state, filter));
+  ipcMain.handle('activity:report', (_event, filter) => activity.screenReport(store.state, filter));
   ipcMain.handle('activity:day', (_event, input) => activity.dailyDetail(store.state, input));
   ipcMain.handle('activity:settings', (_event, input) => mutate('activity:settings', state => activity.updateSettings(state, input)));
   ipcMain.handle('activity:assign', (_event, { sourceId, employeeId }) => mutate('activity:assign', state => activity.assignSource(state, sourceId, employeeId)));
@@ -440,7 +446,7 @@ function registerIpc() {
     if(legacyReceiptId)record.legacyReceiptId=legacyReceiptId;
     return record;
   }));
-  ipcMain.handle('snapshot:get', () => currentSnapshot());
+  ipcMain.handle('snapshot:get', (_event, input) => currentSnapshot({ lightweight: input?.lightweight === true }));
   ipcMain.handle('training:enter', () => {
     if(trainingSession)return {entered:true};
     if(dataImportPending)throw new Error('Дочекайтеся завершення імпорту.');

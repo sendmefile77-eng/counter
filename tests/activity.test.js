@@ -165,8 +165,8 @@ test('absence and weekends have no eight-hour deficit and never rewrite presence
 test('a current unfinished day has no early-finish allegation or final eight-hour deficit', () => {
   const { state, person } = setup();
   importRows(state, person, csv([{ time: '09:00:00', duration: '00:15:00' }]));
-  // Use local components, just like the native Windows process clock.
-  const midday = new Date(2026, 8, 4, 12, 0, 0);
+  // The monitoring day is Kyiv time even if the host uses a different zone.
+  const midday = new Date('2026-09-04T09:00:00Z');
   const row = activity.report(state, { startDate: DATE, endDate: DATE }, midday).rows[0];
   assert.equal(row.inProgress, true);
   assert.equal(row.deficitMs, null);
