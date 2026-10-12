@@ -409,11 +409,12 @@ function registerIpc() {
   ipcMain.handle('activity:report', (_event, filter) => activity.screenReport(store.state, filter));
   ipcMain.handle('activity:day', (_event, input) => activity.dailyDetail(store.state, input));
   ipcMain.handle('activity:settings', (_event, input) => mutate('activity:settings', state => activity.updateSettings(state, input)));
+  ipcMain.handle('activity:category', (_event, input) => mutate('activity:category', state => activity.setCategory(state, input)));
   ipcMain.handle('activity:assign', (_event, { sourceId, employeeId }) => mutate('activity:assign', state => activity.assignSource(state, sourceId, employeeId)));
   ipcMain.handle('activity:remove-import', (_event, { id }) => mutate('activity:remove-import', state => activity.removeImport(state, id)));
   ipcMain.handle('activity:export', async (_event, { filter, format }) => {
     if (!['xlsx', 'csv'].includes(format)) throw Error('Оберіть XLSX або CSV.');
-    const data = activity.report(store.state, filter);
+    const data = activity.report(store.state, { ...filter, includeAnalytics: true });
     const output = await withNativeDialog(mainWindow, () => dialog.showSaveDialog(mainWindow, {
       title: 'Зберегти моніторинг активності', defaultPath: `ЛАД_Активність_${data.startDate}_${data.endDate}.${format}`,
       filters: [{ name: format === 'xlsx' ? 'Excel' : 'CSV', extensions: [format] }],

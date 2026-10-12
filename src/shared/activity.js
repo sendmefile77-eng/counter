@@ -3,6 +3,8 @@
 const crypto = require('node:crypto');
 const presence = require('./presence');
 const work = require('./work');
+const categories = require('./activity-categories');
+const analytics = require('./activity-analytics');
 const { kyivWallClock } = require('./activity-time');
 
 const MINUTE = 60000;
@@ -12,6 +14,7 @@ const MAX_BATCH_BYTES = 64 * 1024 * 1024;
 const DEFAULT_SETTINGS = Object.freeze({
   startTime: '09:00', endTime: '18:00', lunchStart: '13:00', lunchEnd: '14:00',
   toleranceMinutes: 5, gapMinutes: 30, maxVisitMinutes: 15, missingVisitMinutes: 1,
+  riskMinDays: 5, riskMinOccurrences: 3, riskPercent: 40, personalDailyMinutes: 30,
 });
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const clean = (value, max = 1000) => String(value ?? '').trim().slice(0, max);
@@ -30,7 +33,8 @@ function settings(input = {}) {
     && timeMinutes(result.lunchEnd) < timeMinutes(result.endTime))) {
     throw Error('Обід має бути всередині робочого дня; кінець має бути після початку.');
   }
-  const limits = { toleranceMinutes: [0, 60], gapMinutes: [1, 240], maxVisitMinutes: [1, 120], missingVisitMinutes: [0, 15] };
+  const limits = { toleranceMinutes: [0, 60], gapMinutes: [1, 240], maxVisitMinutes: [1, 120], missingVisitMinutes: [0, 15],
+    riskMinDays: [3, 120], riskMinOccurrences: [2, 120], riskPercent: [5, 100], personalDailyMinutes: [1, 480] };
   for (const [key, [min, max]] of Object.entries(limits)) {
     if (!Number.isInteger(result[key]) || result[key] < min || result[key] > max) {
       throw Error(`Параметр «${key}» має бути цілим числом від ${min} до ${max}.`);
@@ -39,7 +43,7 @@ function settings(input = {}) {
   return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key => [key, result[key]]));
 }
 
-function empty() { return { settings: settings(), sources: [], imports: [], visits: [] }; }
+function empty() { return { settings: settings(), sources: [], imports: [], visits: [], domainRules: [] }; }
 
 function parseTime(value) {
   const text = clean(value, 80);
@@ -330,6 +334,34 @@ function updateSettings(state, input, now = new Date()) {
   return state.activity.settings;
 }
 
+function setCategory(state, input, now = new Date()) {
+  const domain = categories.domainName(input?.domain), employeeId = input?.employeeId || null;
+  if (employeeId && !state.employees.some(person => person.id === employeeId)) throw Error('Працівника не знайдено.');
+  const category = input?.category;
+  if (typeof category !== 'string' || category !== 'inherit' && !Object.hasOwn(categories.CATEGORIES, category)) throw Error('Оберіть категорію сайту.');
+  state.activity ||= empty();
+  const rules = (state.activity.domainRules || []).filter(rule => rule.domain !== domain || rule.employeeId !== employeeId);
+  if (category !== 'inherit') rules.push({ domain, employeeId, category });
+  state.activity.domainRules = categories.normalizeRules(rules, state.employees);
+  audit(state, 'activity_site_category_changed', { domain, employeeId, category }, now);
+  return categories.categoryFor(state.activity.domainRules, employeeId, domain);
+}
+function folders(state) {
+  const activity = state.activity || empty();
+  const groups = new Map(state.employees.map(person => [person.id, { employeeId: person.id, name: person.name, active: person.active,
+    recordCount: 0, sourceCount: 0, firstDate: null, lastDate: null, files: new Set() }]));
+  groups.set('unassigned', { employeeId: 'unassigned', name: 'Непризначені джерела', active: true, recordCount: 0, sourceCount: 0, firstDate: null, lastDate: null, files: new Set() });
+  const sources = new Map(activity.sources.map(source => [source.id, source]));
+  for (const source of sources.values()) groups.get(source.employeeId || 'unassigned').sourceCount++;
+  for (const visit of activity.visits) {
+    const group = groups.get(sources.get(visit.sourceId)?.employeeId || 'unassigned'), date = dateOf(visit.timestamp);
+    group.recordCount++; if (!group.firstDate || date < group.firstDate) group.firstDate = date;
+    if (!group.lastDate || date > group.lastDate) group.lastDate = date;
+    visit.versions.forEach(version => group.files.add(version.importId));
+  }
+  return [...groups.values()].map(({ files, ...folder }) => ({ ...folder, fileCount: files.size }));
+}
+
 function effectiveVisit(visit) {
   const last = visit.versions.at(-1);
   // Missing duration in a later snapshot must not erase an earlier observation.
@@ -344,6 +376,7 @@ function normalize(input, employees = []) {
   }
   const value = structuredClone(input);
   value.settings = settings(value.settings);
+  value.domainRules = categories.normalizeRules(value.domainRules, employees);
   const personIds = new Set(employees.map(p => p.id)), sourceIds = new Set(), importIds = new Set(), visitIds = new Set();
   const fail = () => { throw Error('Пошкоджено зв’язки або записи моніторингу активності.'); };
   for (const source of value.sources) {
@@ -386,6 +419,7 @@ function removeEmployee(activity, id) {
   const removed = new Set(activity.sources.filter(source => source.employeeId === id).map(source => source.id));
   activity.sources = activity.sources.filter(source => !removed.has(source.id));
   activity.visits = activity.visits.filter(visit => !removed.has(visit.sourceId));
+  activity.domainRules = (activity.domainRules || []).filter(rule => rule.employeeId !== id);
 }
 
 function mergeIntervals(intervals) {
@@ -434,14 +468,25 @@ function dayReport(state, group, date, visits, rules, now = new Date()) {
   const estimates = mergeIntervals(ordered.map(visit => [visit.timestamp, visit.timestamp +
     (visit.durationMs === null ? rules.missingVisitMinutes * MINUTE : Math.min(visit.durationMs, rules.maxVisitMinutes * MINUTE))]));
   const intervals = intersect(estimates, observedWindows), activeMs = ordered.length ? intervalLength(intervals) : null;
+  const categoryIntervals = category => intersect(mergeIntervals(ordered.filter(visit => (visit.category || 'unknown') === category)
+    .map(visit => [visit.timestamp, visit.timestamp + (visit.durationMs === null ? rules.missingVisitMinutes * MINUTE : Math.min(visit.durationMs, rules.maxVisitMinutes * MINUTE))])), observedWindows);
+  const workIntervals = categoryIntervals('work');
+  const unknownIntervals = complement(workIntervals, categoryIntervals('unknown'));
+  const personalIntervals = complement(mergeIntervals([...workIntervals, ...unknownIntervals]), categoryIntervals('personal'));
+  const workMs = ordered.length ? intervalLength(workIntervals) : null;
+  const personalMs = ordered.length ? intervalLength(personalIntervals) : null;
+  const unknownMs = activeMs === null ? null : Math.max(0, activeMs - workMs - personalMs);
+  const workPoints = ordered.filter(visit => observedWindows.some(([a, b]) => visit.timestamp >= a && visit.timestamp < b)).map(visit => visit.timestamp);
+  const starts = [...workPoints, ...intervals.map(interval => interval[0])], ends = [...workPoints, ...intervals.map(interval => interval[1])];
+  const firstWork = starts.length ? starts.reduce((a, b) => Math.min(a, b)) : null, lastWork = ends.length ? ends.reduce((a, b) => Math.max(a, b)) : null;
   const first = ordered[0]?.timestamp ?? null, last = ordered.at(-1)?.timestamp ?? null;
   const gaps = ordered.length && expectedMs ? complement(intervals, observedWindows).map(([from, to]) => ({
     from: clockOf(from), to: clockOf(to), durationMs: to - from,
     kind: from === start ? 'start' : to === end ? 'end' : 'gap', start: from, end: to,
   })) : [];
   const longGaps = gaps.filter(gap => gap.durationMs >= rules.gapMinutes * MINUTE);
-  const lateMs = first !== null && expectedMs ? intervalLength(intersect([[start, Math.max(start, first)]], windows)) : null;
-  const lastEvidence = last === null ? null : intervals.reduce((latest, interval) => Math.max(latest, interval[1]), last);
+  const lateMs = firstWork !== null && expectedMs ? intervalLength(intersect([[start, Math.max(start, firstWork)]], windows)) : null;
+  const lastEvidence = lastWork;
   const earlyMs = lastEvidence !== null && expectedMs ? intervalLength(intersect([[Math.min(end, lastEvidence), end]], windows)) : null;
   const outsideMs = ordered.length ? intervalLength(intersect(estimates, [[midnight, start], [end, midnight + DAY]])) : null;
   const anomalies = [];
@@ -460,7 +505,8 @@ function dayReport(state, group, date, visits, rules, now = new Date()) {
     presence: mark ? presence.labels[mark.status] : calendarWorkday ? 'Робочий день' : 'Вихідний',
     expectedMs, activeMs, deficitMs: activeMs === null || inProgress || future ? null : Math.max(0, expectedMs - activeMs),
     first: first === null ? null : clockOf(first), last: last === null ? null : clockOf(last),
-    recordCount: ordered.length, missingCount, cappedCount, lateMs, earlyMs, outsideMs,
+    firstWork: firstWork === null ? null : clockOf(firstWork), lastWork: lastWork === null ? null : clockOf(lastWork),
+    workMs, personalMs, unknownMs, recordCount: ordered.length, missingCount, cappedCount, lateMs, earlyMs, outsideMs,
     rawDurationMs: ordered.reduce((sum, visit) => sum + (visit.durationMs || 0), 0),
     gaps, longGaps, maxGapMs: gaps.reduce((max, gap) => Math.max(max, gap.durationMs), 0),
     intervals: intervals.map(([from, to]) => ({ from: clockOf(from), to: clockOf(to), start: from, end: to })),
@@ -473,7 +519,7 @@ function report(state, filter = {}, now = new Date()) {
   const today = dateOf(kyivWallClock(now.getTime()));
   const startDate = filter.startDate || today, endDate = filter.endDate || today;
   if (!work.validDate(startDate) || !work.validDate(endDate) || startDate > endDate) throw Error('Перевірте початок і кінець періоду.');
-  if ((Date.parse(endDate) - Date.parse(startDate)) / DAY > 365) throw Error('Оберіть період не довше одного року.');
+  if ((Date.parse(endDate) - Date.parse(startDate)) / DAY > 3659) throw Error('Оберіть період до 10 років. Старіші записи збережено; їх можна переглянути іншим періодом.');
   const rules = settings(activity.settings), sources = new Map(activity.sources.map(source => [source.id, source]));
   const groups = new Map();
   for (const source of activity.sources) {
@@ -483,18 +529,19 @@ function report(state, filter = {}, now = new Date()) {
     if (!groups.has(key)) groups.set(key, { key, employeeId: source.employeeId, name, sourceIds: [] });
     groups.get(key).sourceIds.push(source.id);
   }
-  const byDate = new Map(), journal = [];
+  const byDate = new Map(), journal = [], category = categories.classifier(activity.domainRules || []);
   for (const saved of activity.visits) {
     const source = sources.get(saved.sourceId), groupKey = source?.employeeId || `source:${saved.sourceId}`;
     if (!source || !groups.has(groupKey)) continue;
     const visit = effectiveVisit(saved), date = dateOf(visit.timestamp);
     if (date < startDate || date > endDate) continue;
+    const classification = category(source.employeeId, visit.domain); visit.category = classification.category;
     const key = groupKey + '|' + date;
     if (!byDate.has(key)) byDate.set(key, []);
     byDate.get(key).push(visit);
     journal.push({ id: visit.id, groupKey, employeeId: source.employeeId, name: groups.get(groupKey).name,
       date, time: clockOf(visit.timestamp), timestamp: visit.timestamp, url: visit.url, title: visit.title,
-      domain: visit.domain, browser: source.browser, source: source.label, durationMs: visit.durationMs,
+      domain: visit.domain, category: visit.category, categoryOrigin: classification.origin, browser: source.browser, source: source.label, durationMs: visit.durationMs,
       visitCount: visit.visitCount, typedCount: visit.typedCount, urlLength: visit.urlLength,
       rawBrowser: visit.rawBrowser, userProfile: source.userProfile, browserProfile: source.profile,
       capped: visit.durationMs !== null && visit.durationMs > rules.maxVisitMinutes * MINUTE,
@@ -518,20 +565,34 @@ function report(state, filter = {}, now = new Date()) {
   const sites = new Map();
   for (const visit of filteredJournal) {
     const key = visit.groupKey + '|' + visit.domain;
-    if (!sites.has(key)) sites.set(key, { key, name: visit.name, domain: visit.domain, recordCount: 0, durationMs: 0, missingCount: 0 });
+    if (!sites.has(key)) sites.set(key, { key, groupKey: visit.groupKey, employeeId: visit.employeeId, name: visit.name, domain: visit.domain, category: visit.category, categoryOrigin: visit.categoryOrigin, recordCount: 0, durationMs: 0, missingCount: 0 });
     const site = sites.get(key); site.recordCount++; site.durationMs += visit.durationMs || 0; site.missingCount += visit.durationMs === null ? 1 : 0;
   }
-  return { startDate, endDate, settings: rules, rows, journal: filteredJournal,
+  let analysis = null;
+  if (filter.includeAnalytics) {
+    const previousRange = analytics.previousRange(startDate, endDate);
+    const previous = report(state, { startDate: previousRange.startDate, endDate: previousRange.endDate, employeeId: filter.employeeId }, now);
+    analysis = analytics.analyze(allRows, previous.rows, rules, { groupBy: filter.groupBy, previousRange });
+  }
+  const scopedSourceIds = new Set([...groups.values()].flatMap(group => group.sourceIds));
+  const scopedVisits = activity.visits.filter(visit => scopedSourceIds.has(visit.sourceId));
+  const retained = new Map(), affectedFolders = new Map();
+  for (const visit of activity.visits) for (const version of visit.versions) {
+    if (!affectedFolders.has(version.importId)) affectedFolders.set(version.importId, new Set());
+    affectedFolders.get(version.importId).add(sources.get(visit.sourceId)?.employeeId || 'unassigned');
+  }
+  for (const visit of scopedVisits) for (const version of visit.versions) retained.set(version.importId, (retained.get(version.importId) || 0) + 1);
+  return { startDate, endDate, settings: rules, rows, journal: filteredJournal, analysis, folders: folders(state), scopeEmployeeId: filter.employeeId || null,
     sites: [...sites.values()].sort((a, b) => b.recordCount - a.recordCount),
-    sources: activity.sources.map(source => ({ ...source, name: state.employees.find(p => p.id === source.employeeId)?.name || '',
+    sources: activity.sources.filter(source => scopedSourceIds.has(source.id)).map(source => ({ ...source, name: state.employees.find(p => p.id === source.employeeId)?.name || '',
       recordCount: activity.visits.filter(visit => visit.sourceId === source.id).length })),
-    imports: activity.imports.slice().reverse().map(item => ({ ...item,
-      retainedCount: activity.visits.filter(visit => visit.versions.some(v => v.importId === item.id)).length })),
+    imports: activity.imports.filter(item => !filter.employeeId || retained.has(item.id)).slice().reverse().map(item => ({ ...item,
+      retainedCount: retained.get(item.id) || 0, affectedFolders: affectedFolders.get(item.id)?.size || 0 })),
     totals: { observedDays: rows.filter(row => row.recordCount).length, noDataDays: rows.filter(row => !row.recordCount).length,
       anomalyDays: rows.filter(row => row.anomalies.length).length,
       activeMs: rows.reduce((sum, row) => sum + (row.activeMs || 0), 0),
       expectedMs: rows.filter(row => row.recordCount).reduce((sum, row) => sum + row.expectedMs, 0),
-      recordCount: filteredJournal.length, unassignedSources: activity.sources.filter(source => !source.employeeId).length } };
+      recordCount: filteredJournal.length, unassignedSources: activity.sources.filter(source => scopedSourceIds.has(source.id) && !source.employeeId).length } };
 }
 
 // Screen clients request a page; exports and callers without a page retain the
@@ -546,7 +607,7 @@ function screenReport(state, filter = {}, now = new Date()) {
 }
 function screenSummary(state) {
   const activity = state.activity || empty();
-  return { settings: activity.settings, sources: activity.sources, imports: activity.imports, visitCount: activity.visits.length };
+  return { settings: activity.settings, sources: activity.sources, imports: activity.imports, domainRules: activity.domainRules || [], visitCount: activity.visits.length };
 }
 
 function dailyDetail(state, input) {
@@ -563,12 +624,12 @@ function reportCsv(data) {
   };
   const minutes = value => value === null ? '' : Math.round(value / MINUTE * 100) / 100;
   return '\uFEFF' + [
-    ['Дата', 'Працівник / джерело', 'Норма, хв', 'Оцінка активності, хв', 'Бракує до норми (оцінка), хв', 'Перший запис', 'Останній запис', 'Записів', 'Без тривалості', 'Довгих пауз', 'Найдовша пауза, хв', 'Аномалії', 'Наявність'],
+    ['Дата', 'Працівник / джерело', 'Норма, хв', 'Оцінка активності, хв', 'Бракує до норми (оцінка), хв', 'Перший запис', 'Останній запис', 'Записів', 'Без тривалості', 'Довгих пауз', 'Найдовша пауза, хв', 'Аномалії', 'Наявність', 'Робочі сайти (оцінка), хв', 'Особисті сайти (оцінка), хв', 'Не визначено (оцінка), хв'],
     ...data.rows.map(row => [row.date, row.name, minutes(row.expectedMs), minutes(row.activeMs), minutes(row.deficitMs), row.first, row.last,
-      row.recordCount, row.missingCount, row.longGaps.length, minutes(row.maxGapMs), row.anomalies.map(item => item.label).join('; '), row.presence]),
+      row.recordCount, row.missingCount, row.longGaps.length, minutes(row.maxGapMs), row.anomalies.map(item => item.label).join('; '), row.presence, minutes(row.workMs), minutes(row.personalMs), minutes(row.unknownMs)]),
   ].map(row => row.map(escape).join(';')).join('\r\n');
 }
 
 module.exports = { DEFAULT_SETTINGS, MAX_FILE_BYTES, MAX_BATCH_BYTES, settings, empty, normalize,
   parseTime, parseDuration, decode, csvRows, parseFile, previewImports, previewParsedImports, applyImports, removeImport,
-  assignSource, updateSettings, removeEmployee, effectiveVisit, mergeIntervals, dayReport, report, screenReport, screenSummary, dailyDetail, reportCsv };
+  assignSource, updateSettings, setCategory, folders, removeEmployee, effectiveVisit, mergeIntervals, dayReport, report, screenReport, screenSummary, dailyDetail, reportCsv };

@@ -3,7 +3,7 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 const coins=require('./coins');

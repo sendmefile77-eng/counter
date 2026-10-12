@@ -44,16 +44,18 @@ function worksheet(rows, widths) {
 }
 
 function activityXlsx(data) {
+  const sheetNames = ['Зведення', 'Журнал', 'Правила розрахунку', ...(data.analysis ? ['Статистика', 'Динаміка', 'Повторення'] : [])];
+  const sheetIds = sheetNames.map((_, i) => i + 1);
   const summary = [
-    ['Дата', 'Працівник / джерело', 'Норма', 'Оцінка активності', 'Бракує до норми (оцінка)', 'Перший запис', 'Останній запис', 'Записів', 'Без тривалості', 'Довгих пауз', 'Найдовша пауза', 'Аномалії', 'Наявність'],
+    ['Дата', 'Працівник / джерело', 'Норма', 'Оцінка активності', 'Бракує до норми (оцінка)', 'Перший запис', 'Останній запис', 'Записів', 'Без тривалості', 'Довгих пауз', 'Найдовша пауза', 'Аномалії', 'Наявність', 'Робочі сайти (оцінка)', 'Особисті сайти (оцінка)', 'Не визначено (оцінка)'],
     ...data.rows.map(row => [{ value: dateNumber(row.date), style: 2 }, row.name, duration(row.expectedMs), duration(row.activeMs), duration(row.deficitMs),
-      time(row.first), time(row.last), row.recordCount, row.missingCount, row.longGaps.length, duration(row.maxGapMs), row.anomalies.map(item => item.label).join('; '), row.presence]),
+      time(row.first), time(row.last), row.recordCount, row.missingCount, row.longGaps.length, duration(row.maxGapMs), row.anomalies.map(item => item.label).join('; '), row.presence, duration(row.workMs), duration(row.personalMs), duration(row.unknownMs)]),
   ];
   const journal = [
-    ['Працівник / джерело', 'URL', 'Title', 'Visit Time', 'Visit Count', 'Visited From', 'Visit Type', 'Visit Duration', 'Web Browser', 'User Profile', 'Browser Profile', 'URL Length', 'Typed Count', 'History File', 'Record ID', 'Розпізнаний браузер', 'Файли імпорту'],
+    ['Працівник / джерело', 'URL', 'Title', 'Visit Time', 'Visit Count', 'Visited From', 'Visit Type', 'Visit Duration', 'Web Browser', 'User Profile', 'Browser Profile', 'URL Length', 'Typed Count', 'History File', 'Record ID', 'Розпізнаний браузер', 'Файли імпорту', 'Категорія сайту'],
     ...data.journal.map(v => [v.name, v.url, v.title, { value: dateNumber(v.date) + v.time.split(':').reduce((sum, part, i) => sum + Number(part) * [3600, 60, 1][i], 0) / 86400, style: 5 },
       v.visitCount, v.visitedFrom, v.visitType, duration(v.durationMs), v.rawBrowser, v.userProfile, v.browserProfile,
-      v.urlLength, v.typedCount, v.historyFile, v.recordId, v.browser, v.files.join('; ')]),
+      v.urlLength, v.typedCount, v.historyFile, v.recordId, v.browser, v.files.join('; '), ({ work: 'Робочий', personal: 'Особистий', unknown: 'Не визначено' }[v.category] || 'Не визначено')]),
   ];
   const rules = data.settings;
   const method = [
@@ -66,18 +68,34 @@ function activityXlsx(data) {
     ['Дні без записів', 'Немає даних. Оцінка й нестача залишаються порожніми.'],
     ['Час із ZIP', 'SQLite: UTC переведено в Europe/Kyiv з урахуванням літнього часу. У Firefox немає тривалості відвідувань.'],
     ['Час у CSV', 'Використовується час, надрукований у джерелі, без зміни часового поясу.'],
+    ['Категорії сайтів', 'Задаються вручну, окремо для працівника або загальним правилом. Правила застосовуються до всієї історії.'],
+    ['Особистий час', 'Оцінка в робочих вікнах без обіду. За перетину пріоритет мають робочі та невизначені записи. Це не підтвердження втрати робочого часу.'],
+    ['Повторення', `Від ${rules.riskMinOccurrences} повторень, ${rules.riskPercent}% придатних днів; мінімум ${rules.riskMinDays} завершених днів із робочими спостереженнями.`],
+    ['Поточний / майбутні дні', 'Не формують повторення чи остаточну нестачу. Відсутні записи й відпустки не вважаються порушенням.'],
+    ['Пошук і відхилення', 'Таблиці дня й журналу враховують фільтри. Статистика, динаміка та повторення охоплюють повний вибраний період і працівника.'],
     ['Visit Count', 'Поле джерела; кількість рядків журналу рахується окремо.'],
   ];
   const files = {
-    '[Content_Types].xml': '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + [1, 2, 3].map(i => `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') + '</Types>',
+    '[Content_Types].xml': '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + sheetIds.map(i => `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') + '</Types>',
     '_rels/.rels': '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
-    'xl/workbook.xml': '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Зведення" sheetId="1" r:id="rId1"/><sheet name="Журнал" sheetId="2" r:id="rId2"/><sheet name="Правила розрахунку" sheetId="3" r:id="rId3"/></sheets></workbook>',
-    'xl/_rels/workbook.xml.rels': '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + [1, 2, 3].map(i => `<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i}.xml"/>`).join('') + '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+    'xl/workbook.xml': '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + sheetNames.map((name, i) => `<sheet name="${xml(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheetIds.map(i => `<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i}.xml"/>`).join('') + `<Relationship Id="rId${sheetIds.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
     'xl/styles.xml': '<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="4"><numFmt numFmtId="165" formatCode="dd.mm.yyyy"/><numFmt numFmtId="166" formatCode="[h]:mm:ss"/><numFmt numFmtId="167" formatCode="hh:mm:ss"/><numFmt numFmtId="168" formatCode="dd.mm.yyyy hh:mm:ss"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F3148"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="168" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
-    'xl/worksheets/sheet1.xml': worksheet(summary, [14, 28, 13, 23, 28, 17, 17, 12, 18, 17, 21, 64, 24]),
-    'xl/worksheets/sheet2.xml': worksheet(journal, [28, 65, 50, 24, 13, 50, 20, 20, 18, 24, 34, 13, 15, 60, 16, 25, 36]),
+    'xl/worksheets/sheet1.xml': worksheet(summary, [14, 28, 13, 23, 28, 17, 17, 12, 18, 17, 21, 64, 24, 24, 24, 24]),
+    'xl/worksheets/sheet2.xml': worksheet(journal, [28, 65, 50, 24, 13, 50, 20, 20, 18, 24, 34, 13, 15, 60, 16, 25, 36, 24]),
     'xl/worksheets/sheet3.xml': worksheet(method, [52, 110]),
   };
+  if (data.analysis) {
+    const fields = ['Робочих днів', 'Днів із записами', 'Днів для повторень', 'Без даних', 'Норма', 'Оцінка активності', 'Робочі сайти', 'Особисті сайти', 'Не визначено', 'Пізніх початків', 'Ранніх кінців', 'Днів із довгими паузами', 'Частка пізніх, %'];
+    const values = value => [value.scheduledDays, value.observedDays, value.sampleDays, value.noDataDays, duration(value.expectedMs), duration(value.activeMs), duration(value.workMs), duration(value.personalMs), duration(value.unknownMs), value.lateDays, value.earlyDays, value.longGapDays, value.lateRate];
+    const stats = [['Працівник / джерело', ...fields, 'Зміна активності на день, хв', 'Зміна особистого часу на день, хв', 'Зміна частки пізніх, в. п.', 'Даних для тенденції достатньо'],
+      ...data.analysis.people.map(person => [person.name, ...values(person.summary), person.trend.activeChangeMs == null ? null : person.trend.activeChangeMs / 60000, person.trend.personalChangeMs == null ? null : person.trend.personalChangeMs / 60000, person.trend.lateChangePoints, person.trend.comparable ? 'Так' : 'Ні'])];
+    const periods = [['Працівник / джерело', 'Початок періоду', ...fields], ...data.analysis.people.flatMap(person => person.periods.map(period => [person.name, { value: dateNumber(period.startDate), style: 2 }, ...values(period)]))];
+    const patterns = [['Працівник', 'Ознака для перевірки', 'Дата', 'Повторень', 'Придатних днів', 'Частка, %', 'Медіанне відхилення'], ...data.analysis.people.flatMap(person => person.risks.flatMap(risk => risk.dates.map(date => [person.name, risk.label, { value: dateNumber(date), style: 2 }, risk.count, risk.denominator, risk.percent, duration(risk.medianMs)])))];
+    files['xl/worksheets/sheet4.xml'] = worksheet(stats, [30, 16, 18, 22, 14, 16, 24, 24, 24, 24, 18, 18, 24, 24, 30, 30, 30, 28]);
+    files['xl/worksheets/sheet5.xml'] = worksheet(periods, [30, 18, 16, 18, 22, 14, 16, 24, 24, 24, 24, 18, 18, 24, 24]);
+    files['xl/worksheets/sheet6.xml'] = worksheet(patterns, [30, 70, 18, 18, 18, 18, 24]);
+  }
   return zip(files);
 }
 

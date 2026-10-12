@@ -82,10 +82,15 @@ async function run(reportPath) {
       await api.importActivity({token:activityPreview.token,assignments});
       const activityReport=await api.getActivityReport({startDate:'2026-09-04',endDate:'2026-09-04'});
       if(activityReport.journal.length!==2||activityReport.rows[0].expectedMs!==480*60000||activityReport.rows[0].missingCount!==1)throw Error('Моніторинг через preload не узгоджений.');
-      await navigateToTab('activity');if(!document.querySelector('[data-activity-drop]')||!document.querySelector('.activity-table'))throw Error('Екран моніторингу не відкрився.');
+      await navigateToTab('activity');activityUi.view='days';renderShell();if(!document.querySelector('[data-activity-drop]')||!document.querySelector('.activity-table'))throw Error('Екран моніторингу не відкрився.');
       const activityDetail=await api.getActivityDay({date:'2026-09-04',groupKey:scenario.employeeId});if(activityDetail.journal.length!==2)throw Error('Деталі дня не знайдено.');
+      await api.setActivityCategory({domain:'example.test',employeeId:scenario.employeeId,category:'personal'});
+      const personalReport=await api.getActivityReport({startDate:'2026-09-04',endDate:'2026-09-04',employeeId:scenario.employeeId,includeAnalytics:true});
+      if(personalReport.analysis.people[0].summary.personalMs!==16*60000||personalReport.folders.find(folder=>folder.employeeId===scenario.employeeId).fileCount!==1)throw Error('Особиста статистика або папка працівника не узгоджені.');
+      await api.undo();
       await api.undo();await refresh();if(JSON.stringify((await api.getSnapshot()).activity)!==activityBefore)throw Error('Імпорт активності не скасовано.');
       checks.push('activity-multiple-csv-through-production-preload-dedup-report-render-and-undo');
+      checks.push('activity-employee-folder-categories-personal-statistics-and-undo');
       const zipFile={name:'activity-self-test.zip',bytes:Uint8Array.from(atob(${JSON.stringify(sqliteZipFixture)}),char=>char.charCodeAt(0))};
       const zipPreview=await api.previewActivityImport([zipFile]);
       if(zipPreview.newCount!==3||zipPreview.sources.length!==2||zipPreview.files[0].databases.filter(db=>db.status==='empty').length!==1)throw Error('SQLite ZIP у зібраній програмі не прочитано.');

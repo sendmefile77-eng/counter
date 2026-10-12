@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('counter', {
   getActivityReport: filter => ipcRenderer.invoke('activity:report', filter),
   getActivityDay: input => ipcRenderer.invoke('activity:day', input),
   removeActivityImport: id => ipcRenderer.invoke('activity:remove-import', { id }),
+  setActivityCategory: input => ipcRenderer.invoke('activity:category', input),
   assignActivitySource: (sourceId, employeeId) => ipcRenderer.invoke('activity:assign', { sourceId, employeeId }),
   updateActivitySettings: input => ipcRenderer.invoke('activity:settings', input),
   exportActivity: (filter, format) => ipcRenderer.invoke('activity:export', { filter, format }),
