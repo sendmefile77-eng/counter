@@ -62,6 +62,9 @@ const presence = require('../shared/presence');
 const presenceChanges = require('../shared/presence-changes');
 const dutyReplacements = require('../shared/duty-replacements');
 const availability = require('../shared/availability');
+const activity = require('../shared/activity');
+const { activityXlsx } = require('./activity-xlsx');
+const activityPreviews = new Map();
 const runtimeOptions = require('./runtime-options');
 const os = require('node:os');
 const {createTrainingState} = require('../shared/training');
@@ -381,6 +384,38 @@ async function applyWindowMode(mode) {
 }
 
 function registerIpc() {
+  ipcMain.handle('activity:preview', (_event, files) => {
+    const now = Date.now();
+    for (const [token, prepared] of activityPreviews) if (now - prepared.preparedAt > 15 * 60000) activityPreviews.delete(token);
+    while (activityPreviews.size >= 3) activityPreviews.delete(activityPreviews.keys().next().value);
+    const prepared = activity.previewImports(store.state, files);
+    const token = require('node:crypto').randomUUID();
+    activityPreviews.set(token, { ...prepared, preparedAt: now });
+    return { ...prepared.report, token };
+  });
+  ipcMain.handle('activity:import', (_event, input) => {
+    const prepared = activityPreviews.get(input?.token);
+    if (!prepared || Date.now() - prepared.preparedAt > 15 * 60000) throw Error('Перевірка імпорту застаріла. Виберіть файли ще раз.');
+    const result = mutate('activity:import', state => activity.applyImports(state, prepared, input));
+    activityPreviews.delete(input.token);
+    return result;
+  });
+  ipcMain.handle('activity:report', (_event, filter) => activity.report(store.state, filter));
+  ipcMain.handle('activity:day', (_event, input) => activity.dailyDetail(store.state, input));
+  ipcMain.handle('activity:settings', (_event, input) => mutate('activity:settings', state => activity.updateSettings(state, input)));
+  ipcMain.handle('activity:assign', (_event, { sourceId, employeeId }) => mutate('activity:assign', state => activity.assignSource(state, sourceId, employeeId)));
+  ipcMain.handle('activity:remove-import', (_event, { id }) => mutate('activity:remove-import', state => activity.removeImport(state, id)));
+  ipcMain.handle('activity:export', async (_event, { filter, format }) => {
+    if (!['xlsx', 'csv'].includes(format)) throw Error('Оберіть XLSX або CSV.');
+    const data = activity.report(store.state, filter);
+    const output = await withNativeDialog(mainWindow, () => dialog.showSaveDialog(mainWindow, {
+      title: 'Зберегти моніторинг активності', defaultPath: `ЛАД_Активність_${data.startDate}_${data.endDate}.${format}`,
+      filters: [{ name: format === 'xlsx' ? 'Excel' : 'CSV', extensions: [format] }],
+    }));
+    if (output.canceled || !output.filePath) return null;
+    fs.writeFileSync(output.filePath, format === 'xlsx' ? activityXlsx(data) : activity.reportCsv(data));
+    return { filePath: output.filePath };
+  });
   ipcMain.handle('presence:preview', (_event,input) => presenceChanges.preview(store.state,input));
   ipcMain.handle('presence:apply', (_event,input) => mutate('presence:apply',state=>presenceChanges.apply(state,input)));
   ipcMain.handle('presence:save', (_event,input) => mutate('presence:save',state=>presenceChanges.save(state,input)));

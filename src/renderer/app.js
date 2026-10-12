@@ -464,6 +464,7 @@ const NAV_ICONS = {
   duties: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3"></circle><path d="M3.8 19c.5-3.2 2.2-5 5.2-5s4.7 1.8 5.2 5M15.8 7.3a3 3 0 0 1 0 5.4M16.4 14.4c2.1.5 3.3 2 3.8 4.6"></path></svg>',
   timeoff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h10V4H4zM14 7h3.5A2.5 2.5 0 0 1 20 9.5V20h-6M8 12h9M14 9l3 3-3 3"></path></svg>',
   analytics: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5h16M6.5 17V11M11 17V6M15.5 17v-4M20 17V8.5"></path></svg>',
+  activity: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg>',
   employees: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="10" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.3-5.5 5.5-5.5s5 2 5.5 5.5M14.8 14.5c3.2-.7 5.2.8 5.7 4.5"></path></svg>',
   data: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M9 4v6M15 14v6"></path></svg>',
   help: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M9.8 9.5a2.5 2.5 0 1 1 3.7 2.2c-1 .6-1.5 1.1-1.5 2.3M12 17h.01"></path></svg>',
@@ -484,12 +485,14 @@ const NAV_ITEMS = [
   ['coins','Підкинути монетку','Відповідь Так / Ні, анімація та історія підкидань'],
   ['consequences', 'Наслідки змін', 'Зачеплені чергування й завдання; заміни та обміни'],
   ['presence','Наявність','Де працівник: на роботі, ЗКП, відпустка, лікарняний або відгул'],
+  ['activity', 'Моніторинг активності', 'Історія браузера, робочий час і відхилення від графіка'],
 ];
 
 async function navigateToTab(tab) {
   if (!NAV_ITEMS.some(([id]) => id === tab)) return;
   if (ui.mode === 'widget') { ui.mode = 'dashboard'; await queueWidgetWindowMode('dashboard'); }
   ui.tab = tab;
+  if (ui.tab === 'activity') { await loadActivityReport(); return; }
   if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   else if (ui.tab === 'analytics' && !ui.analytics) await refresh({ analytics: true });
   else if (ui.tab === 'duties' && !ui.dutyStats && snapshot.duties?.initialized) await refresh({ duties: true });
@@ -503,7 +506,7 @@ function renderDashboard() {
     <div class="dashboard-layout">
       <aside class="sidebar" aria-label="Робочий простір ЛАД">
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
-        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Керування командою</div>${['planner','consequences','weekly','analytics','employees'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Інструменти вибору</div>${['draws','coins'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
+        <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Керування командою</div>${['planner','consequences','weekly','analytics','activity','employees'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Інструменти вибору</div>${['draws','coins'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
         <nav aria-label="Параметри й допомога">${NAV_ITEMS.slice(6,8).map((item, i) => navButton(item, i + 6)).join('')}</nav>
         <div class="sidebar-note" title="Дані зберігаються на цьому комп’ютері">
@@ -519,6 +522,7 @@ function renderDashboard() {
 }
 
 function renderActivePage() {
+  if (ui.tab === 'activity') return renderActivityPage();
   if (ui.tab === 'presence') return renderPresencePage();
   if (ui.tab === 'consequences') return renderConsequencesPage();
   if (ui.tab === 'draws') return renderDrawPage();
@@ -1129,7 +1133,7 @@ async function openEmployeeDeletion(employeeId) {
   try {
     const report=await window.counter.previewEmployeeDeletion(employeeId);
     if(revision!==interfaceDialogRevision)return;
-    openManagementModal(`<header class="modal-head"><div><span class="page-eyebrow">Перевірка перед видаленням</span><h2>${h(report.name)}</h2></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Працівника буде видалено з архіву разом із його обліком. Це змінить історичні підсумки.</p><ul><li>Позначки табеля: ${report.records}; наявності: ${report.presence}.</li><li>Записи роботи: ${report.work}; отримані об’єкти: ${report.objects}; відлучення: ${report.timeOff}; записи попереднього обліку: ${report.receipts}.</li><li>Призначення у графіках: ${report.duties.length}, з них реалізовані: ${report.duties.filter(item=>item.realized).length}.</li></ul>${report.tasks.length?`<h3>Завдання збережуться · ${report.tasks.length}</h3><ul>${report.tasks.map(task=>`<li>${h(task.title)}${task.needsAssignee?' — потрібен новий відповідальний':''}</li>`).join('')}</ul><p>Працівника буде знято зі складу виконавців. Відкриті завдання без відповідального отримають стан «Потрібне рішення».</p>`:''}${report.protocols?`<p>Імена й результати у ${report.protocols} збережених протоколах жеребкування залишаться як історичний факт.</p>`:''}<p class="muted">Після видалення можна скасувати дію кнопкою «Скасувати».</p></div><footer class="modal-foot"><button class="button" data-close-modal>Залишити в архіві</button><button class="button danger" data-delete-employee-apply="${h(employeeId)}" data-delete-token="${h(report.token)}">Видалити працівника та його облік</button></footer>`);
+    openManagementModal(`<header class="modal-head"><div><span class="page-eyebrow">Перевірка перед видаленням</span><h2>${h(report.name)}</h2></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Працівника буде видалено з архіву разом із його обліком. Це змінить історичні підсумки.</p><ul><li>Позначки табеля: ${report.records}; наявності: ${report.presence}.</li><li>Записи моніторингу активності: ${report.activityVisits || 0}.</li><li>Записи роботи: ${report.work}; отримані об’єкти: ${report.objects}; відлучення: ${report.timeOff}; записи попереднього обліку: ${report.receipts}.</li><li>Призначення у графіках: ${report.duties.length}, з них реалізовані: ${report.duties.filter(item=>item.realized).length}.</li></ul>${report.tasks.length?`<h3>Завдання збережуться · ${report.tasks.length}</h3><ul>${report.tasks.map(task=>`<li>${h(task.title)}${task.needsAssignee?' — потрібен новий відповідальний':''}</li>`).join('')}</ul><p>Працівника буде знято зі складу виконавців. Відкриті завдання без відповідального отримають стан «Потрібне рішення».</p>`:''}${report.protocols?`<p>Імена й результати у ${report.protocols} збережених протоколах жеребкування залишаться як історичний факт.</p>`:''}<p class="muted">Після видалення можна скасувати дію кнопкою «Скасувати».</p></div><footer class="modal-foot"><button class="button" data-close-modal>Залишити в архіві</button><button class="button danger" data-delete-employee-apply="${h(employeeId)}" data-delete-token="${h(report.token)}">Видалити працівника та його облік</button></footer>`);
   }catch(error){if(revision===interfaceDialogRevision){closeModal();showToast(error.message||String(error),{error:true});}}
 }
 
@@ -1875,6 +1879,7 @@ async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab ===
   }
   if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   if (ui.tab === 'data') ui.backups = await window.counter.listBackups();
+  if (ui.tab === 'activity') await loadActivityReport({ render: false });
   renderShell({preserveDrafts:true});
 }
 
@@ -2064,22 +2069,33 @@ backupFileInput.addEventListener('change', () => {
 window.addEventListener('dragover', event => {
   if (!event.dataTransfer?.types.includes('Files')) return;
   event.preventDefault();
+  const activityZone = event.target.closest('[data-activity-drop]');
+  if (activityZone) {
+    event.dataTransfer.dropEffect = activityUi.busy ? 'none' : 'copy';
+    activityZone.classList.toggle('is-dragging', !activityUi.busy);
+    return;
+  }
   const zone = event.target.closest('[data-backup-drop]');
   event.dataTransfer.dropEffect = zone && !ui.dataImportPending ? 'copy' : 'none';
   document.querySelector('[data-backup-drop]')?.classList.toggle('is-dragging', Boolean(zone) && !ui.dataImportPending);
 });
 window.addEventListener('dragleave', event => {
   if (!event.relatedTarget) document.querySelector('[data-backup-drop]')?.classList.remove('is-dragging');
+  if (!event.relatedTarget || !event.relatedTarget.closest?.('[data-activity-drop]')) document.querySelector('[data-activity-drop]')?.classList.remove('is-dragging');
 });
 window.addEventListener('drop', event => {
   if (!event.dataTransfer?.types.includes('Files')) return;
   // Never navigate away from the app when a file is dropped outside the target.
   event.preventDefault();
+  document.querySelector('[data-activity-drop]')?.classList.remove('is-dragging');
+  if (event.target.closest('[data-activity-drop]')) { void importActivityFiles([...event.dataTransfer.files]); return; }
   document.querySelector('[data-backup-drop]')?.classList.remove('is-dragging');
   if (event.target.closest('[data-backup-drop]')) void importBackupFiles([...event.dataTransfer.files]);
 });
 
 appRoot.addEventListener('click', async (event) => {
+  // Keep the native file picker in the originating user gesture.
+  if (event.target.closest('[data-activity-pick]')) { pickActivityFiles(); return; }
   // File selection must start in the original user gesture, before async handlers.
   const importButton = event.target.closest('[data-action="import-data"]');
   if (importButton) {
@@ -2091,6 +2107,7 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
   if (await handleLearningClick(event)) return;
+  if (await handleActivityClick(event)) return;
   if (await handlePresenceClick(event)) return;
   if (await handleWorkClick(event)) return;
   if (await handleChangesClick(event)) return;
@@ -2569,6 +2586,7 @@ appRoot.addEventListener('keydown', (event) => {
 });
 
 appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleActivitySubmit(event)) return;
   if (await handlePresenceSubmit(event)) return;
   if (await handleWorkSubmit(event)) return;
   if (await handleChangesSubmit(event)) return;
@@ -2772,6 +2790,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (await handleActivityClick(event)) return;
   if(event.target.closest('[data-action="close"]')){await window.counter.close();return;}
   if (await handlePresenceClick(event)) return;
   if (await handleWorkClick(event)) return;
@@ -3090,6 +3109,7 @@ modalRoot.addEventListener('click', async (event) => {
 });
 
 modalRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleActivitySubmit(event)) return;
   if (await handlePresenceSubmit(event)) return;
   if (await handleWorkSubmit(event)) return;
   if (await handleChangesSubmit(event)) return;
@@ -3218,6 +3238,7 @@ toastRoot.addEventListener('click', async (event) => {
 
 window.counter.onChanged(async (nextSnapshot) => {
   snapshot = nextSnapshot;
+  if (ui.tab === 'activity') await loadActivityReport({ render: false });
   if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   if (ui.tab === 'analytics') await loadAnalytics(analyticsCurrentFilter(), { render: false });
   if (ui.tab === 'duties' && snapshot.duties?.initialized) {

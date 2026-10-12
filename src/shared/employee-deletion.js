@@ -3,6 +3,7 @@ const d = require('./domain');
 const tasks = require('./tasks');
 const planner = require('./planner');
 const replacements = require('./duty-replacements');
+const activity = require('./activity');
 const fingerprint = state => crypto.createHash('sha256').update(JSON.stringify(state, (_key, value) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value)).digest('hex');
@@ -15,6 +16,7 @@ function preview(state, employeeId) {
     .filter(([, assignment]) => assignment.employeeIds?.includes(employeeId))
     .map(([date, assignment]) => ({ scheduleId:schedule.id, scheduleName:schedule.name, date, realized:assignment.realizedEmployeeIds?.includes(employeeId) || false })));
   return { employeeId, name:person.name, token:fingerprint(state),
+    activityVisits:(state.activity?.visits || []).filter(visit => state.activity.sources.some(source => source.id === visit.sourceId && source.employeeId === employeeId)).length,
     records:Object.entries(state.records || {}).filter(owns).length,
     presence:Object.entries(state.presenceRecords || {}).filter(owns).length,
     work:(state.workEntries || []).filter(item => item.employeeId === employeeId).length,
@@ -52,6 +54,7 @@ function apply(state, input, now = new Date()) {
     }
   }
   tasks.removeEmployee(draft, id, report.name, now);
+  activity.removeEmployee(draft.activity, id);
   draft.employees = draft.employees.filter(person => person.id !== id);
   draft.audit.push({ id:crypto.randomUUID(), at:now.toISOString(), action:'employee_deleted', details:{ ...report, token:undefined, actor:state.settings.operatorName || 'Керівник' } });
   draft.audit = draft.audit.slice(-5000);

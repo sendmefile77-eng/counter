@@ -3,10 +3,11 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 const coins=require('./coins');
+const activity = require('./activity');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
   onsite: '#36bf76',
@@ -359,6 +360,7 @@ function defaultState(now = new Date()) {
     drawSequence: 0,
     coinFlips: [],
     coinSequence: 0,
+    activity: activity.empty(),
     timeOffEntries: [],
     settings: normalizeGlobalSettings(),
     audit: [{
@@ -499,6 +501,7 @@ function normalizeState(input, now = new Date()) {
   state.workEntries = work.normalize(input.workEntries, state);
   state.presenceRecords = presence.normalize(input.presenceRecords, state);
   state.workIntakes = work.normalizeIntakes(input.workIntakes, state);
+  state.activity = activity.normalize(input.activity, state.employees);
   return state;
 }
 

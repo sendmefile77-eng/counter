@@ -2,6 +2,14 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
+  previewActivityImport: files => ipcRenderer.invoke('activity:preview', files),
+  importActivity: input => ipcRenderer.invoke('activity:import', input),
+  getActivityReport: filter => ipcRenderer.invoke('activity:report', filter),
+  getActivityDay: input => ipcRenderer.invoke('activity:day', input),
+  removeActivityImport: id => ipcRenderer.invoke('activity:remove-import', { id }),
+  assignActivitySource: (sourceId, employeeId) => ipcRenderer.invoke('activity:assign', { sourceId, employeeId }),
+  updateActivitySettings: input => ipcRenderer.invoke('activity:settings', input),
+  exportActivity: (filter, format) => ipcRenderer.invoke('activity:export', { filter, format }),
   previewPresence: input => ipcRenderer.invoke('presence:preview',input),
   applyPresence: input => ipcRenderer.invoke('presence:apply',input),
   savePresence: input => ipcRenderer.invoke('presence:save',input),
