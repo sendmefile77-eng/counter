@@ -3,7 +3,9 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
+const employeeProfiles = require('./employee-profiles');
+const documentImport = require('./document-import');
 const { normalizeTasks } = require('./tasks');
 const { normalizeDraws } = require('./draws');
 const coins=require('./coins');
@@ -341,6 +343,7 @@ function defaultState(now = new Date()) {
   return {
     schemaVersion: SCHEMA_VERSION,
     employees: [],
+    documentImport: documentImport.empty(),
     records: {},
     receipts: [],
     workEntries: [],
@@ -439,6 +442,7 @@ function normalizeState(input, now = new Date()) {
     assertDateKey(employee.createdDate);
     if(employee.dutyColor!=null&&!/^#[0-9a-f]{6}$/i.test(employee.dutyColor))throw new Error('Некоректний колір працівника.');
     employee.dutyColor=employee.dutyColor?.toLowerCase()||null;
+    employee.profile = employeeProfiles.normalize(employee.profile);
     if (!Array.isArray(employee.activePeriods) || employee.activePeriods.length === 0) {
       employee.activePeriods = [{ start: employee.createdDate, end: employee.archivedDate || null }];
     }
@@ -502,6 +506,7 @@ function normalizeState(input, now = new Date()) {
   state.presenceRecords = presence.normalize(input.presenceRecords, state);
   state.workIntakes = work.normalizeIntakes(input.workIntakes, state);
   state.activity = activity.normalize(input.activity, state.employees);
+  state.documentImport = documentImport.normalize(input.documentImport, state.employees);
   return state;
 }
 
@@ -539,6 +544,7 @@ function createEmployee(state, name, now = new Date()) {
     archivedAt: null,
     activePeriods: [{ start: dateKeyFromDate(now), end: null }],
     dutyColor: null,
+    profile: employeeProfiles.normalize(),
   };
   state.employees.push(employee);
   appendAudit(state, 'employee_created', { employeeId: employee.id, name: employee.name }, now);

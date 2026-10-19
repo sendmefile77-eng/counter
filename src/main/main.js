@@ -67,6 +67,11 @@ const availability = require('../shared/availability');
 const activity = require('../shared/activity');
 const { activityXlsx } = require('./activity-xlsx');
 const activityPreviews = new Map();
+const employeeProfiles = require('../shared/employee-profiles');
+const documentImport = require('../shared/document-import');
+const { readDocumentFiles } = require('./document-job');
+const documentPreviews = new Map();
+let readingDocuments = false;
 const runtimeOptions = require('./runtime-options');
 const os = require('node:os');
 const {createTrainingState} = require('../shared/training');
@@ -386,6 +391,35 @@ async function applyWindowMode(mode) {
 }
 
 function registerIpc() {
+  ipcMain.handle('employee:profile', (_event, { employeeId, profile }) => mutate('employee:profile', state => employeeProfiles.update(state, employeeId, profile)));
+  ipcMain.handle('documents:read', async (_event, files) => {
+    if (readingDocuments) throw Error('Читання документів ще триває.');
+    readingDocuments = true;
+    try { return await readDocumentFiles(files); } finally { readingDocuments = false; }
+  });
+  ipcMain.handle('documents:match', (_event, { names, source, shortRule }) => {
+    if (!Array.isArray(names) || names.length > 300) throw Error('Забагато імен.');
+    return names.map(name => documentImport.candidates(store.state, String(name).slice(0, 160), String(source).slice(0, 160), shortRule));
+  });
+  ipcMain.handle('documents:parse', (_event, { blocks, source, shortRule }) => documentImport.parseBlocks(store.state, blocks, source, shortRule));
+  ipcMain.handle('documents:preview', (_event, input) => {
+    const now = Date.now();
+    for (const [id, value] of documentPreviews) if (now - value.at > 15 * 60000) documentPreviews.delete(id);
+    while (documentPreviews.size >= 3) documentPreviews.delete(documentPreviews.keys().next().value);
+    const report = documentImport.preview(store.state, input);
+    const token = require('node:crypto').randomUUID();
+    documentPreviews.set(token, { input: clone(input), expectedToken: report.expectedToken, at: now });
+    return { ...report, token };
+  });
+  ipcMain.handle('documents:apply', (_event, { token }) => {
+    const prepared = documentPreviews.get(token);
+    if (!prepared || Date.now() - prepared.at > 15 * 60000) throw Error('Перевірка застаріла. Перевірте рядки ще раз.');
+    const result = mutate('documents:apply', state => documentImport.apply(state, prepared.input, prepared.expectedToken));
+    documentPreviews.delete(token);
+    return result;
+  });
+  ipcMain.handle('documents:remove-rule', (_event, id) => mutate('documents:remove-rule', state => documentImport.removeRule(state, id)));
+
   ipcMain.handle('activity:preview', async (_event, files) => {
     if (readingActivity) throw Error('Інша перевірка історії ще триває. Зачекайте її завершення.');
     readingActivity = true;

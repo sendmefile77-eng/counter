@@ -56,6 +56,7 @@ function apply(state, input, now = new Date()) {
   tasks.removeEmployee(draft, id, report.name, now);
   activity.removeEmployee(draft.activity, id);
   draft.employees = draft.employees.filter(person => person.id !== id);
+  if (draft.documentImport) draft.documentImport.rules = draft.documentImport.rules.filter(rule => rule.employeeId !== id);
   draft.audit.push({ id:crypto.randomUUID(), at:now.toISOString(), action:'employee_deleted', details:{ ...report, token:undefined, actor:state.settings.operatorName || 'Керівник' } });
   draft.audit = draft.audit.slice(-5000);
   Object.assign(state, draft);

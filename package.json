@@ -1,6 +1,6 @@
 {
   "name": "counter-widget",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "description": "ЛАД — Люди. Аналітика. Документи. Облік роботи співробітників, чергувань і завдань",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",
@@ -31,6 +31,21 @@
         "portable"
       ],
       "artifactName": "Counter.${ext}"
-    }
+    },
+    "asarUnpack": [
+      "src/main/document-worker.js",
+      "src/main/document-reader.js",
+      "node_modules/**/*"
+    ]
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "1.0.11",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/rus": "1.0.0",
+    "@tesseract.js-data/ukr": "1.0.0",
+    "exceljs": "4.4.0",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.4.299",
+    "tesseract.js": "7.0.0"
   }
 }

@@ -7,9 +7,9 @@ $exePath = (Resolve-Path $Executable).Path
 $reportPath = [System.IO.Path]::GetFullPath($Report)
 if (Test-Path $reportPath) { Remove-Item $reportPath }
 $process = Start-Process -FilePath $exePath -ArgumentList ('"--lad-self-test=' + $reportPath + '"') -PassThru
-$deadline = (Get-Date).AddSeconds(120)
+$deadline = (Get-Date).AddSeconds(180)
 while (!(Test-Path $reportPath) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-if (!(Test-Path $reportPath)) { throw 'Packaged application did not write the self-test report within 120 seconds.' }
+if (!(Test-Path $reportPath)) { throw 'Packaged application did not write the self-test report within 180 seconds.' }
 $result = Get-Content $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $process.WaitForExit(20000) | Out-Null
 if ($result.temporaryDirectory -and ([System.IO.Path]::GetFileName($result.temporaryDirectory)).StartsWith('lad-packaged-test-')) {

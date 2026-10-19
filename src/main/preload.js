@@ -2,6 +2,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: input => ipcRenderer.invoke('snapshot:get', input),
+  updateEmployeeProfile: (employeeId, profile) => ipcRenderer.invoke('employee:profile', { employeeId, profile }),
+  readDocuments: files => ipcRenderer.invoke('documents:read', files),
+  matchDocumentNames: input => ipcRenderer.invoke('documents:match', input),
+  parseDocuments: input => ipcRenderer.invoke('documents:parse', input),
+  previewDocuments: input => ipcRenderer.invoke('documents:preview', input),
+  applyDocuments: token => ipcRenderer.invoke('documents:apply', { token }),
+  removeDocumentRule: id => ipcRenderer.invoke('documents:remove-rule', id),
   previewActivityImport: files => ipcRenderer.invoke('activity:preview', files),
   importActivity: input => ipcRenderer.invoke('activity:import', input),
   getActivityReport: filter => ipcRenderer.invoke('activity:report', filter),

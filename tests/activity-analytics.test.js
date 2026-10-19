@@ -122,7 +122,7 @@ test('category history survives reload; previous backups migrate; deleted employ
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lad-analytics-reload-'));
   try { const store = new DataStore(dir); store.state = state; store.save(); const restored = new DataStore(dir); restored.load(); assert.deepEqual(restored.state.activity, state.activity); assert.equal(report(restored.state, '2026-04-06', '2026-04-06').analysis.people[0].summary.personalMs, 60 * M); }
   finally { fs.rmSync(dir, { recursive: true, force: true }); }
-  const old = structuredClone(state); old.schemaVersion = 17; delete old.activity.domainRules; const normalized = d.normalizeState(old); assert.equal(normalized.schemaVersion, 18); assert.deepEqual(normalized.activity.domainRules, []);
+  const old = structuredClone(state); old.schemaVersion = 17; delete old.activity.domainRules; const normalized = d.normalizeState(old); assert.equal(normalized.schemaVersion, d.SCHEMA_VERSION); assert.deepEqual(normalized.activity.domainRules, []);
   a.removeEmployee(state.activity, person.id); assert.equal(state.activity.domainRules.length, 0);
 });
 

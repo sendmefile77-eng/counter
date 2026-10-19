@@ -540,7 +540,7 @@ function renderActivePage() {
 }
 
 function renderTodayPage() {
-  return renderWorkTodayPage();
+  return birthdayPanel() + renderWorkTodayPage();
 }
 
 function journalRange() {
@@ -1103,6 +1103,7 @@ function renderEmployeesPage() {
       <div><h1>Працівники</h1><p>До 15 активних працівників. Картка відкривається натисканням імені; архів зберігає історію.</p></div>
       <span class="status-badge" data-status="submitted">${active.length}/15 активних</span>
     </div>
+    ${staffImportPanel()}
     <form id="employee-form" class="panel">
       <div class="form-grid">
         <label class="field"><span>ПІБ або коротке ім’я</span><input name="name" maxlength="80" autocomplete="off" placeholder="Наприклад, Іваненко О. В." ${active.length >= 15 ? 'disabled' : ''} required></label>
@@ -1113,14 +1114,14 @@ function renderEmployeesPage() {
     <section class="panel">
       <h2>Активні</h2>
       <div class="employee-list">
-        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>У віджеті з ${h(formatDate(employee.createdDate))}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Перемістити вище у списку та віджеті" aria-label="Перемістити ${h(employee.name)} вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Перемістити нижче у списку та віджеті" aria-label="Перемістити ${h(employee.name)} нижче">↓</button><button class="button small" data-rename-employee="${h(employee.id)}">Змінити ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">До архіву</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
+        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small class="employee-full-name">${h(employee.profile?.fullName || employee.profile?.position || '')}</small><small>У віджеті з ${h(formatDate(employee.createdDate))}${employee.profile?.birthDate ? ` · День народження ${h(birthLabel(employee.profile.birthDate))}` : ''}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Перемістити вище у списку та віджеті" aria-label="Перемістити ${h(employee.name)} вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Перемістити нижче у списку та віджеті" aria-label="Перемістити ${h(employee.name)} нижче">↓</button><button class="button small" data-employee-data="${h(employee.id)}">Особові дані</button><button class="button small" data-rename-employee="${h(employee.id)}">Змінити ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">До архіву</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
       </div>
     </section>
     ${archived.length && snapshot.settings.showArchivedEmployees ? `
       <section class="panel">
         <h2>Архів</h2>
         <div class="employee-list">
-          ${archived.map((employee) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>Історію збережено</small></div><div class="button-row"><button class="button small" data-restore-employee="${h(employee.id)}">Повернути</button><button class="button small danger" data-delete-employee="${h(employee.id)}">Видалити</button></div></div>`).join('')}
+          ${archived.map((employee) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small>Історію збережено</small></div><div class="button-row"><button class="button small" data-employee-data="${h(employee.id)}">Особові дані</button><button class="button small" data-restore-employee="${h(employee.id)}">Повернути</button><button class="button small danger" data-delete-employee="${h(employee.id)}">Видалити</button></div></div>`).join('')}
         </div>
       </section>
     ` : ''}
@@ -2094,6 +2095,7 @@ window.addEventListener('drop', event => {
 });
 
 appRoot.addEventListener('click', async (event) => {
+  if (event.target.closest('[data-document-pick],[data-document-drop]')) { pickDocumentFiles(); return; }
   // Keep the native file picker in the originating user gesture.
   if (event.target.closest('[data-activity-pick]')) { pickActivityFiles(); return; }
   // File selection must start in the original user gesture, before async handlers.
@@ -2107,6 +2109,7 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
   if (await handleLearningClick(event)) return;
+  if (await handleStaffImportClick(event)) return;
   if (await handleActivityClick(event)) return;
   if (await handlePresenceClick(event)) return;
   if (await handleWorkClick(event)) return;
@@ -2586,6 +2589,7 @@ appRoot.addEventListener('keydown', (event) => {
 });
 
 appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleStaffImportSubmit(event)) return;
   if (await handleActivitySubmit(event)) return;
   if (await handlePresenceSubmit(event)) return;
   if (await handleWorkSubmit(event)) return;
@@ -2790,6 +2794,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (await handleStaffImportClick(event)) return;
   if (await handleActivityClick(event)) return;
   if(event.target.closest('[data-action="close"]')){await window.counter.close();return;}
   if (await handlePresenceClick(event)) return;
@@ -3109,6 +3114,7 @@ modalRoot.addEventListener('click', async (event) => {
 });
 
 modalRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleStaffImportSubmit(event)) return;
   if (await handleActivitySubmit(event)) return;
   if (await handlePresenceSubmit(event)) return;
   if (await handleWorkSubmit(event)) return;
