@@ -2158,10 +2158,7 @@ appRoot.addEventListener('click', async (event) => {
     clearJournalSelection(); renderShell(); return;
   }
   if (event.target.closest('[data-journal-today]')) {
-    ui.month = localDateKey().slice(0, 7); ui.journalAnchor = localDateKey();
-    ui.journalFrom = `${ui.month}-01`; ui.journalTo = localDateKey();
-    clearJournalSelection(); renderShell();
-    appRoot.querySelector('.journal-matrix .is-today')?.scrollIntoView?.({ block: 'nearest', inline: 'center' });
+    showResultToday();
     return;
   }
   const journalFilter = event.target.closest('[data-journal-filter]');
