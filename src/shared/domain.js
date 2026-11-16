@@ -3,7 +3,8 @@ const journal = require('./journal');
 const work = require('./work');
 const presence = require('./presence');
 
-const SCHEMA_VERSION = 19;
+const productivity = require('./productivity');
+const SCHEMA_VERSION = 20;
 const employeeProfiles = require('./employee-profiles');
 const documentImport = require('./document-import');
 const { normalizeTasks } = require('./tasks');
@@ -12,6 +13,7 @@ const coins=require('./coins');
 const activity = require('./activity');
 
 const DEFAULT_STATUS_COLORS = Object.freeze({
+  special_assignment: '#b08ac7',
   onsite: '#36bf76',
   zkp: '#36a8b7',
   training_online:'#6887d8',training_academy:'#b383d9',business_trip:'#c28b54',arkan:'#54bba3',weekend:'#8293a8',
@@ -221,6 +223,7 @@ function normalizeGlobalSettings(input = {}) {
   );
   return {
     closeHour: clampInteger(source.closeHour, 0, 23, 18),
+    productivity: productivity.settings(source.productivity),
     closeMinute: clampInteger(source.closeMinute, 0, 59, 0),
     automaticClose: source.automaticClose !== false,
     workdays: workdays.length ? workdays.sort((a, b) => a - b) : [1, 2, 3, 4, 5],
@@ -269,11 +272,23 @@ function createDutyData(now = new Date()) {
     rules: normalizeDutyRules(),
     lockedWeeks: {},
     dayExceptions: {},
+    periodStarts: [],
+    baselineArchives: {},
   };
 }
 
 function normalizeDutyData(input, now = new Date(), defaultParticipantIds = []) {
   const source = input && typeof input === 'object' ? input : {};
+  if (source.baselineArchives != null && (typeof source.baselineArchives !== 'object' || Array.isArray(source.baselineArchives))) throw Error('Некоректний архів початкових підсумків.');
+  for (const [year, archive] of Object.entries(source.baselineArchives || {})) {
+    if (!/^\d{4}$/.test(year) || !archive || !presence.validDate(archive.throughDate) || !archive.baselines || typeof archive.baselines !== 'object'
+      || Object.values(archive.baselines).some(value => !value || !Number.isSafeInteger(value.total) || !Number.isSafeInteger(value.realized) || value.realized < 0 || value.total < value.realized)) throw Error('Некоректні архівні підсумки чергувань.');
+  }
+  if (source.periodStarts != null && (!Array.isArray(source.periodStarts) || source.periodStarts.some(date => !presence.validDate(date)) || new Set(source.periodStarts).size !== source.periodStarts.length)) throw Error('Некоректні періоди чергувань.');
+  for (const assignment of Object.values(source.assignments || {})) {
+    if (assignment.realizationModes != null && (typeof assignment.realizationModes !== 'object' || Array.isArray(assignment.realizationModes)
+      || Object.entries(assignment.realizationModes).some(([id, mode]) => !['day', 'night'].includes(mode) || !assignment.employeeIds?.includes(id) || !assignment.realizedEmployeeIds?.includes(id)))) throw Error('Некоректний вид реалізованого чергування.');
+  }
   const currentYear = String(now.getFullYear());
   const baselineYear = /^\d{4}$/.test(source.baselineYear || '')
     ? source.baselineYear
@@ -293,6 +308,8 @@ function normalizeDutyData(input, now = new Date(), defaultParticipantIds = []) 
       ? source.participantIds
       : defaultParticipantIds,
     baselineYear,
+    periodStarts: [...(source.periodStarts || [])].sort(),
+    baselineArchives: clone(source.baselineArchives || {}),
     baselineThroughDate,
     baselines: source.baselines && typeof source.baselines === 'object' ? source.baselines : {},
     assignments: source.assignments && typeof source.assignments === 'object' ? source.assignments : {},
@@ -348,6 +365,7 @@ function defaultState(now = new Date()) {
     receipts: [],
     workEntries: [],
     workIntakes: [],
+    resultAdjustments: [],
     presenceRecords: {},
     workdayOverrides: {},
     dutySchedules: [{
@@ -505,6 +523,8 @@ function normalizeState(input, now = new Date()) {
   state.workEntries = work.normalize(input.workEntries, state);
   state.presenceRecords = presence.normalize(input.presenceRecords, state);
   state.workIntakes = work.normalizeIntakes(input.workIntakes, state);
+  state.resultAdjustments = productivity.normalizeAdjustments(input.resultAdjustments, state);
+  if ([...productivity.objectIndex(state).values()].some(n => n < 0)) throw Error('Виправлення утворюють від’ємну кількість об’єктів.');
   state.activity = activity.normalize(input.activity, state.employees);
   state.documentImport = documentImport.normalize(input.documentImport, state.employees);
   return state;
@@ -604,6 +624,7 @@ function removeEmployeesFromDutyData(
       employeeIds,
       realizedEmployeeIds: (assignment.realizedEmployeeIds || [])
         .filter((id) => employeeIds.includes(id)),
+      realizationModes: Object.fromEntries(Object.entries(assignment?.realizationModes || {}).filter(([id]) => employeeIds.includes(id))),
       singleApproved: false,
       source,
       manualEmployeeIds: (assignment.manualEmployeeIds || [])
@@ -815,6 +836,7 @@ function clearDutyWeek(state, date, now = new Date(), mode = 'all') {
           employeeIds: preservedIds,
           realizedEmployeeIds: (assignment.realizedEmployeeIds || [])
             .filter((id) => preservedIds.includes(id)),
+      realizationModes: Object.fromEntries(Object.entries(assignment?.realizationModes || {}).filter(([id]) => preservedIds.includes(id))),
           singleApproved: false,
           source: 'manual',
           updatedAt: now.toISOString(),
@@ -1544,6 +1566,10 @@ function initializeDutyHistory(state, entries, participantIds = null, now = new 
   );
   const baselineYear = dateKeyFromDate(now).slice(0, 4);
   const changedYear = state.duties.initialized && state.duties.baselineYear !== baselineYear;
+  if (changedYear) {
+    state.duties.baselineArchives ||= {};
+    state.duties.baselineArchives[state.duties.baselineYear] = { throughDate: state.duties.baselineThroughDate, baselines: clone(state.duties.baselines) };
+  }
   const keepBaselineCutoff = state.duties.initialized
     && state.duties.baselineYear === baselineYear
     && /^\d{4}-\d{2}-\d{2}$/.test(state.duties.baselineThroughDate || '');
@@ -1661,6 +1687,7 @@ function setDutyAssignment(state, { date, employeeIds, singleApproved = false, n
       date,
       employeeIds: ids,
       realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      realizationModes: Object.fromEntries(Object.entries(previous?.realizationModes || {}).filter(([id]) => ids.includes(id))),
       singleApproved: ids.length === 1
         && (Boolean(singleApproved) || dutyRequiredCount(state, date) === 1),
       source: 'manual',
@@ -1713,6 +1740,7 @@ function toggleDutyAssignment(state, employeeId, date, now = new Date()) {
       date,
       employeeIds: ids,
       realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      realizationModes: Object.fromEntries(Object.entries(previous?.realizationModes || {}).filter(([id]) => ids.includes(id))),
       singleApproved: ids.length === 1 && (
         dutyRequiredCount(state, date) === 1
         || (existingIndex < 0 && previous?.singleApproved === true)
@@ -1751,6 +1779,7 @@ function removeDutyAssignment(
       ...previous,
       employeeIds: ids,
       realizedEmployeeIds: (previous.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      realizationModes: Object.fromEntries(Object.entries(previous?.realizationModes || {}).filter(([id]) => ids.includes(id))),
       singleApproved: false,
       source: 'manual_quick',
       updatedAt: now.toISOString(),
@@ -1765,10 +1794,11 @@ function removeDutyAssignment(
   return state.duties.assignments[date] || { date, employeeIds: [], cleared: true };
 }
 
-function setDutyRealized(state, date, employeeId, realized, now = new Date()) {
+function setDutyRealized(state, date, employeeId, realized, now = new Date(), mode = 'night') {
   assertDateKey(date);
   assertDutyDateUnlocked(state, date);
   getEmployee(state, employeeId);
+  if (!['day', 'night'].includes(mode)) throw Error('Оберіть денне або нічне чергування.');
   const assignment = state.duties.assignments[date];
   if (!assignment?.employeeIds?.includes(employeeId)) {
     throw new Error('Працівник не призначений черговим на цю дату.');
@@ -1776,18 +1806,40 @@ function setDutyRealized(state, date, employeeId, realized, now = new Date()) {
   const ids = new Set(assignment.realizedEmployeeIds || []);
   if (realized) ids.add(employeeId); else ids.delete(employeeId);
   assignment.realizedEmployeeIds = [...ids];
+  assignment.realizationModes ||= {};
+  if (realized) assignment.realizationModes[employeeId] = mode; else delete assignment.realizationModes[employeeId];
   assignment.updatedAt = now.toISOString();
-  appendAudit(state, 'duty_realized_changed', { date, employeeId, realized: Boolean(realized) }, now);
+  appendAudit(state, 'duty_realized_changed', { date, employeeId, realized: Boolean(realized), mode }, now);
   return assignment;
+}
+
+function dutyPeriodStart(state, date) {
+  return (state.duties.periodStarts || []).filter(start => start <= date && start.slice(0, 4) === date.slice(0, 4)).sort().at(-1) || date.slice(0, 4) + '-01-01';
+}
+
+function beginDutyPeriod(state, { scheduleId, startDate }, now = new Date()) {
+  assertDateKey(startDate);
+  const schedule = dutySchedules(state).find(item => item.id === scheduleId);
+  if (!schedule) throw Error('Оберіть графік чергувань.');
+  const data = scheduleId === state.activeDutyScheduleId ? state.duties : schedule.data;
+  if (data.periodStarts?.includes(startDate)) throw Error('Період із цієї дати вже існує.');
+  if (data.initialized) {
+    data.baselineArchives ||= {};
+    data.baselineArchives[data.baselineYear] = { throughDate: data.baselineThroughDate, baselines: clone(data.baselines) };
+  }
+  data.periodStarts = [...(data.periodStarts || []), startDate].sort();
+  appendAudit(state, 'duty_period_started', { scheduleId, startDate, name: schedule.name }, now);
+  return { scheduleId, startDate };
 }
 
 function dutyTotals(state, year = dateKeyFromDate().slice(0, 4), beforeDate = null) {
   if (!/^\d{4}$/.test(year || '')) throw new Error('Некоректний рік чергувань.');
+  const reference = beforeDate || (year === dateKeyFromDate().slice(0, 4) ? dateKeyFromDate() : `${year}-12-31`);
+  const periodStart = dutyPeriodStart(state, reference);
+  const reset = (state.duties.periodStarts || []).includes(periodStart);
   const totals = {};
   for (const employee of state.employees) {
-    const baseline = state.duties.baselineYear === year
-      ? state.duties.baselines[employee.id] || {}
-      : {};
+    const baseline = !reset ? (state.duties.baselineYear === year ? state.duties.baselines : state.duties.baselineArchives?.[year]?.baselines)?.[employee.id] || {} : {};
     totals[employee.id] = {
       total: Number(baseline.total || 0),
       realized: Number(baseline.realized || 0),
@@ -1795,11 +1847,12 @@ function dutyTotals(state, year = dateKeyFromDate().slice(0, 4), beforeDate = nu
   }
   const baselineThroughDate = state.duties.baselineYear === year
     ? state.duties.baselineThroughDate || previousYearEnd(year)
-    : null;
+    : state.duties.baselineArchives?.[year]?.throughDate || null;
   const assignments = Object.values(state.duties.assignments)
     .filter((assignment) => (
       assignment.date.startsWith(`${year}-`)
-      && (!baselineThroughDate || assignment.date > baselineThroughDate)
+      && assignment.date >= periodStart
+      && (reset || !baselineThroughDate || assignment.date > baselineThroughDate)
       && (!beforeDate || assignment.date < beforeDate)
     ));
   for (const assignment of assignments) {
@@ -1828,6 +1881,8 @@ function dutyLastDates(state, beforeDate) {
 
 function buildDutyQueue(state, beforeDate) {
   const lastDates = dutyLastDates(state, beforeDate);
+  const cutoff = dutyPeriodStart(state, beforeDate);
+  for (const [id, date] of Object.entries(lastDates)) if (date < cutoff) delete lastDates[id];
   const participantOrder = new Map(
     state.duties.participantIds.map((employeeId, index) => [employeeId, index]),
   );
@@ -1937,6 +1992,7 @@ function applyDutyPins(state, pinnedAssignments, startDate, endDate, now) {
       date,
       employeeIds: ids,
       realizedEmployeeIds: (previous?.realizedEmployeeIds || []).filter((id) => ids.includes(id)),
+      realizationModes: Object.fromEntries(Object.entries(previous?.realizationModes || {}).filter(([id]) => ids.includes(id))),
       singleApproved: false,
       source: 'manual_quick',
       note: previous?.note || '',
@@ -2104,6 +2160,7 @@ function dutyCompensationTargets(state, startDate, eligibleEmployeeIds) {
   const previousWeekStart = addDays(currentWeekStart, -7);
   const previousWeekEnd = addDays(currentWeekStart, -1);
   const previousWeekCounts = dutyCountsBetween(state, previousWeekStart, previousWeekEnd);
+  if (dutyPeriodStart(state, startDate) > previousWeekEnd) return new Map();
   const eligible = new Set(eligibleEmployeeIds);
   return new Map(
     state.duties.participantIds
@@ -2454,6 +2511,7 @@ function writeGeneratedDutyAssignment(state, date, employeeIds, now, shortage = 
     employeeIds: [...employeeIds],
     realizedEmployeeIds: [...(existing?.realizedEmployeeIds || [])]
       .filter((employeeId) => employeeIds.includes(employeeId)),
+      realizationModes: Object.fromEntries(Object.entries(existing?.realizationModes || {}).filter(([id]) => employeeIds.includes(id))),
     singleApproved: false,
     source: shortage
       ? 'generated_shortage'
@@ -2479,11 +2537,21 @@ function generateDutySchedule(state, { startDate, endDate, pinnedAssignments = [
   for (let date = startDate; date <= endDate; date = addDays(date, 1)) {
     assertDutyDateUnlocked(state, date);
   }
+  const boundaries = (state.duties.periodStarts || []).filter(date => date > startDate && date <= endDate).sort();
+  if (boundaries.length) {
+    const sections = [], starts = [startDate, ...boundaries];
+    for (let i = 0; i < starts.length; i++) {
+      const from = starts[i], to = i + 1 < starts.length ? addDays(starts[i + 1], -1) : endDate;
+      sections.push(generateDutySchedule(state, { startDate: from, endDate: to, pinnedAssignments: pinnedAssignments.filter(pin => pin.date >= from && pin.date <= to) }, now));
+    }
+    return { startDate, endDate, generated: sections.reduce((n, r) => n + r.generated, 0),
+      shortages: sections.flatMap(r => r.shortages), uncertainDates: sections.flatMap(r => r.uncertainDates), weekendConflicts: sections.flatMap(r => r.weekendConflicts) };
+  }
   applyDutyPins(state, pinnedAssignments, startDate, endDate, now);
 
   let cycleYear = startDate.slice(0, 4);
   const rules = normalizeDutyRules(state.duties.rules);
-  const pairHistoryStart = dutyPairHistoryStart(rules, startDate);
+  const pairHistoryStart = [dutyPairHistoryStart(rules, startDate), dutyPeriodStart(state, startDate)].sort().at(-1);
   let dutyQueue = buildDutyQueue(state, startDate);
   const employeesById = new Map(state.employees.map((employee) => [employee.id, employee]));
   const rangeCounts = Object.fromEntries(
@@ -2870,7 +2938,7 @@ function explainDutyAssignment(state, date, employeeIds, options = {}) {
     .filter((item) => item.date < date).sort((a, b) => b.date.localeCompare(a.date));
   const queue = buildDutyQueue(state, date);
   const totals = dutyTotals(state, date.slice(0, 4), date);
-  const pairHistoryStart = dutyPairHistoryStart(rules, date);
+  const pairHistoryStart = [dutyPairHistoryStart(rules, date), dutyPeriodStart(state, date)].sort().at(-1);
   const basis = options.basis;
   const plan = basis && new Map(basis.dates.map((day) => [day, [...(state.duties.assignments[day]?.employeeIds || [])]]));
   const decision = basis && dutyDecisionMetrics(basis, plan);
@@ -3195,6 +3263,9 @@ function calculateAnalyticsTrend(state, { employeeId = null, startDate, endDate 
 }
 
 module.exports = {
+  beginDutyPeriod,
+  dutyPeriodStart,
+  dutyTotals,
   SCHEMA_VERSION,
   setEmployeeDutyColor,
   STATUS,

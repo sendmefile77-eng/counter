@@ -65,6 +65,7 @@ function removeAffectedDuties(draft,duties,employeeId,reason,now=new Date()) {
     const after=previous.employeeIds.filter(id=>id!==employeeId);
     view.duties.assignments[duty.date]={...previous,employeeIds:after,singleApproved:false,
       realizedEmployeeIds:(previous.realizedEmployeeIds || []).filter(id=>after.includes(id)),
+      realizationModes:Object.fromEntries(Object.entries(previous.realizationModes || {}).filter(([id])=>after.includes(id))),
       manualEmployeeIds:(previous.manualEmployeeIds || []).filter(id=>after.includes(id)),
       source:'availability_change',updatedAt:now.toISOString(),
       replacementNeeds:[...(previous.replacementNeeds || []).filter(item=>item.employeeId!==employeeId),

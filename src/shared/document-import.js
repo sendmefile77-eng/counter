@@ -9,7 +9,7 @@ const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)
 const fingerprint = (state, now) => digest([state.employees, state.records, state.presenceRecords, state.workdayOverrides,
   state.duties, state.dutySchedules, state.tasks, state.documentImport, now.toISOString().slice(0, 10)]);
 const cut = (value, limit = 160) => String(value || '').trim().slice(0, limit);
-const fields = ['fullName', 'birthDate', 'department', 'position', 'startDate', 'statusText', 'from', 'to'];
+const fields = ['fullName', 'birthDate', 'department', 'position', 'startDate', 'statusText', 'from', 'to', 'assignmentNote'];
 const headings = {
   fullName: ['піб', 'фио', 'п.і.б.', 'повне ім’я', 'повне імя', 'прізвище ім’я по батькові', 'працівник', 'сотрудник', 'ім’я', 'имя', 'fullname', 'name'],
   birthDate: ['дата народження', 'дата рождения', 'день народження', 'дн', 'birthdate', 'birthday'],
@@ -18,8 +18,10 @@ const headings = {
   statusText: ['статус', 'наявність', 'присутність', 'відсутність', 'status'],
   from: ['з', 'від', 'початок', 'дата', 'с', 'дата начала', 'start', 'from'],
   to: ['по', 'до', 'кінець', 'дата завершення', 'дата окончания', 'end', 'to'],
+  assignmentNote: ['пояснення завдання', 'окреме завдання', 'що виконував', 'assignmentnote'],
 };
 const statuses = {
+  special_assignment: ['окреме завдання', 'оз', 'окреме доручення'],
   onsite: ['на роботі', 'на работе', 'присутній', 'присутня'], zkp: ['зкп'],
   vacation: ['відпустка', 'отпуск', 'у відпустці'], sick: ['лікарняний', 'больничный', 'лікарняному'],
   day_off: ['відгул', 'отгул'], weekend: ['вихідний', 'выходной'],
@@ -196,10 +198,11 @@ function build(state, input, now = new Date()) {
       const statusText = cut(raw.statusText), status = raw.status || documentStatuses.get(key(statusText)) || knownStatus(statusText, state, source);
       if (statusText || status || raw.from || raw.to) {
         if (!Object.hasOwn(presence.labels, status)) throw Error('Уточніть значення статусу наявності.');
+        if (status === 'special_assignment' && !cut(raw.assignmentNote, 500)) throw Error('Поясніть, яке окреме завдання виконував працівник.');
         const startDate = parseDate(raw.from, input.year), endDate = parseDate(raw.to || raw.from, input.year);
         if ((raw.to && raw.to !== raw.from || /(?:^|\s)(?:до|until)\s*\d/i.test(raw.sourceText || '')) && !raw.endConfirmed) throw Error('Уточніть, чи входить останній день у період.');
         const actualEnd = raw.endExclusive ? d.addDays(endDate, -1) : endDate;
-        const change = { employeeIds: [person.id], startDate, endDate: actualEnd, status, reason: cut(`${source}: ${raw.location || ''}`, 500) };
+        const change = { employeeIds: [person.id], startDate, endDate: actualEnd, status, reason: cut(`${raw.assignmentNote ? raw.assignmentNote + ' · ' : ''}${source}: ${raw.location || ''}`, 500) };
         const report = presenceChanges.preview(draft, change, now);
         if (!report.canApply) throw Error(report.blockers.join(' '));
         for (const cell of report.cells) {
@@ -221,7 +224,7 @@ function build(state, input, now = new Date()) {
   if (input.rememberShortRule && ['patronymic', 'surname'].includes(input.shortRule)) saveRule(draft, { source, kind: 'shortName', value: input.shortRule });
   const skipped = results.filter(row => row.skipped).length;
   if (skipped === results.length) errors.push('Усі рядки пропущено.');
-  const signature = digest([source, input.rows.map(row => [row.fullName, row.employeeId, row.displayName, row.birthDate, row.department, row.position, row.startDate, row.statusText, row.status, row.from, row.to, row.skip, row.endExclusive])]);
+  const signature = digest([source, input.rows.map(row => [row.fullName, row.employeeId, row.displayName, row.birthDate, row.department, row.position, row.startDate, row.statusText, row.status, row.from, row.to, row.skip, row.endExclusive, row.assignmentNote])]);
   if (state.documentImport?.history.some(item => item.signature === signature)) errors.push('Цей набір рядків уже імпортовано.');
   return { draft, report: { rows: results, errors, skipped, source, canApply: !errors.length, signature } };
 }

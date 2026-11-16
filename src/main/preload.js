@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('counter', {
   getSnapshot: input => ipcRenderer.invoke('snapshot:get', input),
+  setObjectResult: input => ipcRenderer.invoke('results:set', input),
+  beginDutyPeriod: input => ipcRenderer.invoke('duties:begin-period', input),
   updateEmployeeProfile: (employeeId, profile) => ipcRenderer.invoke('employee:profile', { employeeId, profile }),
   readDocuments: files => ipcRenderer.invoke('documents:read', files),
   matchDocumentNames: input => ipcRenderer.invoke('documents:match', input),
@@ -93,8 +95,8 @@ contextBridge.exposeInMainWorld('counter', {
   removeDutyAssignment: (employeeId, date) => (
     ipcRenderer.invoke('duties:remove-assignment', { employeeId, date })
   ),
-  setDutyRealized: (date, employeeId, realized) => (
-    ipcRenderer.invoke('duties:set-realized', { date, employeeId, realized })
+  setDutyRealized: (date, employeeId, realized, mode = 'night') => (
+    ipcRenderer.invoke('duties:set-realized', { date, employeeId, realized, mode })
   ),
   setDutyRestriction: (payload) => ipcRenderer.invoke('duties:set-restriction', payload),
   clearDutyRestriction: (employeeId, date) => (

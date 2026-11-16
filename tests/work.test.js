@@ -53,8 +53,8 @@ test('actual completion stops future allocation, counts projects on completion d
 });
 test('weekly summary, future planning and CSV use the same work facts',()=>{
  const {state,employee}=fixture();work.create(state,input(employee),now);
- const report=management.weeklySummary(state,'2026-10-02',now);assert.equal(report.analytics.workedDays,5);assert.equal(report.people[0].workingDays,5);
- assert.ok(management.buildWeeklyCsv(report).includes('Дні роботи'));assert.ok(!management.buildWeeklyHtml(report).includes('undefined'));
+ const report=management.weeklySummary(state,'2026-10-02',now);assert.equal(report.analytics.workedDays,5);assert.equal(report.people[0].workedDays,5);
+ assert.ok(management.buildWeeklyCsv(report).includes('Відпрацьовано'));assert.ok(!management.buildWeeklyHtml(report).includes('undefined'));
  const csv=work.csv(work.report(state,{startDate:'2026-09-28',endDate:'2026-10-02'},now),'days');assert.ok(csv.startsWith('\uFEFF'));assert.ok(csv.includes('У роботі'));
  state.employees[0].name='=SUM(1)';assert.ok(work.csv(work.report(state,{startDate:'2026-09-28',endDate:'2026-10-02'},now)).includes("'="));
 });

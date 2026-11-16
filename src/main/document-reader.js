@@ -19,13 +19,19 @@ function officeLimit(buffer) {
     offset += 46 + buffer.readUInt16LE(offset + 28) + buffer.readUInt16LE(offset + 30) + buffer.readUInt16LE(offset + 32);
   }
 }
-const decode = text => text.replace(/<[^>]*>/g, '').replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-  .replace(/&(?:amp|lt|gt|quot|apos|nbsp);/g, match => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&nbsp;': ' ' }[match]));
+const decode = text => text.replace(/&(?:#(\d+)|#x([\da-f]+)|(amp|lt|gt|quot|apos|nbsp));/gi, (match, decimal, hex, named) => {
+  if (named) return { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }[named.toLowerCase()];
+  const code = Number.parseInt(decimal || hex, decimal ? 10 : 16);
+  return code <= 0x10ffff ? String.fromCodePoint(code) : match;
+});
 function wordText(html) {
+  // Strip markup before decoding entities, so literal <text> is never treated as HTML.
   return html.replace(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi, (_, row) => {
-    const cells = [...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(match => decode(match[1].replace(/<\/p>|<br\s*\/?\s*>/gi, ' ')).trim());
+    const cells = [...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(match => match[1].replace(/<\/p>|<br\s*\/?\s*>/gi, ' ').replace(/<[^>]*>/g, '').trim());
     return cells.join('\t') + '\n';
-  }).replace(/<\/(?:p|h[1-6]|li)>|<br\s*\/?\s*>/gi, '\n').replace(/<[^>]*>/g, '').split('\n').map(line => decode(line).trim()).filter(Boolean).join('\n');
+  }).replace(/<\/(?:p|h[1-6]|li)>|<br\s*\/?\s*>/gi, '\n').replace(/<[^>]*>/g, '').split('\n')
+    // Keep boundary tabs: they represent empty table cells, including a missing name.
+    .map(line => decode(line).replace(/^[^\S\t]+|[^\S\t]+$/g, '')).filter(line => line.trim()).join('\n');
 }
 async function createOcr(temporaryDirectory) {
   const directory = fs.mkdtempSync(path.join(temporaryDirectory || require('node:os').tmpdir(), 'lad-ocr-'));

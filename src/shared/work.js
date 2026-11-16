@@ -48,7 +48,8 @@
   }
   function intakeSummary(state,id,today=dateKey()) {
     const entries=(state.workIntakes||[]).filter(item=>item.receivedDate===today&&(!id||item.employeeId===id));
-    return {objectCount:entries.reduce((sum,item)=>sum+item.objectCount,0),
+    const adjustments=(state.resultAdjustments||[]).filter(item=>item.date===today&&(!id||item.employeeId===id));
+    return {objectCount:entries.reduce((sum,item)=>sum+item.objectCount,0)+adjustments.reduce((sum,item)=>sum+item.delta,0),
       unallocatedCount:entries.reduce((sum,item)=>sum+item.unallocatedCount,0),
       dates:entries.flatMap(item=>item.dates),entries};
   }
@@ -64,24 +65,9 @@
       if(duplicate.employeeId!==person.id||duplicate.receivedDate!==today||duplicate.objectCount!==count)throw Error('Цей запис роботи вже використано.');
       return duplicate;
     }
-    const todayPresence=presence.get(state,person.id,today)?.status||state.records[person.id+'|'+today]?.status;
-    if(presence.noSubmission.has(todayPresence))throw Error('Сьогодні здача роботи не передбачена. Спочатку перевірте «Наявність».');
-    if(todayPresence==='zkp')throw Error('ЗКП очікує здачі після повернення. Спочатку позначте «На роботі» у «Наявності».');
     const item={id:input.id,employeeId:person.id,receivedDate:today,receivedAt:now.toISOString(),
       actor:state.settings.operatorName||'Керівник',objectCount:count,dates:[],unallocatedCount:count};
-    // Today first, then the nearest open working day. The close-hour setting
-    // and unfinished project entries do not limit accepting actual work.
-    for(let date=today;item.unallocatedCount>0&&date>=person.createdDate;date=addDays(date,-1)) {
-      if(!activeOn(person,date)||!isWorkday(state,person.id,date))continue;
-      const key=person.id+'|'+date,previous=state.records[key],mark=presence.get(state,person.id,date)?.status||previous?.status;
-      if(presence.noSubmission.has(mark)||confirmed.has(previous?.status)
-        ||mark&&!['pending','missed','working','onsite','zkp'].includes(mark))continue;
-      if(mark==='zkp'&&todayPresence!=='onsite')continue;
-      state.records[key]={employeeId:person.id,date,status:date===today?'submitted':'submitted_late',source:'widget',
-        receiptId:null,workIntakeId:item.id,receivedDate:today,recordedAt:item.receivedAt,
-        note:`Отримано роботу: ${count} об’єктів. Внесено через віджет ${today}.`};
-      item.dates.push(date);item.unallocatedCount--;
-    }
+    // Accepted objects belong to their submission date; attendance is independent.
     state.workIntakes||=[];state.workIntakes.push(item);
     state.audit.push({id:crypto.randomUUID(),at:item.receivedAt,action:'objects_received',details:clone(item)});
     state.audit=state.audit.slice(-5000);

@@ -63,6 +63,25 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   return { call, dialog, calls, database, filePath, incoming, directory, app, windows:Window.instances,trays,shortcuts };
 }
 
+test('result corrections, day/night realization and duty periods persist through production IPC with undo', async t => {
+  const f=await fixture(t), initial=await f.call('snapshot:get'), id=initial.employees[0].id, date=domain.dateKeyFromDate();
+  const before=fs.readFileSync(f.database,'utf8');
+  await f.call('results:set',{employeeId:id,date,count:3,expectedCount:0,reason:'Прийнято звіт'});
+  assert.equal((await f.call('analytics:report',{startDate:date,endDate:date})).total.objectsReceived,3);
+  await assert.rejects(async()=>f.call('results:set',{employeeId:id,date,count:2,expectedCount:0,reason:'Застаріле вікно'}),/змінилася/);
+  await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),before);
+  await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});
+  await f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true});
+  await f.call('duties:set-realized',{date,employeeId:id,realized:true,mode:'day'});
+  assert.equal((await f.call('analytics:report',{startDate:date,endDate:date,employeeIds:[id]})).total.workedDays,0);
+  await f.call('duties:set-realized',{date,employeeId:id,realized:true,mode:'night'});
+  assert.equal((await f.call('analytics:report',{startDate:date,endDate:date,employeeIds:[id]})).total.workedDays,1);
+  const current=await f.call('snapshot:get'), rules=structuredClone(current.duties.rules);
+  await f.call('duties:begin-period',{scheduleId:current.activeDutyScheduleId,startDate:'2027-01-01'});
+  const next=await f.call('snapshot:get');assert.ok(next.duties.periodStarts.includes('2027-01-01'));assert.deepEqual(next.duties.rules,rules);
+  await f.call('history:undo');assert.deepEqual((await f.call('snapshot:get')).duties.periodStarts,[]);
+});
+
 test('coin IPC saves its result before return and later undo preserves the toss', async t => {
   const f=await fixture(t),before=await f.call('snapshot:get'),id=before.employees[0].id;
   const result=await f.call('coins:flip',{question:'Перенести нараду?'});
@@ -314,7 +333,7 @@ test('presence IPC persists a previewed ZKP, allows duty, blocks absent work and
  const report=await f.call('presence:preview',input);assert.equal(fs.readFileSync(f.database,'utf8'),before);
  await assert.rejects(async()=>f.call('presence:apply',{change:report.change,expectedToken:'bad'}),/змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
  await f.call('presence:apply',{change:report.change,expectedToken:report.token});const saved=fs.readFileSync(f.database,'utf8');assert.equal(JSON.parse(saved).presenceRecords[id+'|'+date].status,'zkp');
- const stats=await f.call('analytics:report',{startDate:date,endDate:date});assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.workedDays,0);
+ const stats=await f.call('analytics:report',{startDate:date,endDate:date});assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.workedDays,1);
  await f.call('duties:initialize',{entries:[{employeeId:id,total:0,realized:0}],participantIds:[id]});await f.call('duties:set-assignment',{date,employeeIds:[id],singleApproved:true});
  const sick=await f.call('presence:preview',{...input,status:'sick',reason:'Повідомлення про лікарняний'});assert.equal(sick.duties.length,1);await f.call('presence:apply',{change:sick.change,expectedToken:sick.token});
  assert.deepEqual((await f.call('snapshot:get')).duties.assignments[date].employeeIds,[]);
@@ -370,7 +389,7 @@ test('direct presence IPC cannot change a locked duty or its saved database and 
  await f.call('presence:save',{employeeId:id,date,status:'zkp'});const after=await f.call('snapshot:get');assert.equal(after.presenceRecords[id+'|'+date].status,'zkp');assert.deepEqual(after.duties.assignments[date].employeeIds,[id]);
 });
 
-test('journal CSV exports confirmation symbols and four matching totals without attendance codes',async t=>{
+test('journal CSV exports independent objects and automatic working days',async t=>{
  const f=await fixture(t);await f.call('settings:update',{workdays:[0,1,2,3,4,5,6]});
  const snapshot=await f.call('snapshot:get'),id=snapshot.employees[0].id,today=domain.dateKeyFromDate(),past=domain.addDays(today,-1),future=domain.addDays(today,1);
  await f.call('presence:save',{employeeId:id,startDate:past,endDate:today,status:'onsite'});
@@ -378,8 +397,9 @@ test('journal CSV exports confirmation symbols and four matching totals without 
  const filePath=path.join(f.directory,'journal.csv');f.dialog.saveResult={canceled:false,filePath};
  await f.call('journal:export',{startDate:past,endDate:future,employeeIds:[id]});
  const lines=fs.readFileSync(filePath,'utf8').replace(/^\uFEFF/,'').trim().split('\r\n').map(line=>line.split(';').map(value=>value.replace(/^"|"$/g,'').replaceAll('""','"')));
- assert.deepEqual(lines[0],['Працівник',past,today,future,'Здано','Не здано','Відсутність','Навчання']);
- assert.deepEqual(lines[1].slice(1),['✓','×','','1','1','0','0']);
+ assert.deepEqual(lines[0],['Працівник','Дата','Робочий день','Причина','Об’єкти','Пояснення']);
+ assert.equal(lines[1][1],past);assert.equal(lines[1][2],'1');assert.equal(lines[1][4],'0');
+ assert.equal(lines.find(row=>row[1]===future)[2],'0');
 });
 
 test('office-return acceptance stores selected ZKP days atomically, preserves presence and supports undo and import',async t=>{
@@ -395,9 +415,9 @@ test('office-return acceptance stores selected ZKP days atomically, preserves pr
  await assert.rejects(async()=>f.call('journal:apply-batch',{...input,expectedToken:'bad'}),/змінилися/);assert.equal(fs.readFileSync(f.database,'utf8'),before);
  await f.call('journal:apply-batch',{...input,expectedToken:plan.token});const saved=fs.readFileSync(f.database,'utf8');
  const state=await f.call('snapshot:get');assert.equal(state.presenceRecords[id+'|'+past].status,'zkp');assert.equal(state.records[id+'|'+past].status,'submitted');
- const stats=await f.call('analytics:report',{startDate:past,endDate:today,employeeIds:[id]});assert.equal(stats.total.confirmedDays,2);assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.zkpPendingDays,0);
+ const stats=await f.call('analytics:report',{startDate:past,endDate:today,employeeIds:[id]});assert.equal(stats.total.workedDays,2);assert.equal(stats.total.zkpDays,1);assert.equal(stats.total.objectsReceived,0);
  await f.call('history:undo');assert.equal(fs.readFileSync(f.database,'utf8'),before);
- await f.call('data:import',{name:'Підтвердження ЗКП.json',content:saved});const imported=await f.call('analytics:report',{startDate:past,endDate:today,employeeIds:[id]});assert.equal(imported.total.confirmedDays,2);assert.equal(imported.total.zkpDays,1);
+ await f.call('data:import',{name:'Підтвердження ЗКП.json',content:saved});const imported=await f.call('analytics:report',{startDate:past,endDate:today,employeeIds:[id]});assert.equal(imported.total.workedDays,2);assert.equal(imported.total.zkpDays,1);
 });
 
 
@@ -535,7 +555,7 @@ test('widget intake IPC persists each object and undo restores quantity together
  await f.call('work:receive-objects',{id:'widget-click-9',employeeId:id,date:today,objectCount:1});
  assert.equal(fs.readFileSync(f.database,'utf8'),savedBytes);
  assert.equal(saved.workIntakes.length,10);assert.equal(saved.workIntakes.reduce((sum,item)=>sum+item.objectCount,0),10);
- assert.equal(saved.records[id+'|'+today].status,'submitted');assert.equal(saved.workIntakes.slice(1).every(item=>item.unallocatedCount===1),true);
+ assert.equal(saved.records[id+'|'+today],undefined);assert.equal(saved.workIntakes.slice(1).every(item=>item.unallocatedCount===1),true);
  for(let index=0;index<10;index++)await f.call('history:undo');
  assert.equal(fs.readFileSync(f.database,'utf8'),before);
 });

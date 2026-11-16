@@ -5,13 +5,13 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, function presenceFactory() {
   const labels = Object.freeze({onsite:'На роботі',zkp:'ЗКП',vacation:'Відпустка',sick:'Лікарняний',
     day_off:'Відгул',personal_permission:'Особисті справи',holiday:'Неробочий день',
-    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження',arkan:'Аркан',weekend:'Вихідний'});
+    training_online:'Навчання онлайн',training_academy:'Навчання Академія',business_trip:'Відрядження',arkan:'Аркан',weekend:'Вихідний',special_assignment:'Окреме завдання'});
   const absent = new Set(['vacation','sick','day_off','personal_permission','holiday','business_trip']);
   const working = new Set(['onsite','zkp','arkan']);
   const learning = new Set(['training_online','training_academy']);
-  const dutyBlocked=new Set([...absent,'arkan']);
-  const noSubmission=new Set([...absent,...learning,'arkan','weekend']);
-  const symbols = {onsite:'Р',zkp:'ЗКП',vacation:'ВП',sick:'ЛК',day_off:'ВГ',personal_permission:'ОС',holiday:'СВ',training_online:'НО',training_academy:'НА',business_trip:'ВД',arkan:'АРК',weekend:'ВХ'};
+  const dutyBlocked=new Set([...absent,'arkan','special_assignment']);
+  const noSubmission=new Set([...absent,...learning,'arkan','weekend','special_assignment']);
+  const symbols = {onsite:'Р',zkp:'ЗКП',vacation:'ВП',sick:'ЛК',day_off:'ВГ',personal_permission:'ОС',holiday:'СВ',training_online:'НО',training_academy:'НА',business_trip:'ВД',arkan:'АРК',weekend:'ВХ',special_assignment:'ОЗ'};
   const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value+'T12:00:00Z'))
     && new Date(value+'T12:00:00Z').toISOString().slice(0,10) === value;
   const key = (id,date) => id+'|'+date;
@@ -41,11 +41,13 @@
         ||!validDate(item.date)||!Object.hasOwn(labels,item.status)||typeof item.note!=='string'||item.note.length>500
         ||typeof item.actor!=='string'||item.actor.length>80||typeof item.recordedAt!=='string'||!Number.isFinite(Date.parse(item.recordedAt)))
         throw Error('Некоректна позначка в розділі «Наявність».');
+      if (item.status === 'special_assignment' && !item.note.trim()) throw Error('Окреме завдання повинне мати пояснення.');
       result[cell]={employeeId:item.employeeId,date:item.date,status:item.status,note:item.note,actor:item.actor,recordedAt:item.recordedAt};
     }
     return result;
   }
   function write(state,{employeeId,date,status,note=''},now=new Date()) {
+    if (status === 'special_assignment' && !String(note).trim()) throw Error('Поясніть, яке окреме завдання виконував працівник.');
     if(!state.employees.some(person=>person.id===employeeId)||!validDate(date)||!Object.hasOwn(labels,status))throw Error('Оберіть працівника, дату й статус наявності.');
     const record={employeeId,date,status,note:String(note).trim().slice(0,500),actor:state.settings.operatorName||'Керівник',recordedAt:now.toISOString()};
     state.presenceRecords||={};state.presenceRecords[key(employeeId,date)]=record;return record;

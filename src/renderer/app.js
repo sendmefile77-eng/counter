@@ -472,7 +472,7 @@ const NAV_ICONS = {
 
 const NAV_ITEMS = [
   ['today', 'Огляд дня', 'Сьогоднішні статуси та швидкі дії'],
-  ['journal', 'Табель', 'Позначки за днями та масові зміни'],
+  ['journal', 'Облік об’єктів', 'Позначки за днями та масові зміни'],
   ['duties', 'Чергування', 'Графіки, правила й пояснення призначень'],
   ['timeoff', 'Відлучення', 'Короткі відлучення з часом і причиною'],
   ['analytics', 'Аналітика', 'Робочі дні, проєкти та співробітники'],
@@ -480,10 +480,10 @@ const NAV_ITEMS = [
   ['data', 'Налаштування', 'Вигляд, робочі дні та резервні копії'],
   ['help', 'Довідка', 'Позначення й пояснення роботи'],
   ['planner', 'Планувальник', 'Завдання, календар, строки й нагадування'],
-  ['weekly', 'Тижневе зведення', 'Виконане, затримки й рішення для керівника'],
+  ['weekly', 'Огляд тижня', 'Виконане, затримки й рішення для керівника'],
   ['draws', 'Тягнути сірник', 'Випадковий вибір виконавців та збережені протоколи'],
   ['coins','Підкинути монетку','Відповідь Так / Ні, анімація та історія підкидань'],
-  ['consequences', 'Наслідки змін', 'Зачеплені чергування й завдання; заміни та обміни'],
+  ['consequences', 'Потрібні рішення', 'Зачеплені чергування й завдання; заміни та обміни'],
   ['presence','Наявність','Де працівник: на роботі, ЗКП, відпустка, лікарняний або відгул'],
   ['activity', 'Моніторинг активності', 'Історія браузера, робочий час і відхилення від графіка'],
 ];
@@ -568,40 +568,7 @@ function journalVisibleReport() {
 }
 
 function renderJournalPage() {
-  const report = journalVisibleReport();
-  const visibleIds = new Set(report.rows.map((row) => row.employeeId));
-  const visibleDates = new Set(report.dates);
-  ui.journalSelected = ui.journalSelected.filter((cell) => visibleIds.has(cell.employeeId) && visibleDates.has(cell.date));
-  const selected = new Set(ui.journalSelected.map((cell) => `${cell.employeeId}|${cell.date}`));
-  const range = journalRange();
-  const metricLabels = [['submitted','Здано'],['notSubmitted','Не здано'],['absent','Відсутність'],['training','Навчання']];
-  return `
-    <div class="page-header"><div><h1>Табель здачі роботи</h1><p>Зелений ✓ — роботу / документи здано. Червоний × — здачу ще не підтверджено. Натисніть клітинку, щоб зарахувати роботу за день. Для кількох днів скористайтеся масовою зміною або виділенням.</p></div><div class="button-row"><button class="button primary small" data-status-period>Масова зміна</button><button class="button small" data-export-journal ${!report.rows.length ? 'disabled' : ''}>Експорт CSV</button></div></div>
-    <div class="journal-view-bar">
-      <div class="button-row">${[['month', 'Місяць'], ['week', 'Тиждень'], ['period', 'Період']].map(([view, label]) => `<button class="button small ${ui.journalView === view ? 'primary' : ''}" data-journal-view="${view}" aria-pressed="${ui.journalView === view}">${label}</button>`).join('')}<button class="button small" data-journal-today>Сьогодні</button></div>
-      ${ui.journalView === 'month' ? `<label class="field journal-date-field"><span>Перейти до місяця</span><input type="month" data-journal-month value="${ui.month}"></label>` : ui.journalView === 'week' ? `<label class="field journal-date-field"><span>Тиждень за датою</span><input type="date" data-journal-anchor value="${ui.journalAnchor}"></label>` : `<form id="journal-range-form" class="journal-range-form"><label class="field"><span>Від</span><input name="startDate" type="date" value="${ui.journalFrom}" required></label><label class="field"><span>До</span><input name="endDate" type="date" value="${ui.journalTo}" required></label><button class="button small" type="submit">Показати</button></form>`}
-    </div>
-    <div class="table-toolbar journal-period-toolbar"><button class="button small" data-month-shift="-1" ${ui.journalView === 'period' ? 'disabled' : ''}>← Попередній</button><div class="month-title">${ui.journalView === 'month' ? h(formatMonth(ui.month)) : `${h(formatDate(range.startDate))} — ${h(formatDate(range.endDate))}`}</div><button class="button small" data-month-shift="1" ${ui.journalView === 'period' ? 'disabled' : ''}>Наступний →</button></div>
-    <div class="journal-controls">
-      <label class="field journal-search"><span>Знайти працівника</span><input type="search" data-journal-search value="${h(ui.journalQuery)}" placeholder="Ім’я або прізвище"></label>
-      <div class="button-row journal-filters">${[['all', 'Усі'], ['missed','Не здано'],['pending','Не здано сьогодні'],['absent','Винятки']].map(([value, label]) => `<button class="button small ${ui.journalFilter === value ? 'primary' : ''}" data-journal-filter="${value}" aria-pressed="${ui.journalFilter === value}">${label}</button>`).join('')}</div>
-      <details class="journal-display"><summary>Вигляд</summary><label><input type="checkbox" data-journal-setting="journalCompact" ${ui.journalCompact ? 'checked' : ''}>Компактні рядки</label><label><input type="checkbox" data-journal-setting="journalHideWeekends" ${ui.journalHideWeekends ? 'checked' : ''}>Сховати неробочі дні</label><label><input type="checkbox" data-journal-setting="journalArchived" ${ui.journalArchived ? 'checked' : ''}>Показати архів</label></details>
-    </div>
-    <div class="journal-summary">${metricLabels.map(([key, label]) => `<span>${label}: <strong>${report.totals[key]}</strong></span>`).join('')}<small>Підсумки у днях за період для показаних працівників. Здача враховується лише до сьогодні. Майбутні робочі клітинки порожні.</small></div>
-    <details class="journal-selection-bar" ${ui.journalSelecting || selected.size ? 'open' : ''}><summary>Виділення та масові дії${selected.size ? ` · вибрано ${selected.size} клітинок` : ''}</summary><div class="button-row"><button class="button small ${ui.journalSelecting ? 'primary' : ''}" data-journal-select-mode aria-pressed="${ui.journalSelecting}">${ui.journalSelecting ? 'Вийти з виділення' : 'Виділення клітинок'}</button><button class="button small" data-journal-select-all ${!report.rows.length ? 'disabled' : ''}>Вибрати показані</button><span data-journal-selection-count aria-live="polite">Виділено: ${selected.size}</span><button class="button small" data-journal-batch="status" ${!selected.size ? 'disabled' : ''}>Змінити статус</button><button class="button small" data-journal-batch="clear" ${!selected.size ? 'disabled' : ''}>Очистити ручні</button><button class="button small" data-journal-batch="make_workday" ${!selected.size ? 'disabled' : ''}>Зробити робочими</button><button class="button small" data-journal-batch="restore_weekend" ${!selected.size ? 'disabled' : ''}>Повернути вихідні</button><button class="button small ghost" data-journal-clear-selection ${!selected.size ? 'disabled' : ''}>Зняти вибір</button></div></details>
-    <div class="table-scroll journal-scroll" data-scroll-key="journal-matrix">
-      <table class="matrix journal-matrix ${ui.journalCompact ? 'journal-compact' : ''} ${ui.journalFocusedEmployeeId ? 'has-focused-row' : ''}"><thead><tr><th class="sticky-name">Працівник</th>${report.dates.map((date) => `<th class="${date === localDateKey() ? 'is-today' : ''} ${!configuredWorkday(date) ? 'weekend' : ''} ${dateFromKey(date).getDay() === 1 ? 'journal-week-start' : ''}"><button data-journal-column="${date}" title="Вибрати цей день для всіх показаних працівників"><strong>${Number(date.slice(-2))}</strong><small>${WEEKDAY_SHORT[dateFromKey(date).getDay()]}${ui.journalView !== 'month' ? ` · ${date.slice(5, 7)}` : ''}</small></button></th>`).join('')}${metricLabels.map(([, label]) => `<th class="journal-total">${label}</th>`).join('')}</tr></thead>
-        <tbody>${report.rows.map((row, rowIndex) => `<tr class="${ui.journalFocusedEmployeeId === row.employeeId ? 'journal-row-focused' : ''}"><td class="sticky-name"><button data-journal-row="${h(row.employeeId)}" title="${h(row.name)} · у режимі виділення вибирає всі показані дні">${h(row.name)}</button></td>${report.dates.map((date, colIndex) => {
-          const cell = row.cells.find((item) => item.date === date);
-          const chosen = selected.has(`${row.employeeId}|${date}`);
-          const tooltip = `${row.name}\n${formatDate(date)}\n${cell.status === 'outside' ? 'Поза періодом роботи' : CounterJournal.labels[cell.displayStatus] || 'Очікується'}${cell.override ? '\nОкремий робочий вихідний' : ''}${cell.protected ? '\nЗапис попереднього обліку' : ''}${cell.documentRef ? `\n${cell.documentRef}` : ''}${cell.note ? `\n${cell.note}` : ''}`;
-          return `<td class="matrix-cell cell-${cell.displayStatus}${cell.override ? ' cell-workday-override' : ''}${chosen ? ' journal-cell-selected' : ''}${cell.protected ? ' journal-cell-protected' : ''}${date === localDateKey() ? ' is-today' : ''}${dateFromKey(date).getDay() === 1 ? ' journal-week-start' : ''}" data-cell-employee="${h(row.employeeId)}" data-date="${date}" role="button" tabindex="${rowIndex === 0 && colIndex === 0 ? '0' : '-1'}" aria-pressed="${chosen}" aria-label="${h(tooltip.replaceAll('\n', ' · '))}" title="${h(tooltip)}">${cell.symbol}</td>`;
-        }).join('')}${metricLabels.map(([key]) => `<td class="journal-total" title="${h(row.name)} · за показаний період">${row.totals[key]}</td>`).join('')}</tr>`).join('')}</tbody>
-      </table>
-      ${!report.rows.length ? '<div class="empty-state">За цими умовами працівників немає. Змініть пошук або фільтр.</div>' : ''}
-    </div>
-    <details class="journal-legend"><summary>Позначення та керування</summary><div>${Object.entries(CounterJournal.symbols).map(([key,symbol])=>`<span><strong>${h(symbol||'Порожньо')}</strong> ${h(CounterJournal.labels[key])}</span>`).join('')}<span><strong>Рамка</strong> Окремий робочий вихідний</span><span><strong>Крапка в кутку</strong> Запис попереднього обліку</span></div><p>У режимі виділення натискайте клітинки, імена та заголовки днів. Shift вибирає прямокутник. Звичайний клік поза цим режимом відкриває окремий день.</p></details>
-  `;
+  return resultJournalPage();
 }
 
 function refreshJournalView() {
@@ -645,9 +612,9 @@ function dutyCell(employee, date) {
   if (assignment?.employeeIds?.includes(employee.id)) {
     const realized = assignment.realizedEmployeeIds?.includes(employee.id);
     return {
-      symbol: '1',
+      symbol: realized && assignment.realizationModes?.[employee.id] === 'day' ? 'ДЧ' : realized && assignment.realizationModes?.[employee.id] === 'night' ? 'НЧ' : '1',
       className: realized ? 'duty-realized' : 'duty-assigned',
-      title: realized ? 'Чергування реалізоване: були завдання' : 'Призначено чергування',
+      title: realized ? assignment.realizationModes?.[employee.id] === 'day' ? 'Денне реалізоване чергування · день виключено з бази KPI' : assignment.realizationModes?.[employee.id] === 'night' ? 'Нічне реалізоване чергування · робочий день' : 'Реалізоване чергування · вид не уточнено' : 'Призначено чергування',
     };
   }
   if (LadPresence.dutyAMark(snapshot,employee.id,date)) return { symbol: 'А', className: 'duty-a', title: 'Аркан («А») · не чергує цього дня й напередодні' };
@@ -697,7 +664,7 @@ function renderDutyScheduleToolbar() {
       <div class="duty-schedule-actions">
         <button class="button small" data-create-duty-schedule>+ Новий графік</button>
         <button class="button small" data-duty-rules>Правила</button>
-        <details class="duty-schedule-more"><summary>Керування графіком</summary><div class="button-row">
+        <button class="button" data-result-duty-period>Почати період з нуля</button><button class="button" data-result-duty-history>Періоди обліку</button><details class="duty-schedule-more"><summary>Керування графіком</summary><div class="button-row">
         <button class="button small" data-copy-duty-schedule>Створити копію</button>
         <button class="button small" data-rename-duty-schedule>Перейменувати</button>
         <button class="button small danger" data-delete-duty-schedule ${schedules.length <= 1 ? 'disabled' : ''}>Видалити</button>
@@ -795,7 +762,7 @@ function renderDutyPage() {
       </div>
     </div>
     <div class="duty-legend">
-      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">1</b> реалізоване</span><span><b class="legend-a">А</b> Аркан</span><span><b class="legend-a">до/А</b> напередодні Аркану</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
+      <span><b class="legend-duty">1</b> чергування</span><span><b class="legend-realized">ДЧ</b> денне реалізоване</span><span><b class="legend-realized">НЧ</b> нічне реалізоване</span><span><b class="legend-a">А</b> Аркан</span><span><b class="legend-a">до/А</b> напередодні Аркану</span><span><b class="legend-planning-block">—</b> не планувати</span><span><b>В/ВП/ЛК/ВГ</b> відсутність</span>
     </div>
     <details class="table-help"><summary>Дії в графіку</summary><p>Натисніть ім’я, щоб виділити рядок, або кольорову крапку, щоб змінити його колір. Клік по порожній клітинці призначає чергування; по призначеній — відкриває виконання, зняття та пояснення. Права кнопка — Аркан («А»), відсутність або заборона планування. «АРК» у наявності та «А» у графіку мають однакове обмеження: без чергування цього дня й напередодні. Червона колонка — нестача чергового.</p></details>
     <div class="table-scroll" data-scroll-key="duty-matrix">
@@ -983,22 +950,7 @@ function analyticsDelta(key, report = ui.analytics) {
   return `<small class="analytics-delta">${delta > 0 ? '+' : ''}${analyticsNumber(delta)}${key === 'completionPercent' ? ' в. п.' : ''} до попереднього періоду</small>`;
 }
 function renderAnalyticsPage() {
-  const draft = ui.analyticsDraft || analyticsCurrentFilter();
-  const people = analyticsAvailableEmployees(draft.scope);
-  const selected = draft.employeeIds;
-  const count = selected ? selected.length : people.length;
-  return `
-    <div class="page-header"><div><h1>Статистика й аналітика</h1><p>Оберіть період і працівників. Натисніть показник, щоб перевірити його за датами та роботою.</p></div></div>
-    <form id="analytics-form" data-scope="${draft.scope}" class="panel analytics-filter-panel">
-      <div class="analytics-presets button-row">${[['today', 'Сьогодні'], ['week', 'Цей тиждень'], ['month', 'Цей місяць'], ['last_month', 'Минулий місяць'], ['30days', 'Останні 30 днів'], ['year', 'Цей рік']].map(([key, label]) => `<button class="button small" type="button" data-analytics-preset="${key}">${label}</button>`).join('')}</div>
-      <div class="analytics-filter-grid"><label class="field"><span>Від дати</span><input type="date" name="startDate" value="${h(draft.startDate)}" required></label><label class="field"><span>До дати</span><input type="date" name="endDate" value="${h(draft.endDate)}" required></label><button class="button primary" type="submit" ${ui.analyticsLoading ? 'disabled' : ''}>Показати статистику</button></div>
-      <div class="analytics-scope button-row" aria-label="Група працівників">${[['active', 'Активні'], ['all', 'Разом з архівом'], ['archive', 'Тільки архів']].map(([key, label]) => `<button class="button small ${draft.scope === key ? 'primary' : ''}" type="button" data-analytics-scope="${key}" aria-pressed="${draft.scope === key}">${label}</button>`).join('')}</div>
-      <details class="analytics-worker-picker"><summary>Працівники: ${selected ? 'вибрано' : 'усі у групі'} ${count}. Змінити вибір</summary><div class="button-row"><button class="button small" type="button" data-analytics-pick="all">Вибрати всіх</button><button class="button small" type="button" data-analytics-pick="none">Зняти всіх</button></div><div class="analytics-worker-list">${people.map((person) => `<label class="check-row"><input name="employeeIds" type="checkbox" value="${h(person.id)}" ${!selected || selected.includes(person.id) ? 'checked' : ''}><span>${h(person.name)}${!person.active ? ' · архів' : ''}</span></label>`).join('') || '<p class="muted">У цій групі працівників немає.</p>'}</div></details>
-      <details class="analytics-extra-options"><summary>Динаміка та порівняння</summary><fieldset class="analytics-options"><legend>Крок графіка</legend>${[['auto', 'Автоматично'], ['day', 'Дні'], ['week', 'Тижні'], ['month', 'Місяці']].map(([value, label]) => `<label><input type="radio" name="groupBy" value="${value}" ${draft.groupBy === value ? 'checked' : ''}>${label}</label>`).join('')}</fieldset><label class="check-row"><input name="compare" type="checkbox" ${draft.compare ? 'checked' : ''}><span>Порівняти з попереднім періодом такої самої тривалості</span></label><p class="muted">До 3660 днів у звіті та до 124 точок на графіку. Для довгого періоду обирайте місяці.</p></details>
-      <p class="muted" data-analytics-loading aria-live="polite">${h(ui.analyticsError ? `${ui.analyticsError} Показано останній успішний звіт.` : ui.analyticsLoading ? 'Оновлення звіту…' : 'Зміни у фільтрах застосовуються кнопкою «Показати статистику».')}</p>
-    </form>
-    ${ui.analytics ? renderAnalyticsResult(ui.analytics) : '<section class="panel empty-state"><h2>Звіт ще не сформовано</h2><p>Виберіть період та натисніть «Показати статистику».</p></section>'}
-  `;
+  return resultAnalyticsPage();
 }
 function analyticsMetricButton(key, value, employeeId = '', extra = '') {
   return `<button class="analytics-number-button" ${!ui.analytics?.rows.length ? 'disabled' : ''} data-analytics-metric="${key}" ${employeeId ? `data-employee-id="${h(employeeId)}"` : ''} title="Переглянути розрахунок: ${h(ANALYTICS_LABELS[key])}">${analyticsValue(key, value)}${extra}</button>`;
@@ -1212,10 +1164,9 @@ function renderDataPage() {
       <section class="panel" id="settings-workdays">
         <h2>Час і робочі дні</h2>
         <div class="form-grid">
-          <label class="field"><span>Час автоматичного закриття</span><input name="closeTime" type="time" value="${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}" required></label>
+          <label class="field"><span>Час завершення робочого дня</span><input name="closeTime" type="time" value="${String(settings.closeHour).padStart(2, '0')}:${String(settings.closeMinute).padStart(2, '0')}" required></label>
           <label class="field"><span>Формат дати</span><select name="dateStyle"><option value="long" ${settings.dateStyle === 'long' ? 'selected' : ''}>24 серпня 2026</option><option value="short" ${settings.dateStyle === 'short' ? 'selected' : ''}>24 серп. 2026</option><option value="numeric" ${settings.dateStyle === 'numeric' ? 'selected' : ''}>24.08.2026</option></select></label>
         </div>
-        <label class="check-row"><input name="automaticClose" type="checkbox" ${settings.automaticClose ? 'checked' : ''}><span><strong>Автоматично позначати дні без обліку</strong><span>Після заданого часу день без роботи чи позначки буде виділено для перевірки. Активний період роботи не створює пропусків.</span></span></label>
         <div class="weekday-settings">${weekdays.map(([value, label]) => `<label><input type="checkbox" name="workdays" value="${value}" ${settings.workdays.includes(value) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div>
       </section>
       <section class="panel" id="settings-table">
@@ -1265,7 +1216,7 @@ function renderHelpPage() {
   return `<div class="page-header"><div><h1>Як працює ЛАД</h1><p>Облік роботи, доступності, чергувань і завдань команди.</p></div></div>
   <section class="panel"><h2>Навчання з підказками</h2><p>Екскурсія підсвічує кнопки. Окремий навчальний приклад із вигаданими людьми допомагає перевірити відсутність, підміну й передачу завдання; після виходу повертаються ваші дані.</p><div class="button-row"><button class="button" data-start-guide="tour">Показати кнопки</button><button class="button primary" data-start-guide="practice">Пройти навчальний приклад</button></div></section><section class="panel"><h2>Почніть із роботи співробітника</h2><p>Вкажіть, над чим він працює, кількість проєктів, початок і орієнтовний строк. Наприклад, 5 проєктів можуть зайняти 7 робочих днів: кількість проєктів і тривалість можна змінювати незалежно.</p><p>Оновлюйте загальний прогрес, а після виконання підтвердьте завершення фактичною датою. Зміна обсягу, строку або зменшення прогресу потребує пояснення; воно залишається в історії.</p><button class="button primary" data-work-new>+ Додати роботу</button></section>
   <section class="panel"><h2>Табель і статистика</h2><p>Активна робота враховується за робочими днями від початку до фактичного завершення. Вихідні, відсутність і ручні позначки мають пріоритет. Орієнтовний строк лише нагадує перевірити роботу; після нього робота триває.</p><p>Кілька робіт в один день не множать робочі дні. Проєкти у завершених роботах рахуються за фактичною датою завершення. Майбутні дні не входять до фактичної статистики.</p><p>Для роботи без проєктів достатньо позначки «У роботі» або «Відпрацьовано» у табелі. Старі дані з резервних копій зберігаються.</p><div class="button-row"><button class="button" data-tab="journal">Табель</button><button class="button" data-tab="analytics">Статистика</button></div></section>
-  <section class="panel"><h2>Ваш віджет</h2><p>Перемикайте «Команда», «Чергування» і «Завдання». На початку дня пелюстки порожні. Кожен клік по співробітнику додає один отриманий об’єкт і закриває сьогодні або найближчий незакритий робочий день назад. Правий клік відкриває статус дня. Кнопка ↶ скасовує помилковий клік.</p><p>Круглий віджет можна замінити панеллю зі списком. Положення можна зафіксувати; перетягування доступне за заголовок. «Сховати» залишає програму й нагадування працювати, «Вийти» закриває ЛАД. Ctrl+Shift+L повертає віджет, якщо комбінація доступна.</p><button class="button" data-widget-options>Налаштувати віджет</button></section>
+  <section class="panel"><h2>Ваш віджет</h2><p>Перемикайте «Команда», «Чергування» і «Завдання». На початку дня пелюстки порожні. Кожен клік по співробітнику додає один прийнятий об’єкт на поточну дату. Робочі дні рахуються за календарем і наявністю, KPI — за нормою 1,5 дня на об’єкт. Правий клік відкриває статус дня. Кнопка ↶ скасовує помилковий клік.</p><p>Круглий віджет можна замінити панеллю зі списком. Положення можна зафіксувати; перетягування доступне за заголовок. «Сховати» залишає програму й нагадування працювати, «Вийти» закриває ЛАД. Ctrl+Shift+L повертає віджет, якщо комбінація доступна.</p><button class="button" data-widget-options>Налаштувати віджет</button></section>
   <section class="panel"><h2>Чергування, строки й резервні копії</h2><p>Пояснення кожного чергування відкривається з дати графіка. Зміни доступності перевіряють потребу в підміні. Завдання мають строки й нагадування. Зберігайте JSON-копію перед перенесенням на інший комп’ютер.</p><button class="button" data-tab="data">Налаштування та резервні копії</button></section>`;
 }
 
@@ -1695,11 +1646,13 @@ async function openDutyEmployeeModal(employeeId, date) {
   openModal(`
     <header class="modal-head"><div><h2>Чергування працівника</h2><p>${h(employee?.name || '')} · ${h(formatDate(date))}</p></div><button class="icon-button" type="button" data-close-modal>×</button></header>
     <div class="modal-body">
-      <div class="duty-person-state">Стан: <strong>${assigned ? (realized ? 'реалізоване чергування' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
+      <div class="duty-person-state">Стан: <strong>${assigned ? (realized ? assignment.realizationModes?.[employeeId] === 'day' ? 'денне реалізоване · виключено з KPI' : assignment.realizationModes?.[employeeId] === 'night' ? 'нічне реалізоване · робочий день' : 'реалізоване чергування · вид не уточнено' : 'призначено чергування') : (linkedRestriction || 'доступний')}</strong></div>
       ${arkan?`<div class="confirm-box">Аркан («А») внесено у «Наявності» й діє в усіх графіках. Чергування заборонене цього дня та напередодні. <button class="button small" data-duty-presence="${h(employeeId)}" data-date="${date}">Змінити наявність</button></div>`:''}
       ${assigned ? `
         <details class="modal-details" open><summary>Чому я чергую цього дня</summary>${renderDutyExplanation(explanation, employeeId)}<button class="button small" type="button" data-copy-duty-explanation="${date}" data-explanation-employee="${h(employeeId)}">Скопіювати пояснення</button></details>
-        <button class="button ${realized ? '' : 'success'}" data-set-duty-realized data-realized="${realized ? 'false' : 'true'}" data-date="${date}" data-employee-id="${h(employeeId)}">${realized ? 'Скасувати позначку виконання' : 'Позначити виконаним'}</button>
+        <button class="button" data-set-duty-realized data-realized="true" data-mode="day" data-date="${date}" data-employee-id="${h(employeeId)}">Реалізовано вдень · виключити з KPI</button>
+        <button class="button" data-set-duty-realized data-realized="true" data-mode="night" data-date="${date}" data-employee-id="${h(employeeId)}">Реалізовано вночі · робочий день</button>
+        ${realized ? `<button class="button" data-set-duty-realized data-realized="false" data-date="${date}" data-employee-id="${h(employeeId)}">Скасувати реалізацію</button>` : ''}
         <button class="button danger" data-remove-duty-assignment data-date="${date}" data-employee-id="${h(employeeId)}">Зняти чергування</button>
         <div class="button-row"><button class="button primary" data-find-replacement="${date}" data-replacement-employee="${h(employeeId)}">Знайти підміну / обмін</button><button class="button" data-staff-change="${h(employeeId)}" data-staff-date="${date}">Записати відсутність</button></div>
       ` : `
@@ -1837,16 +1790,7 @@ function openFutureApproval(receipt) {
 }
 
 function openStatusModal(employeeId, date) {
-  const employee=employeeById(employeeId),record=recordFor(employeeId,date),override=hasWorkdayOverride(employeeId,date);
-  const weekend=!configuredWorkday(date),editable=!weekend||override,mark=presenceMark(employeeId,date),absent=LadPresence.absent.has(mark?.status)||LadPresence.learning.has(mark?.status),zkpCanAccept=mark?.status!=='zkp'||date<localDateKey()&&presenceMark(employeeId,localDateKey())?.status==='onsite';
-  openModal(`<header class="modal-head"><div><h2>Статус робочого дня</h2><p>${h(employee?.name||'')} · ${h(formatDate(date))}</p></div><button class="icon-button" data-close-modal>×</button></header><div class="modal-body"><p>Поточний статус: ${statusBadge(statusFor(employeeId,date))}</p><details class="modal-details"><summary>Отримано ${h(formatDate(date))}: ${LadWork.intakeSummary(snapshot,employeeId,date).objectCount} об’єктів</summary>${renderIntakeHistory(LadWork.intakeSummary(snapshot,employeeId,date).entries)}</details>
-  ${weekend&&!override?`<p class="confirm-box">Це неробочий день календаря. Якщо людина працювала, спочатку зробіть його робочим.</p><button class="button primary" data-set-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Зробити робочим днем</button>`:''}
-  ${editable?`<label class="field"><span>Пояснення нової позначки</span><textarea id="status-note" maxlength="500">${h(record?.source==='work'?'':record?.note||'')}</textarea></label>${record?.receiptId?'<p class="confirm-box">Позначку перенесено з попереднього обліку. Для ручного виправлення роботи вкажіть пояснення; попередня база залишається в резервній копії.</p>':''}<div class="status-grid">
-  ${date<=localDateKey()?`<button class="status-choice" data-work-mark="working" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent?'disabled':''}><strong>У роботі</strong><span>Робота триває цього дня</span></button><button class="status-choice submitted-choice" data-work-mark="submitted" data-employee-id="${h(employeeId)}" data-date="${date}" ${absent||!zkpCanAccept?'disabled':''}><strong>Відпрацьовано</strong><span>Підтверджена робота за день</span></button>`:''}
-  ${[['missed','Роботу не позначено'],['other_tasks','Інша робота'],['personal_permission','Особисті справи'],['sick','Лікарняний'],['vacation','Відпустка'],['day_off','Відгул'],['holiday','Неробочий день']].map(([status,label])=>`<button class="status-choice" data-set-status="${status}" data-employee-id="${h(employeeId)}" data-date="${date}" ${record?.receiptId||absent&&['missed','other_tasks'].includes(status)?'disabled':''}><strong>${label}</strong><span>${['missed','other_tasks'].includes(status)?'Позначка табеля':'З перевіркою чергувань і завдань'}</span></button>`).join('')}</div>`:''}
-  <button class="button" data-presence-edit="${h(employeeId)}" data-presence-cell-date="${date}">Наявність: на роботі / ЗКП / відсутність</button>
-  ${mark?.status==='zkp'?`<p class="confirm-box">ЗКП не зараховує роботу автоматично. Після повернення позначте «На роботі» на дату повернення й підтвердьте отриману роботу за вибрані дні.</p><button class="button" data-work-accept="${h(employeeId)}">Прийняти роботу за дні ЗКП</button>`:''}${record?.source==='presence'?'<p class="confirm-box">Цим днем керує «Наявність». Для зміни доступності відкрийте її позначку.</p>':''}
-  ${record?.source==='work'?`<p class="muted">День пов’язано з роботою: ${h(record.note)}. Щоб змінити весь період, відкрийте відповідну роботу.</p>`:''}</div><footer class="modal-foot">${weekend&&override&&!record?.receiptId?`<button class="button danger" data-clear-workday-override data-employee-id="${h(employeeId)}" data-date="${date}">Повернути вихідний</button>`:''}${record&&!['work','presence'].includes(record.source)&&!record.receiptId?`<button class="button danger" data-clear-status data-employee-id="${h(employeeId)}" data-date="${date}">Очистити ручну позначку</button>`:''}<button class="button" data-work-new="${h(employeeId)}">+ Робота</button><button class="button" data-close-modal>Закрити</button></footer>`,true);
+  return openResultDay(employeeId, date);
 }
 
 function showToast(message, { error = false, undo = false } = {}) {
@@ -1906,7 +1850,7 @@ function submitOne(employeeId) {
     if(!result)return;
     LadMotion.intakeAccepted(employeeId);
     const total=LadWork.intakeSummary(snapshot,employeeId,input.date).objectCount;
-    const message=`${employeeById(employeeId)?.name||'Працівник'}: ${total} об’єктів сьогодні. ${result.dates.length?`Закрито ${result.dates.map(formatDate).join(', ')}.`:'Незакритих доступних днів немає; об’єкт збережено.'}`;
+    const message=`${employeeById(employeeId)?.name||'Працівник'}: ${total} об’єктів сьогодні. Прийнятий результат збережено.`;
     if(ui.mode==='widget'){
       let live=toastRoot.querySelector('[data-widget-intake-live]');
       if(!live){live=document.createElement('span');live.className='sr-only';live.dataset.widgetIntakeLive='';toastRoot.append(live);}
@@ -2109,6 +2053,7 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
   if (await handleLearningClick(event)) return;
+  if (await handleResultsClick(event)) return;
   if (await handleStaffImportClick(event)) return;
   if (await handleActivityClick(event)) return;
   if (await handlePresenceClick(event)) return;
@@ -2589,6 +2534,7 @@ appRoot.addEventListener('keydown', (event) => {
 });
 
 appRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleResultsSubmit(event)) return;
   if (await handleStaffImportSubmit(event)) return;
   if (await handleActivitySubmit(event)) return;
   if (await handlePresenceSubmit(event)) return;
@@ -2794,6 +2740,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (await handleResultsClick(event)) return;
   if (await handleStaffImportClick(event)) return;
   if (await handleActivityClick(event)) return;
   if(event.target.closest('[data-action="close"]')){await window.counter.close();return;}
@@ -3034,7 +2981,7 @@ modalRoot.addEventListener('click', async (event) => {
   const realizedDutyButton = event.target.closest('[data-set-duty-realized]');
   if (realizedDutyButton) {
     const result = await run(() => window.counter.setDutyRealized(realizedDutyButton.dataset.date,
-      realizedDutyButton.dataset.employeeId, realizedDutyButton.dataset.realized === 'true'),
+      realizedDutyButton.dataset.employeeId, realizedDutyButton.dataset.realized === 'true', realizedDutyButton.dataset.mode || 'night'),
     'Стан виконання чергування змінено.');
     if (result) closeModal();
     return;
@@ -3114,6 +3061,7 @@ modalRoot.addEventListener('click', async (event) => {
 });
 
 modalRoot.addEventListener('submit', event => submitInterfaceForm(event, async () => {
+  if (await handleResultsSubmit(event)) return;
   if (await handleStaffImportSubmit(event)) return;
   if (await handleActivitySubmit(event)) return;
   if (await handlePresenceSubmit(event)) return;
