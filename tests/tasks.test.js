@@ -173,7 +173,7 @@ test('weekly totals count shared tasks once, employee rows show responsibility, 
   const report=management.weeklySummary(state,'2026-10-02',now);
   assert.equal(report.startDate,'2026-09-28'); assert.equal(report.endDate,'2026-10-04'); assert.equal(report.actualThrough,'2026-10-02');
   assert.equal(report.completedTasks.length,1); assert.equal(report.people[0].tasksCompleted,1); assert.equal(report.people[1].tasksCompleted,1);
-  assert.equal(report.overdueTasks.length,1); assert.equal(report.upcomingTasks.length,1); assert.equal(report.analytics.confirmedDays,1);
+  assert.equal(report.overdueTasks.length,1); assert.equal(report.upcomingTasks.length,1); assert.ok(report.analytics.workedDays>0); assert.equal(report.analytics.objectsReceived,0);
   const future=management.weeklySummary(state,'2026-10-12',now); assert.equal(future.actualThrough,null); assert.equal(future.analytics.calendarWorkdays,0);
 });
 test('employee profile combines all schedules, work days, absences and tasks without counting baseline as dates', () => {

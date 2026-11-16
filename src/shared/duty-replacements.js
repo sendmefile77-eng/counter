@@ -172,6 +172,7 @@ function applyReplacement(state,input,now = new Date()) {
     const previous = view.duties.assignments[change.date] || {};
     view.duties.assignments[change.date] = { ...previous,date:change.date,employeeIds:[...change.after],
       realizedEmployeeIds:(previous.realizedEmployeeIds || []).filter(id=>change.after.includes(id)),
+      realizationModes:Object.fromEntries(Object.entries(previous.realizationModes || {}).filter(([id])=>change.after.includes(id))),
       singleApproved:change.after.length===1 && Boolean(previous.singleApproved),source:'manual_replacement',manualEmployeeIds:[...change.after],
       previousNote:previous.note || '',note:reason,updatedAt:now.toISOString(),
       replacementNeeds:(previous.replacementNeeds || []).filter((item,index)=>report.query.employeeId ? item.employeeId!==report.query.employeeId : index>0) };

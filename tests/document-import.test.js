@@ -108,7 +108,7 @@ test('backup migration retains profile history and removal cleans employee rules
   const roundtrip = d.normalizeState(structuredClone(state), now);
   assert.equal(roundtrip.employees[0].profile.history.length, 1);
   const old = structuredClone(state); delete old.documentImport; old.schemaVersion = 18; delete old.employees[0].profile;
-  const migrated = d.normalizeState(old, now); assert.equal(migrated.schemaVersion, 19); assert.equal(migrated.employees[0].profile.fullName, '');
+  const migrated = d.normalizeState(old, now); assert.equal(migrated.schemaVersion, 20); assert.equal(migrated.employees[0].profile.fullName, '');
   d.archiveEmployee(state, a.id, now);
   const report = deletion.preview(state, a.id);
   deletion.apply(state, { employeeId: a.id, expectedToken: report.token }, now);

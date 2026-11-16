@@ -52,10 +52,10 @@ function activityXlsx(data) {
       time(row.first), time(row.last), row.recordCount, row.missingCount, row.longGaps.length, duration(row.maxGapMs), row.anomalies.map(item => item.label).join('; '), row.presence, duration(row.workMs), duration(row.personalMs), duration(row.unknownMs)]),
   ];
   const journal = [
-    ['Працівник / джерело', 'URL', 'Title', 'Visit Time', 'Visit Count', 'Visited From', 'Visit Type', 'Visit Duration', 'Web Browser', 'User Profile', 'Browser Profile', 'URL Length', 'Typed Count', 'History File', 'Record ID', 'Розпізнаний браузер', 'Файли імпорту', 'Категорія сайту'],
+    ['Працівник / джерело', 'URL', 'Title', 'Visit Time', 'Visit Count', 'Visited From', 'Visit Type', 'Visit Duration', 'Web Browser', 'User Profile', 'Browser Profile', 'URL Length', 'Typed Count', 'History File', 'Record ID', 'Розпізнаний браузер', 'Файли імпорту', 'Категорія сайту', 'NSFW', 'Маркетплейс'],
     ...data.journal.map(v => [v.name, v.url, v.title, { value: dateNumber(v.date) + v.time.split(':').reduce((sum, part, i) => sum + Number(part) * [3600, 60, 1][i], 0) / 86400, style: 5 },
       v.visitCount, v.visitedFrom, v.visitType, duration(v.durationMs), v.rawBrowser, v.userProfile, v.browserProfile,
-      v.urlLength, v.typedCount, v.historyFile, v.recordId, v.browser, v.files.join('; '), ({ work: 'Робочий', personal: 'Особистий', unknown: 'Не визначено' }[v.category] || 'Не визначено')]),
+      v.urlLength, v.typedCount, v.historyFile, v.recordId, v.browser, v.files.join('; '), ({ work: 'Робочий', personal: 'Особистий', unknown: 'Не визначено' }[v.category] || 'Не визначено'), v.flags?.nsfw ? 'Так' : 'Ні', v.flags?.marketplace ? 'Так' : 'Ні']),
   ];
   const rules = data.settings;
   const method = [

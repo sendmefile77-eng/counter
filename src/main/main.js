@@ -71,6 +71,7 @@ const employeeProfiles = require('../shared/employee-profiles');
 const documentImport = require('../shared/document-import');
 const { readDocumentFiles } = require('./document-job');
 const documentPreviews = new Map();
+const productivity = require('../shared/productivity');
 let readingDocuments = false;
 const runtimeOptions = require('./runtime-options');
 const os = require('node:os');
@@ -262,7 +263,7 @@ function createMainWindow() {
 
 function currentSnapshot({ lightweight = false } = {}) {
   const now = new Date();
-  const changed = ensureAutomaticMisses(store.state, now);
+  const changed = 0 /* Attendance is derived from calendar and presence. */;
   if (changed) store.save();
   lastBroadcastDate = dateKeyFromDate(now);
   return {
@@ -391,6 +392,8 @@ async function applyWindowMode(mode) {
 }
 
 function registerIpc() {
+  ipcMain.handle('results:set', (_event, input) => mutate('results:set', state => productivity.setObjects(state, input)));
+  ipcMain.handle('duties:begin-period', (_event, input) => mutate('duties:begin-period', state => require('../shared/domain').beginDutyPeriod(state, input)));
   ipcMain.handle('employee:profile', (_event, { employeeId, profile }) => mutate('employee:profile', state => employeeProfiles.update(state, employeeId, profile)));
   ipcMain.handle('documents:read', async (_event, files) => {
     if (readingDocuments) throw Error('Читання документів ще триває.');
@@ -611,17 +614,13 @@ function registerIpc() {
   ipcMain.handle('journal:preview-batch', (_event, payload) => availability.previewBatch(store.state, payload));
   ipcMain.handle('journal:apply-batch', (_event, payload) => mutate('journal:apply-batch', (state) => availability.applyBatch(state, payload)));
   ipcMain.handle('journal:export', async (_event, filter) => {
-    const report = calculateJournalReport(store.state, filter);
+    const report = productivity.report(store.state, { ...filter, scope: 'all' });
     const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Експортувати відкритий табель', defaultPath: `counter-journal-${filter.startDate}-${filter.endDate}.csv`,
+      title: 'Експортувати облік об’єктів', defaultPath: `LAD-objects-${filter.startDate}-${filter.endDate}.csv`,
       filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
     });
     if (result.canceled || !result.filePath) return { canceled: true };
-    const header = ['Працівник', ...report.dates, 'Здано', 'Не здано', 'Відсутність', 'Навчання'];
-    const rows = report.rows.map((row) => [row.name, ...row.cells.map((cell) => cell.symbol), row.totals.submitted,
-      row.totals.notSubmitted, row.totals.absent, row.totals.training]);
-    const safeCsv = (value) => csvEscape(typeof value === 'string' && /^[=+@-]/.test(value) ? `'${value}` : value);
-    fs.writeFileSync(result.filePath, `\uFEFF${[header, ...rows].map((row) => row.map(safeCsv).join(';')).join('\r\n')}\r\n`, 'utf8');
+    fs.writeFileSync(result.filePath, productivity.csv(report, 'days'), 'utf8');
     return { canceled: false, filePath: result.filePath };
   });
   ipcMain.handle('record:clear', (_event, { employeeId, date }) => (
@@ -635,12 +634,12 @@ function registerIpc() {
   ));
   ipcMain.handle('analytics:get', (_event, filter) => calculateStatistics(store.state, filter));
   ipcMain.handle('analytics:trend', (_event, filter) => calculateAnalyticsTrend(store.state, filter));
-  ipcMain.handle('analytics:report', (_event, filter) => work.report(store.state, filter));
+  ipcMain.handle('analytics:report', (_event, filter) => productivity.report(store.state, filter));
   ipcMain.handle('analytics:details', (_event, input) => getAnalyticsDetails(store.state, input));
   ipcMain.handle('analytics:export-report', async (_event, { filter, view }) => {
     if(!['workers','trend','days'].includes(view))throw new Error('Невідомий вигляд звіту роботи.');
-    const report = work.report(store.state, filter);
-    const csv = work.csv(report, view);
+    const report = productivity.report(store.state, filter);
+    const csv = productivity.csv(report, view);
     const result = await dialog.showSaveDialog(mainWindow, {
       title: 'Експортувати статистику', defaultPath: `counter-statistics-${view}-${report.startDate}-${report.endDate}.csv`,
       filters: [{ name: 'Таблиця CSV', extensions: ['csv'] }],
@@ -685,7 +684,7 @@ function registerIpc() {
     mutate('duties:remove-assignment', (state) => removeDutyAssignment(state, employeeId, date))
   ));
   ipcMain.handle('duties:set-realized', (_event, payload) => (
-    mutate('duties:set-realized', (state) => setDutyRealized(state, payload.date, payload.employeeId, payload.realized))
+    mutate('duties:set-realized', (state) => setDutyRealized(state, payload.date, payload.employeeId, payload.realized, new Date(), payload.mode || 'night'))
   ));
   ipcMain.handle('duties:set-restriction', (_event, payload) => (
     mutate('duties:set-restriction', (state) => setDutyRestriction(state, payload))
@@ -904,7 +903,7 @@ app.whenReady().then(async () => {
     store.replace(store.readBackup(selected.filePaths[0]));
     store.recovery={source:'selected',restoredAt:new Date().toISOString(),message:'Відновлено вибрану копію. Перевірте її дату та останні зміни.'};
   }
-  ensureAutomaticMisses(store.state, new Date());
+  /* Result accounting never creates missing-submission marks. */
   store.save();
   const notificationSetup = store.state.settings.taskRemindersEnabled ? setupWindowsNotifications({ app, shell }) : { supported: true };
   reminders = createReminderService({ Notification, store, broadcast,
@@ -924,7 +923,7 @@ app.whenReady().then(async () => {
 
   closeTimer = setInterval(() => {
     const now = new Date();
-    const changed = ensureAutomaticMisses(store.state, now);
+    const changed = 0 /* Attendance is derived from calendar and presence. */;
     const currentDate = dateKeyFromDate(now);
     if (changed) store.save();
     reminders.check();

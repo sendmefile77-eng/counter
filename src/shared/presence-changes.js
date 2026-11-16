@@ -11,6 +11,7 @@ function preview(state,input,now=new Date()) {
   if(!presence.validDate(startDate)||!presence.validDate(endDate)||endDate<startDate||endDate>d.addDays(startDate,365))throw Error('Оберіть період до 366 календарних днів.');
   const status=input.status||null,action=input.action||'set',reason=String(input.reason||'').trim();
   if(!['set','clear'].includes(action)||action==='set'&&!Object.hasOwn(presence.labels,status))throw Error('Оберіть статус наявності.');
+  if(status==='special_assignment'&&!reason)throw Error('Поясніть, яке окреме завдання виконував працівник.');
   if(reason.length>500)throw Error('Пояснення має містити не більше 500 символів.');
   const change={employeeIds:ids,startDate,endDate,status,action,reason},cells=[],skipped=[],duties=[],tasks=new Map(),blockers=[];
   for(const id of ids) {

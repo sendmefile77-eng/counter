@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const presence = require('./presence');
 const work = require('./work');
+const productivity = require('./productivity');
 const categories = require('./activity-categories');
 const analytics = require('./activity-analytics');
 const { kyivWallClock } = require('./activity-time');
@@ -341,7 +342,9 @@ function setCategory(state, input, now = new Date()) {
   if (typeof category !== 'string' || category !== 'inherit' && !Object.hasOwn(categories.CATEGORIES, category)) throw Error('Оберіть категорію сайту.');
   state.activity ||= empty();
   const rules = (state.activity.domainRules || []).filter(rule => rule.domain !== domain || rule.employeeId !== employeeId);
-  if (category !== 'inherit') rules.push({ domain, employeeId, category });
+  const previous = (state.activity.domainRules || []).find(rule => rule.domain === domain && rule.employeeId === employeeId);
+  const flags = input.flags || previous?.flags;
+  if (category !== 'inherit') rules.push({ domain, employeeId, category, ...(flags ? { flags } : {}) });
   state.activity.domainRules = categories.normalizeRules(rules, state.employees);
   audit(state, 'activity_site_category_changed', { domain, employeeId, category }, now);
   return categories.categoryFor(state.activity.domainRules, employeeId, domain);
@@ -448,7 +451,7 @@ function complement(intervals, windows) {
   return gaps;
 }
 
-function dayReport(state, group, date, visits, rules, now = new Date()) {
+function dayReport(state, group, date, visits, rules, now = new Date(), dutyIndex = productivity.dutyIndex(state)) {
   const midnight = Date.parse(date + 'T00:00:00Z');
   const start = midnight + timeMinutes(rules.startTime) * MINUTE, end = midnight + timeMinutes(rules.endTime) * MINUTE;
   const lunchStart = midnight + timeMinutes(rules.lunchStart) * MINUTE, lunchEnd = midnight + timeMinutes(rules.lunchEnd) * MINUTE;
@@ -459,8 +462,10 @@ function dayReport(state, group, date, visits, rules, now = new Date()) {
   const observedWindows = future ? [] : inProgress ? intersect(windows, [[midnight, currentTime]]) : windows;
   const person = group.employeeId && state.employees.find(person => person.id === group.employeeId);
   const mark = person ? presence.get(state, person.id, date) : null;
-  const calendarWorkday = person ? work.isWorkday(state, person.id, date) : state.settings.workdays.includes(new Date(midnight).getUTCDay());
-  const exempt = mark && (presence.absent.has(mark.status) || presence.learning.has(mark.status));
+  const duty = person ? dutyIndex.get(person.id + '|' + date) : null;
+  const calendarWorkday = person ? work.isWorkday(state, person.id, date) || Boolean(duty) : state.settings.workdays.includes(new Date(midnight).getUTCDay());
+  const exempt = mark && (presence.absent.has(mark.status) || presence.learning.has(mark.status) || ['arkan', 'special_assignment', 'weekend'].includes(mark.status) && mark.source !== 'calendar_presence')
+    || duty?.day || person && state.records[person.id + '|' + date]?.status === 'other_tasks' && !mark;
   const expectedMs = calendarWorkday && !exempt ? intervalLength(windows) : 0;
   const ordered = visits.slice().sort((a, b) => a.timestamp - b.timestamp);
   // Bound each history duration. Open background tabs must not cover hours of
@@ -541,18 +546,18 @@ function report(state, filter = {}, now = new Date()) {
     byDate.get(key).push(visit);
     journal.push({ id: visit.id, groupKey, employeeId: source.employeeId, name: groups.get(groupKey).name,
       date, time: clockOf(visit.timestamp), timestamp: visit.timestamp, url: visit.url, title: visit.title,
-      domain: visit.domain, category: visit.category, categoryOrigin: classification.origin, browser: source.browser, source: source.label, durationMs: visit.durationMs,
+      domain: visit.domain, category: visit.category, categoryOrigin: classification.origin, flags: classification.flags, flagOrigins: classification.flagOrigins, browser: source.browser, source: source.label, durationMs: visit.durationMs,
       visitCount: visit.visitCount, typedCount: visit.typedCount, urlLength: visit.urlLength,
       rawBrowser: visit.rawBrowser, userProfile: source.userProfile, browserProfile: source.profile,
       capped: visit.durationMs !== null && visit.durationMs > rules.maxVisitMinutes * MINUTE,
       visitType: visit.visitType, recordId: visit.recordId, visitedFrom: visit.visitedFrom, historyFile: visit.historyFile,
       files: visit.versions.map(version => activity.imports.find(item => item.id === version.importId)?.name).filter(Boolean) });
   }
-  const allRows = [];
+  const allRows = [], dutyIndex = productivity.dutyIndex(state);
   for (const group of groups.values()) {
     for (let date = startDate; date <= endDate; date = dateOf(Date.parse(date + 'T00:00:00Z') + DAY)) {
       const visits = byDate.get(group.key + '|' + date) || [];
-      const row = dayReport(state, group, date, visits, rules, now);
+      const row = dayReport(state, group, date, visits, rules, now, dutyIndex);
       if (row.recordCount || row.expectedMs) allRows.push(row);
     }
   }
@@ -565,8 +570,9 @@ function report(state, filter = {}, now = new Date()) {
   const sites = new Map();
   for (const visit of filteredJournal) {
     const key = visit.groupKey + '|' + visit.domain;
-    if (!sites.has(key)) sites.set(key, { key, groupKey: visit.groupKey, employeeId: visit.employeeId, name: visit.name, domain: visit.domain, category: visit.category, categoryOrigin: visit.categoryOrigin, recordCount: 0, durationMs: 0, missingCount: 0 });
+    if (!sites.has(key)) sites.set(key, { key, groupKey: visit.groupKey, employeeId: visit.employeeId, name: visit.name, domain: visit.domain, category: visit.category, categoryOrigin: visit.categoryOrigin, flags: visit.flags, flagOrigins: visit.flagOrigins, recordCount: 0, durationMs: 0, missingCount: 0, dates: [] });
     const site = sites.get(key); site.recordCount++; site.durationMs += visit.durationMs || 0; site.missingCount += visit.durationMs === null ? 1 : 0;
+    if (!site.dates.includes(visit.date)) site.dates.push(visit.date);
   }
   let analysis = null;
   if (filter.includeAnalytics) {
