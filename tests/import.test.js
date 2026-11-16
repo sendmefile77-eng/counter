@@ -9,6 +9,7 @@ const { createRequire } = require('node:module');
 const domain = require('../src/shared/domain');
 const tasks = require('../src/shared/tasks');
 const coins = require('../src/shared/coins');
+const activity = require('../src/shared/activity');
 
 async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true, trayAvailable = true } = {}) {
   // These scenarios use 6–7 October as future duties and task deadlines.
@@ -80,6 +81,48 @@ test('result corrections, day/night realization and duty periods persist through
   await f.call('duties:begin-period',{scheduleId:current.activeDutyScheduleId,startDate:'2027-01-01'});
   const next=await f.call('snapshot:get');assert.ok(next.duties.periodStarts.includes('2027-01-01'));assert.deepEqual(next.duties.rules,rules);
   await f.call('history:undo');assert.deepEqual((await f.call('snapshot:get')).duties.periodStarts,[]);
+});
+
+test('monitoring IPC reads restored day-duty and legacy other-work history and exports without changing it', async t => {
+  const f = await fixture(t), id = f.incoming.employees[0].id;
+  const dutyDate = '2026-09-29', otherDate = '2026-09-30';
+  f.incoming.duties.assignments[dutyDate] = { date: dutyDate, employeeIds: [id], realizedEmployeeIds: [] };
+  domain.setDutyRealized(f.incoming, dutyDate, id, true, new Date(), 'day');
+  domain.setManualStatus(f.incoming, { employeeId: id, date: otherDate, status: 'other_tasks', note: 'Інше доручення' });
+  const preview = activity.previewImports(f.incoming, [{ name: 'history.csv', bytes: Buffer.from([
+    'URL,Visit Time,Visit Duration',
+    'https://olx.ua,29.09.2026 09:00:00,00:15:00',
+    'https://xvideos.com,30.09.2026 10:00:00,00:15:00',
+  ].join('\r\n')) }]);
+  activity.applyImports(f.incoming, preview, { assignments: Object.fromEntries(preview.report.sources.map(source => [source.id, id])) });
+  fs.writeFileSync(f.filePath, JSON.stringify(f.incoming));
+  await f.call('data:import');
+  const before = fs.readFileSync(f.database, 'utf8');
+  const filter = { startDate: dutyDate, endDate: otherDate, employeeId: id, includeAnalytics: true, journalPage: 0 };
+  const data = await f.call('activity:report', filter);
+  assert.equal(data.journalCount, 2);
+  assert.equal(data.rows.length, 2);
+  assert.ok(data.rows.every(row => row.expectedMs === 0 && row.activeMs === 15 * 60000));
+  assert.equal(data.rows.find(row => row.date === dutyDate).presence, 'Денне реалізоване чергування');
+  assert.equal(data.rows.find(row => row.date === otherDate).presence, 'Інша робота');
+  assert.equal(data.journal.find(visit => visit.domain === 'olx.ua').flags.marketplace, true);
+  assert.equal(data.journal.find(visit => visit.domain === 'xvideos.com').flags.nsfw, true);
+  assert.equal((await f.call('activity:day', { date: dutyDate, groupKey: id })).journal.length, 1);
+  // Previous-period analytics must also handle exemptions outside the visible range.
+  assert.ok((await f.call('activity:report', { startDate: '2026-10-01', endDate: '2026-10-01', includeAnalytics: true })).analysis);
+  for (const format of ['csv', 'xlsx']) {
+    const filePath = path.join(f.directory, 'monitoring.' + format);
+    f.dialog.saveResult = { canceled: false, filePath };
+    assert.equal((await f.call('activity:export', { filter, format })).filePath, filePath);
+    assert.ok(fs.statSync(filePath).size > 100);
+    if (format === 'csv') {
+      const text = fs.readFileSync(filePath, 'utf8');
+      assert.match(text, /Денне реалізоване чергування/);
+      assert.match(text, /Інша робота/);
+      assert.doesNotMatch(text, /undefined/);
+    }
+  }
+  assert.equal(fs.readFileSync(f.database, 'utf8'), before);
 });
 
 test('coin IPC saves its result before return and later undo preserves the toss', async t => {

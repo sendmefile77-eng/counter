@@ -162,6 +162,41 @@ test('absence and weekends have no eight-hour deficit and never rewrite presence
   assert.equal(Object.keys(state.records).length, count);
 });
 
+for (const explicitPresence of [false, true]) {
+  test(`day duty with browser history reports its exemption (${explicitPresence ? 'onsite mark' : 'no presence mark'})`, () => {
+    const { state, person } = setup();
+    importRows(state, person, csv([{ time: '09:00:00', duration: '00:15:00' }]));
+    state.duties.assignments[DATE] = { date: DATE, employeeIds: [person.id], realizedEmployeeIds: [] };
+    domain.setDutyRealized(state, DATE, person.id, true, new Date('2026-09-05T12:00:00Z'), 'day');
+    if (explicitPresence) state.presenceRecords[person.id + '|' + DATE] = { employeeId: person.id, date: DATE, status: 'onsite' };
+    const before = structuredClone(state);
+    const data = activity.report(state, { startDate: DATE, endDate: DATE, includeAnalytics: true }, new Date('2026-09-05T12:00:00Z'));
+    const row = data.rows[0];
+    assert.equal(row.expectedMs, 0);
+    assert.equal(row.activeMs, 15 * 60000);
+    assert.equal(row.presence, 'Денне реалізоване чергування');
+    assert.deepEqual(row.anomalies, [{ code: 'presence', label: 'Наявність: Денне реалізоване чергування', durationMs: null }]);
+    assert.equal(data.analysis.people[0].summary.sampleDays, 0);
+    assert.deepEqual(state, before);
+  });
+}
+
+test('legacy other work without a presence mark retains history and remains excluded after reload', () => {
+  const { state, person } = setup();
+  importRows(state, person, csv([{ time: '09:00:00', duration: '00:15:00' }]));
+  domain.setManualStatus(state, { employeeId: person.id, date: DATE, status: 'other_tasks', note: 'Інше доручення' }, new Date('2026-09-05T12:00:00Z'));
+  const restored = domain.normalizeState(JSON.parse(JSON.stringify(state)));
+  const before = structuredClone(restored);
+  const row = report(restored).rows[0];
+  assert.equal(row.expectedMs, 0);
+  assert.equal(row.activeMs, 15 * 60000);
+  assert.equal(row.presence, 'Інша робота');
+  assert.deepEqual(row.anomalies, [{ code: 'presence', label: 'Наявність: Інша робота', durationMs: null }]);
+  assert.equal(activity.dailyDetail(restored, { date: DATE, groupKey: person.id }).journal.length, 1);
+  assert.match(activity.reportCsv(report(restored)), /Інша робота/);
+  assert.deepEqual(restored, before);
+});
+
 test('a current unfinished day has no early-finish allegation or final eight-hour deficit', () => {
   const { state, person } = setup();
   importRows(state, person, csv([{ time: '09:00:00', duration: '00:15:00' }]));

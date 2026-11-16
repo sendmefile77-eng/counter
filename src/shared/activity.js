@@ -464,9 +464,14 @@ function dayReport(state, group, date, visits, rules, now = new Date(), dutyInde
   const mark = person ? presence.get(state, person.id, date) : null;
   const duty = person ? dutyIndex.get(person.id + '|' + date) : null;
   const calendarWorkday = person ? work.isWorkday(state, person.id, date) || Boolean(duty) : state.settings.workdays.includes(new Date(midnight).getUTCDay());
-  const exempt = mark && (presence.absent.has(mark.status) || presence.learning.has(mark.status) || ['arkan', 'special_assignment', 'weekend'].includes(mark.status) && mark.source !== 'calendar_presence')
-    || duty?.day || person && state.records[person.id + '|' + date]?.status === 'other_tasks' && !mark;
-  const expectedMs = calendarWorkday && !exempt ? intervalLength(windows) : 0;
+  // An exemption can come from duties or legacy work records without a
+  // presence mark. Keep its reason instead of assuming that mark exists.
+  const exemptStatus = mark && (presence.absent.has(mark.status) || presence.learning.has(mark.status) || ['arkan', 'special_assignment', 'weekend'].includes(mark.status) && mark.source !== 'calendar_presence')
+    ? mark.status : duty?.day ? 'day_duty'
+      : person && state.records[person.id + '|' + date]?.status === 'other_tasks' && !mark ? 'other_tasks' : null;
+  const presenceLabel = exemptStatus ? productivity.labels[exemptStatus]
+    : mark ? presence.labels[mark.status] : calendarWorkday ? 'Робочий день' : 'Вихідний';
+  const expectedMs = calendarWorkday && !exemptStatus ? intervalLength(windows) : 0;
   const ordered = visits.slice().sort((a, b) => a.timestamp - b.timestamp);
   // Bound each history duration. Open background tabs must not cover hours of
   // unobserved work; this is a configurable estimate, never actual attendance.
@@ -503,11 +508,11 @@ function dayReport(state, group, date, visits, rules, now = new Date(), dutyInde
   }
   if (ordered.some(visit => visit.timestamp < start || visit.timestamp >= end)) anomalies.push({ code: 'outside', label: 'Записи поза графіком', durationMs: outsideMs });
   if (!calendarWorkday && ordered.length) anomalies.push({ code: 'weekend', label: 'Активність у вихідний', durationMs: activeMs });
-  if (exempt && ordered.length) anomalies.push({ code: 'presence', label: `Наявність: ${presence.labels[mark.status]}`, durationMs: null });
+  if (exemptStatus && ordered.length) anomalies.push({ code: 'presence', label: `Наявність: ${presenceLabel}`, durationMs: null });
   const missingCount = ordered.filter(visit => visit.durationMs === null).length;
   const cappedCount = ordered.filter(visit => visit.durationMs > rules.maxVisitMinutes * MINUTE).length;
   return { key: group.key + '|' + date, groupKey: group.key, employeeId: group.employeeId, name: group.name, date,
-    presence: mark ? presence.labels[mark.status] : calendarWorkday ? 'Робочий день' : 'Вихідний',
+    presence: presenceLabel,
     expectedMs, activeMs, deficitMs: activeMs === null || inProgress || future ? null : Math.max(0, expectedMs - activeMs),
     first: first === null ? null : clockOf(first), last: last === null ? null : clockOf(last),
     firstWork: firstWork === null ? null : clockOf(firstWork), lastWork: lastWork === null ? null : clockOf(lastWork),
