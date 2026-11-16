@@ -15,7 +15,7 @@ test('DOCX and XLSX preserve table columns and source locations in a background 
   zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
   zip.file('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
   const cell = text => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
-  zip.file('word/document.xml', `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr>${cell('ПІБ')}${cell('Дата народження')}</w:tr><w:tr>${cell('Коваленко Юлія Олександрівна')}${cell('12.03.1985')}</w:tr></w:tbl></w:body></w:document>`);
+  zip.file('word/document.xml', `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr>${cell('ПІБ')}${cell('Дата народження')}</w:tr><w:tr>${cell('Коваленко Юлія Олександрівна')}${cell('12.03.1985')}</w:tr><w:tr>${cell('')}${cell('05.07.1990')}</w:tr><w:tr>${cell('Відділ &lt;А&gt; &amp;lt;')}${cell('')}</w:tr></w:tbl></w:body></w:document>`);
   const docx = await zip.generateAsync({ type: 'nodebuffer' });
   const book = new (require('exceljs').Workbook)(), sheet = book.addWorksheet('Люди');
   sheet.addRow(['ПІБ', 'Дата народження']); sheet.addRow(['Коваленко Юлія Олександрівна', new Date('1985-03-12T00:00:00Z')]);
@@ -23,6 +23,8 @@ test('DOCX and XLSX preserve table columns and source locations in a background 
   assert.deepEqual(result.errors, []); assert.equal(result.blocks.length, 2);
   assert.match(result.blocks[0].text, /ПІБ\tДата народження/);
   assert.match(result.blocks[0].text, /Коваленко Юлія Олександрівна\t12.03.1985/);
+  assert.ok(result.blocks[0].text.split('\n').includes('\t05.07.1990'));
+  assert.ok(result.blocks[0].text.split('\n').includes('Відділ <А> &lt;\t'));
   assert.match(result.blocks[1].text, /Коваленко Юлія Олександрівна\t1985-03-12/);
   assert.match(result.blocks[1].name, /Люди.xlsx · Люди/);
 });
@@ -50,4 +52,20 @@ test('offline OCR reads an image and scanned PDF using bundled Ukrainian languag
 });
 test('Word text preserves literal characters and table separators', () => {
   assert.equal(wordText('<p>А &amp; Б</p><table><tr><td><p>Юлія</p></td><td><p>12.03</p></td></tr></table>'), 'А & Б\nЮлія\t12.03');
+});
+test('Word table text decodes entities once without removing literal angle brackets', () => {
+  const html = '<p>А &lt;Б&gt; &amp;lt;</p><table><tr><td><p>Відділ &lt;А&gt; &amp;lt; &#38;lt;</p></td><td><p>Іваненко</p><p>Іван Іванович</p></td></tr></table>';
+  assert.equal(wordText(html), 'А <Б> &lt;\nВідділ <А> &lt; &lt;\tІваненко Іван Іванович');
+});
+test('Word tables preserve leading, middle and trailing empty columns for row parsing', () => {
+  const html = '<table><tr><td>ПІБ</td><td>Дата народження</td><td>Посада</td></tr><tr><td></td><td>12.03.1985</td><td>Аналітик</td></tr><tr><td>Іваненко</td><td></td><td></td></tr></table>';
+  const text = wordText(html);
+  assert.equal(text, 'ПІБ\tДата народження\tПосада\n\t12.03.1985\tАналітик\nІваненко\t\t');
+  const d = require('../src/shared/domain'), imp = require('../src/shared/document-import');
+  const rows = imp.parseBlocks(d.defaultState(), [{ name: 'Люди.docx', text }], 'Відділ');
+  assert.equal(rows[0].fullName, '');
+  assert.equal(rows[0].birthDate, '12.03.1985');
+  assert.equal(rows[0].position, 'Аналітик');
+  assert.equal(rows[1].fullName, 'Іваненко');
+  assert.equal(rows[1].birthDate, '');
 });
