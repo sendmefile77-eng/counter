@@ -54,6 +54,7 @@ const {
   updateTimeOffEntry,
 } = require('../shared/domain');
 const { DataStore } = require('./store');
+const { chooseLegacyData } = require('./startup-data');
 const work = require('../shared/work');
 const tasks = require('../shared/tasks');
 const draws = require('../shared/draws');
@@ -95,6 +96,7 @@ const undoStack = [];
 const widgetWindow = require('./widget-window');
 let tray = null, quitting = false, shortcutRegistered = false, widgetConfigKey = '';
 let windowTransition=Promise.resolve(),shortcutEnabled=null;
+let startupNotificationsReady = false;
 const widgetShortcut = 'CommandOrControl+Shift+L';
 
 function clampWidgetSize(value) {
@@ -202,7 +204,9 @@ function setWindowBoundsAndWait(bounds) {
 function saveWidgetBounds() {
   if (!mainWindow || windowMode !== 'widget') return;
   const bounds = mainWindow.getBounds();
-  store.state.settings.widgetSize = clampWidgetSize(bounds.width);
+  const size = clampWidgetSize(bounds.width), settings = store.state.settings;
+  if (settings.widgetSize === size && settings.widgetPosition?.x === bounds.x && settings.widgetPosition?.y === bounds.y) return;
+  store.state.settings.widgetSize = size;
   store.state.settings.widgetPosition = { x: bounds.x, y: bounds.y };
   store.save();
   widgetConfigKey='';
@@ -237,7 +241,8 @@ function createMainWindow() {
     applyWidgetShape(mainWindow.getBounds().width);
     mainWindow.show();
     if (activationRequested) { mainWindow.focus(); activationRequested = false; }
-    reminders?.check();
+    // The Windows shell shortcut and reminder writes are not on the first-paint path.
+    setTimeout(initializeStartupNotifications, 0);
   });
   mainWindow.on('moved', () => {
     if (windowMode !== 'widget') return;
@@ -884,16 +889,26 @@ function registerIpc() {
 
 function revealMainWindow() {
   activationRequested = true;
-  if (!store) return;
+  if (!store?.state) return;
   if (!mainWindow || mainWindow.isDestroyed()) { createMainWindow(); return; }
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show(); mainWindow.focus();
 }
 app.on('second-instance', revealMainWindow);
 
+function initializeStartupNotifications() {
+  if (startupNotificationsReady || quitting || !store?.state) return;
+  startupNotificationsReady = true;
+  const setup = store.state.settings.taskRemindersEnabled ? setupWindowsNotifications({ app, shell }) : { supported: true };
+  if (!setup.supported) reminders.disable(setup.error);
+  reminders.check();
+  broadcast();
+}
+
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   store = new DataStore(applicationDataDirectory(), runtimeOptions.selfTestDirectory ? null : app.getPath('userData'));
+  if (!await chooseLegacyData(store, options => dialog.showMessageBox(options))) { app.quit(); return; }
   try { store.load(); }
   catch(error) {
     const answer=await dialog.showMessageBox({type:'error',title:'ЛАД · відновлення бази',message:'Не вдалося відкрити робочу базу',detail:error.message,buttons:['Вибрати резервну копію','Закрити'],defaultId:1,cancelId:1,noLink:true});
@@ -903,9 +918,8 @@ app.whenReady().then(async () => {
     store.replace(store.readBackup(selected.filePaths[0]));
     store.recovery={source:'selected',restoredAt:new Date().toISOString(),message:'Відновлено вибрану копію. Перевірте її дату та останні зміни.'};
   }
-  /* Result accounting never creates missing-submission marks. */
-  store.save();
-  const notificationSetup = store.state.settings.taskRemindersEnabled ? setupWindowsNotifications({ app, shell }) : { supported: true };
+  // load() persists a new or recovered database itself. Opening a healthy
+  // database must not rewrite the history and rotate all its backups.
   reminders = createReminderService({ Notification, store, broadcast,
     openTask: id => {
       if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
@@ -916,7 +930,6 @@ app.whenReady().then(async () => {
     act: (id, action) => mutate(`tasks:${action}`, state => action === 'done'
       ? tasks.setTaskStatus(state, id, { status: 'done' }) : tasks.snoozeTask(state, id, 60)),
   });
-  if (!notificationSetup.supported) reminders.disable(notificationSetup.error);
   registerIpc();
   createMainWindow();
   createTray();

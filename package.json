@@ -1,6 +1,6 @@
 {
   "name": "counter-widget",
-  "version": "0.29.0",
+  "version": "0.29.1",
   "description": "ЛАД — Люди. Аналітика. Документи. Облік роботи співробітників, чергувань і завдань",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",
@@ -9,7 +9,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "dist:win": "electron-builder --win portable"
+    "dist:win": "electron-builder --win portable",
+    "dist:win:fast": "electron-builder --win zip"
   },
   "devDependencies": {
     "electron": "43.4.1",
@@ -37,6 +38,12 @@
       "src/main/document-worker.js",
       "src/main/document-reader.js",
       "node_modules/**/*"
+    ],
+    "extraFiles": [
+      {
+        "from": "build/START-HERE-UA.txt",
+        "to": "ПОЧАТИ ТУТ.txt"
+      }
     ]
   },
   "dependencies": {

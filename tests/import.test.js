@@ -11,7 +11,7 @@ const tasks = require('../src/shared/tasks');
 const coins = require('../src/shared/coins');
 const activity = require('../src/shared/activity');
 
-async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true, trayAvailable = true } = {}) {
+async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true, trayAvailable = true, seedState = null, prepare = true, trackNotificationSetup = false } = {}) {
   // These scenarios use 6–7 October as future duties and task deadlines.
   // Freeze Date in both the host modules and the VM so CI does not turn
   // them into protected historical duties as the real calendar advances.
@@ -20,6 +20,7 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lad-import-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const handlers = new Map(), calls = [],trays=[],shortcuts=new Map();
+  if (seedState) { fs.mkdirSync(path.join(directory,'Counter-data')); fs.writeFileSync(path.join(directory,'Counter-data','counter-data.json'),JSON.stringify(seedState)); }
   const app = new EventEmitter();
   Object.assign(app, { whenReady: () => Promise.resolve(), getPath: () => directory,
     getAppPath: () => directory, getVersion: () => '0.17.0', isPackaged: false, quit() {calls.push({type:'quit'});} });
@@ -43,7 +44,7 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   const electron = { app, BrowserWindow:Window, dialog, ipcMain:{ handle:(name,fn) => handlers.set(name,fn) },
     Menu:{ setApplicationMenu() {},buildFromTemplate:value=>value }, screen:{getAllDisplays:()=>[{workArea:{x:0,y:0,width:1920,height:1080}}],getDisplayMatching:()=>({workArea:{x:0,y:0,width:1920,height:1080}})},
     Tray:class extends EventEmitter{constructor(){super();if(!trayAvailable)throw Error('No tray');trays.push(this);}setToolTip(){} setContextMenu(menu){this.menu=menu;} destroy(){this.destroyed=true;}},nativeImage:{createFromBuffer:value=>value},globalShortcut:{unregister:key=>shortcuts.delete(key),unregisterAll:()=>shortcuts.clear(),register:(key,callback)=>{if(shortcutAvailable)shortcuts.set(key,callback);return shortcutAvailable;}}, Notification:{ isSupported:() => false }, shell:{} };
-  const context = vm.createContext({ require:name => name === 'electron' ? electron : localRequire(name),
+  const context = vm.createContext({ require:name => name === 'electron' ? electron : name === './task-reminders' && trackNotificationSetup ? {...localRequire(name),setupWindowsNotifications(){calls.push({type:'notification-setup'});return {supported:true};}} : localRequire(name),
     __dirname:path.dirname(mainPath), process:{ ...process, platform:'win32', env:{ ...process.env,
       PORTABLE_EXECUTABLE_DIR:directory, PORTABLE_EXECUTABLE_FILE:'' } },
     module:{exports:{}}, console, Buffer, Date, setTimeout, clearTimeout, setInterval:() => 1, clearInterval() {} });
@@ -51,6 +52,7 @@ async function fixture(t, { secondBeforeReady = false, shortcutAvailable = true,
   if (secondBeforeReady) app.emit('second-instance');
   await new Promise(resolve => setImmediate(resolve));
   const call = (name, input) => handlers.get(name)({}, input);
+  if (!prepare) return {call,dialog,calls,directory,database:path.join(directory,'Counter-data','counter-data.json'),app,windows:Window.instances,trays,shortcuts};
   await call('settings:update', { automaticClose:false });
   await call('employee:add', { name:'Поточна команда' });
   const filePath = path.join(directory,'copy.json'), database = path.join(directory,'Counter-data','counter-data.json');
@@ -614,4 +616,36 @@ test('widget object quantity and closed dates survive import and backup restore;
  const bad=domain.clone(f.incoming);bad.workIntakes[0].objectCount=100;
  await assert.rejects(f.call('data:import',{name:'bad-intake.json',content:JSON.stringify(bad)}),/об’єктів/);
  assert.equal(fs.readFileSync(f.database,'utf8'),saved);
+});
+
+
+test('opening and closing an unchanged healthy database do not rewrite history or rotate backups',async t=>{
+  const seed=domain.defaultState(new Date(2026,9,5,12));seed.settings.widgetPosition={x:100,y:90};
+  domain.createEmployee(seed,'Справжня робоча база',new Date(2026,8,1,9));
+  const expected=JSON.stringify(seed),f=await fixture(t,{seedState:seed,prepare:false});
+  assert.equal(fs.readFileSync(f.database,'utf8'),expected);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.database),'counter-data.backup.json')),false);
+  const window=f.windows[0];window.emit('ready-to-show');
+  f.app.emit('before-quit');
+  assert.equal(fs.readFileSync(f.database,'utf8'),expected);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.database),'backups')),false);
+});
+
+test('a changed widget position is still persisted on exit',async t=>{
+  const seed=domain.defaultState(new Date(2026,9,5,12));seed.settings.widgetPosition={x:100,y:90};
+  const f=await fixture(t,{seedState:seed,prepare:false}),window=f.windows[0];
+  window.setBounds({...window.getBounds(),x:180,y:220});f.app.emit('before-quit');
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.database,'utf8')).settings.widgetPosition,{x:180,y:220});
+  assert.equal(fs.existsSync(path.join(path.dirname(f.database),'counter-data.backup.json')),true);
+});
+
+test('Windows notification registration happens after the first window is shown',async t=>{
+  const f=await fixture(t,{prepare:false,trackNotificationSetup:true});
+  assert.equal(f.calls.filter(call=>call.type==='notification-setup').length,0);
+  const window=f.windows[0];window.emit('ready-to-show');
+  assert.ok(window.visible);
+  assert.equal(f.calls.filter(call=>call.type==='notification-setup').length,0);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(f.calls.filter(call=>call.type==='notification-setup').length,1);
+  f.app.emit('before-quit');
 });

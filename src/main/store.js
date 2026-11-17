@@ -14,14 +14,19 @@ class DataStore {
     this.recovery = null;
   }
 
-  migrateLegacyData() {
-    if (!this.legacyDirectory) return false;
-    if (path.resolve(this.legacyDirectory) === path.resolve(this.directory)) return false;
-    if (fs.existsSync(this.filePath)) return false;
+  legacySource() {
+    if (!this.legacyDirectory) return null;
+    if (path.resolve(this.legacyDirectory) === path.resolve(this.directory)) return null;
+    if (fs.existsSync(this.filePath)) return null;
     if (this.backupCandidates().length || (fs.existsSync(this.directory)
-      && fs.readdirSync(this.directory).some(name => name.startsWith('counter-data.corrupt-')))) return false;
+      && fs.readdirSync(this.directory).some(name => name.startsWith('counter-data.corrupt-')))) return null;
     const legacyFilePath = path.join(this.legacyDirectory, 'counter-data.json');
-    if (!fs.existsSync(legacyFilePath)) return false;
+    return fs.existsSync(legacyFilePath) ? legacyFilePath : null;
+  }
+
+  migrateLegacyData() {
+    const legacyFilePath = this.legacySource();
+    if (!legacyFilePath) return false;
 
     fs.mkdirSync(this.directory, { recursive: true });
     fs.copyFileSync(legacyFilePath, this.filePath);
