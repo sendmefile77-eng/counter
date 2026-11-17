@@ -1,6 +1,6 @@
 {
   "name": "counter-widget",
-  "version": "0.29.2",
+  "version": "0.29.3",
   "description": "ЛАД — Люди. Аналітика. Документи. Облік роботи співробітників, чергувань і завдань",
   "main": "src/main/bootstrap.js",
   "author": "sendmefile77-eng",
@@ -32,7 +32,19 @@
       "target": [
         "portable"
       ],
-      "artifactName": "Counter.${ext}"
+      "artifactName": "Counter.${ext}",
+      "files": [
+        "!node_modules/@napi-rs/canvas-linux-*/**/*",
+        "!node_modules/@napi-rs/canvas-darwin-*/**/*",
+        "!node_modules/@napi-rs/canvas-android-*/**/*",
+        "!node_modules/@napi-rs/canvas-freebsd-*/**/*",
+        "!node_modules/**/*.map"
+      ],
+      "electronLanguages": [
+        "uk",
+        "ru",
+        "en-US"
+      ]
     },
     "asarUnpack": [
       "src/main/document-worker.js",
@@ -44,7 +56,8 @@
         "from": "build/START-HERE-UA.txt",
         "to": "ПОЧАТИ ТУТ.txt"
       }
-    ]
+    ],
+    "afterPack": "./build/verify-win-package.cjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.0.11",
