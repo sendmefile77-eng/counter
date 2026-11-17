@@ -13,10 +13,10 @@ async function until(check, message = 'renderer update') {
   for (let i = 0; i < 100; i++) { if (check()) return; await tick(); }
   throw new Error('Timed out: ' + message);
 }
-async function setup(t, overrides = {}) {
-  const state = d.defaultState(now);
+async function setup(t, overrides = {}, fixture = null) {
+  const state = fixture?.state || d.defaultState(now);
   state.settings.onboardingSeen = true;
-  const people = ['Олена', 'Віктор'].map(name => d.createEmployee(state, name, new Date('2026-10-01T09:00:00Z')));
+  const people = fixture?.people || ['Олена', 'Віктор'].map(name => d.createEmployee(state, name, new Date('2026-10-01T09:00:00Z')));
   const errors = [], calls = [];
   const dom = new JSDOM(fs.readFileSync(path.join(renderer, 'index.html'), 'utf8'), {
     url: 'http://lad.test/', runScripts: 'outside-only', pretendToBeVisual: true,

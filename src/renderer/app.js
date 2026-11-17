@@ -1237,7 +1237,7 @@ function openModal(content, wide = false) {
   interfaceDialogRevision += 1;
   ui.profileRevision += 1;
   ui.analyticsDetailRevision += 1;
-  toastRoot.querySelectorAll('.toast:not(.error)').forEach((toast) => toast.remove());
+  toastRoot.querySelectorAll('.toast:not(.error)').forEach((toast) => { if (!toast.querySelector('[data-toast-undo]')) toast.remove(); });
   if (!modalRoot.childElementCount) modalReturnFocus = document.activeElement;
   modalRoot.innerHTML = `<div class="modal-backdrop" data-modal-close><section class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true" tabindex="-1">${content}</section></div>`;
   const dialog = modalRoot.querySelector('[role="dialog"]');
@@ -1261,6 +1261,7 @@ function closeModal(owner = null) {
   interfaceDialogRevision += 1;
   ui.analyticsDetailRevision += 1;
   ui.profileRevision += 1;
+  LadExperience.clearTip();
   modalRoot.innerHTML = '';
   appRoot.removeAttribute('inert');
   const identity = [...(modalReturnFocus?.attributes || [])].filter((attribute) => attribute.name.startsWith('data-'));
@@ -1808,9 +1809,10 @@ function showToast(message, { error = false, undo = false } = {}) {
   toast.setAttribute('role',error ? 'alert' : 'status');
   toast.innerHTML = `<span>${h(message)}</span>${undo ? '<button data-toast-undo>Скасувати</button>' : ''}<button class="toast-dismiss" data-toast-dismiss aria-label="Закрити повідомлення">×</button>`;
   toastRoot.appendChild(toast);
-  let remaining = error ? 10000 : 5000, started = Date.now(), timer;
+  const persistent = error || undo;
+  let remaining = 5000, started = Date.now(), timer;
   const pause = () => { if (timer) { clearTimeout(timer); timer = null; remaining = Math.max(0,remaining - (Date.now() - started)); } };
-  const resume = () => { if (timer || toast.matches(':hover') || toast.contains(document.activeElement)) return; started = Date.now(); timer = setTimeout(() => toast.remove(),remaining); };
+  const resume = () => { if (persistent || timer || toast.matches(':hover') || toast.contains(document.activeElement)) return; started = Date.now(); timer = setTimeout(() => toast.remove(),remaining); };
   toast.addEventListener('mouseenter',pause); toast.addEventListener('mouseleave',resume);
   toast.addEventListener('focusin',pause); toast.addEventListener('focusout',() => queueMicrotask(resume));
   toast.ladPause = pause; toast.ladResume = resume;
