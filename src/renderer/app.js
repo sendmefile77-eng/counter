@@ -357,6 +357,7 @@ function renderShell({ preserveDrafts = false } = {}) {
   if(ui.mode==='widget'&&snapshot.settings.widgetMode==='team'&&appRoot.dataset.widgetLayoutKey===widgetLayoutKey()) {
     updateWidgetObjectCounts();return;
   }
+  LadExperience.beforeRender();
   closePresenceContext();
   const pageDrafts = preserveDrafts ? rememberPageDrafts() : [];
   rememberScrollPositions();
@@ -403,6 +404,7 @@ function renderShell({ preserveDrafts = false } = {}) {
   restoreScrollPositions();
   appRoot.dataset.widgetLayoutKey=ui.mode==='widget'?widgetLayoutKey():'';
   if (typeof LadMotion !== 'undefined') LadMotion.enterPage(ui.mode, ui.tab);
+  LadExperience.afterRender();
 }
 
 function polar(cx, cy, radius, angleDegrees) {
@@ -503,8 +505,8 @@ async function navigateToTab(tab) {
 function renderDashboard() {
   const navButton = ([id, label], index) => `<button class="nav-button ${ui.tab === id ? 'active' : ''}" data-tab="${id}" ${id === 'consequences' && snapshot.consequences?.total ? `data-notification-count="${snapshot.consequences.total > 99 ? '99+' : snapshot.consequences.total}"` : ''} title="${label}${index < 10 ? ` (Ctrl+${index === 9 ? 0 : index + 1})` : ''}" aria-label="${label}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="nav-icon">${NAV_ICONS[id]}</span><span class="nav-label">${label}${id === 'consequences' && snapshot.consequences?.total ? `<span class="count-pill">${snapshot.consequences.total}</span>` : ''}</span></button>`;
   return `
-    <div class="dashboard-layout">
-      <aside class="sidebar" aria-label="Робочий простір ЛАД">
+    <div class="dashboard-layout" data-sidebar-collapsed="${LadExperience.collapsed}">
+      <aside class="sidebar" aria-label="Робочий простір ЛАД"><button type="button" class="sidebar-toggle" data-sidebar-toggle aria-expanded="${!LadExperience.collapsed}" aria-label="${LadExperience.collapsed ? 'Розгорнути меню' : 'Згорнути меню'}">${LadExperience.collapsed ? '»' : '«'}</button>
         <div class="sidebar-identity"><img src="lad-mark.svg" alt=""><div><strong>ЛАД</strong><small>Порядок у щоденній роботі</small></div></div>
         <nav aria-label="Основні розділи"><div class="sidebar-caption">Щоденна робота</div>${['today','presence','journal','duties','timeoff'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Керування командою</div>${['planner','consequences','weekly','analytics','activity','employees'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}<div class="sidebar-caption">Інструменти вибору</div>${['draws','coins'].map(id => navButton(NAV_ITEMS.find(item => item[0] === id),NAV_ITEMS.findIndex(item => item[0] === id))).join('')}</nav>
         <div class="sidebar-spacer"></div>
@@ -1065,9 +1067,9 @@ function renderEmployeesPage() {
     </form>
     <section class="panel">
       <h2>Активні</h2>
-      <div class="employee-list">
-        ${active.map((employee, index) => `<div class="employee-row"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small class="employee-full-name">${h(employee.profile?.fullName || employee.profile?.position || '')}</small><small>У віджеті з ${h(formatDate(employee.createdDate))}${employee.profile?.birthDate ? ` · День народження ${h(birthLabel(employee.profile.birthDate))}` : ''}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Перемістити вище у списку та віджеті" aria-label="Перемістити ${h(employee.name)} вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Перемістити нижче у списку та віджеті" aria-label="Перемістити ${h(employee.name)} нижче">↓</button><button class="button small" data-employee-data="${h(employee.id)}">Особові дані</button><button class="button small" data-rename-employee="${h(employee.id)}">Змінити ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">До архіву</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
-      </div>
+      <div class="employee-workspace ${LadExperience.paneId ? 'has-profile' : ''}"><div class="employee-list">
+        ${active.map((employee, index) => `<div class="employee-row" data-pane-row="${h(employee.id)}"><div><strong><button class="employee-profile-link" data-employee-profile="${h(employee.id)}">${h(employee.name)}</button></strong><small class="employee-full-name">${h(employee.profile?.fullName || employee.profile?.position || '')}</small><small>У віджеті з ${h(formatDate(employee.createdDate))}${employee.profile?.birthDate ? ` · День народження ${h(birthLabel(employee.profile.birthDate))}` : ''}</small></div><div class="button-row"><button class="button small" data-move-employee="${h(employee.id)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="Перемістити вище у списку та віджеті" aria-label="Перемістити ${h(employee.name)} вище">↑</button><button class="button small" data-move-employee="${h(employee.id)}" data-direction="1" ${index === active.length - 1 ? 'disabled' : ''} title="Перемістити нижче у списку та віджеті" aria-label="Перемістити ${h(employee.name)} нижче">↓</button><button class="button small" data-employee-data="${h(employee.id)}">Особові дані</button><button class="button small" data-rename-employee="${h(employee.id)}">Змінити ім’я</button><button class="button small" data-staff-change="${h(employee.id)}">Доступність</button><button class="button small danger" data-archive-employee="${h(employee.id)}">До архіву</button></div></div>`).join('') || '<p class="muted">Активних працівників немає.</p>'}
+      </div>${LadExperience.paneHtml()}</div>
     </section>
     ${archived.length && snapshot.settings.showArchivedEmployees ? `
       <section class="panel">
@@ -1245,6 +1247,7 @@ function openModal(content, wide = false) {
   appRoot.setAttribute('inert', '');
   dialog.focus();
   if (typeof LadMotion !== 'undefined') LadMotion.enterDialog(dialog);
+  LadExperience.afterRender(modalRoot);
   if (ui.mode === 'widget' && !widgetDialogExpanded) {
     widgetDialogExpanded = true;
     queueWidgetWindowMode('dialog');
@@ -1282,12 +1285,18 @@ function quickSearchItems(query = '') {
 }
 
 function renderQuickSearchResults(query = '') {
-  return quickSearchItems(query).map((item) => `<button class="quick-result" data-quick-type="${item.type}" data-quick-id="${h(item.id)}"><span class="nav-icon">${item.icon}</span><span><strong>${h(item.label)}</strong><small>${h(item.description)}</small></span><span aria-hidden="true">→</span></button>`).join('') || '<p class="empty-state">Нічого не знайдено. Спробуйте іншу назву або ім’я.</p>';
+  const items = quickSearchItems(query);
+  const groups = [['tab','Розділи'],['employee','Працівники'],['task','Завдання']];
+  return groups.map(([type,label]) => {
+    const rows = items.filter(item=>item.type===type);
+    return rows.length ? `<div class="quick-result-group"><h3>${label}</h3>${rows.map(item=>`<button class="quick-result" data-quick-type="${item.type}" data-quick-id="${h(item.id)}"><span class="nav-icon">${item.icon}</span><span><strong>${h(item.label)}</strong><small>${h(item.description)}</small></span><span aria-hidden="true">↵</span></button>`).join('')}</div>` : '';
+  }).join('') || '<p class="empty-state">Нічого не знайдено. Спробуйте іншу назву або ім’я.</p>';
 }
 
 function openQuickSearch() {
-  openModal(`<header class="modal-head"><div><h2>Знайти або перейти</h2><p>Розділ програми, працівник або завдання. Стрілки — вибір, Enter — відкрити.</p></div><button class="icon-button" data-close-modal>×</button></header><div class="quick-search-body"><label class="quick-search-input"><span class="sr-only">Назва розділу або ім’я</span>${NAV_ICONS.search}<input type="search" data-quick-query placeholder="Наприклад, чергування або Іваненко" autocomplete="off"></label><div class="quick-results" data-quick-results>${renderQuickSearchResults()}</div></div><footer class="modal-foot"><small>Esc — закрити</small></footer>`);
+  openModal(`<header class="modal-head"><div><h2>Знайти або перейти</h2><p>Розділ програми, працівник або завдання. Стрілки — вибір, Enter — відкрити.</p></div><button class="icon-button" data-close-modal>×</button></header><div class="quick-search-body"><label class="quick-search-input"><span class="sr-only">Назва розділу або ім’я</span>${NAV_ICONS.search}<input type="search" data-quick-query placeholder="Наприклад, чергування або Іваненко" autocomplete="off"></label><div class="quick-results" data-quick-results>${renderQuickSearchResults()}</div></div><footer class="modal-foot"><small>↑ ↓ — вибір · Enter — відкрити · Esc — закрити</small></footer>`);
   modalRoot.querySelector('.modal').classList.add('quick-search-modal');
+  LadExperience.palette(modalRoot.querySelector('.modal'));
   modalRoot.querySelector('[data-quick-query]').focus();
 }
 
@@ -1804,7 +1813,9 @@ function showToast(message, { error = false, undo = false } = {}) {
   const resume = () => { if (timer || toast.matches(':hover') || toast.contains(document.activeElement)) return; started = Date.now(); timer = setTimeout(() => toast.remove(),remaining); };
   toast.addEventListener('mouseenter',pause); toast.addEventListener('mouseleave',resume);
   toast.addEventListener('focusin',pause); toast.addEventListener('focusout',() => queueMicrotask(resume));
+  toast.ladPause = pause; toast.ladResume = resume;
   resume();
+  LadExperience.toastAdded(toast);
 }
 
 async function refresh({ analytics = ui.tab === 'analytics', duties = ui.tab === 'duties' } = {}) {
@@ -1886,6 +1897,7 @@ function handleAnalyticsClick(event) {
   if (preset) {
     const filter = analyticsFormFilter(); const today = localDateKey();
     const key = preset.dataset.analyticsPreset;
+    ui.analyticsPreset = key;
     filter.endDate = today;
     filter.startDate = key === 'today' ? today : key === 'week' ? dutyWeekStart(today) : key === '30days' ? shiftDate(today, -29) : key === 'year' ? `${today.slice(0, 4)}-01-01` : `${today.slice(0, 7)}-01`;
     if (key === 'last_month') { const month = monthShift(today.slice(0, 7), -1); filter.startDate = `${month}-01`; filter.endDate = `${month}-${String(daysInMonth(month)).padStart(2, '0')}`; }
@@ -2053,6 +2065,7 @@ appRoot.addEventListener('click', async (event) => {
     return;
   }
   if (await handleLearningClick(event)) return;
+  if (await LadExperience.click(event)) return;
   if (await handleResultsClick(event)) return;
   if (await handleStaffImportClick(event)) return;
   if (await handleActivityClick(event)) return;
@@ -2737,6 +2750,7 @@ modalRoot.addEventListener('input', (event) => {
 });
 
 modalRoot.addEventListener('click', async (event) => {
+  if (await LadExperience.click(event)) return;
   if (await handleResultsClick(event)) return;
   if (await handleStaffImportClick(event)) return;
   if (await handleActivityClick(event)) return;
@@ -3189,6 +3203,7 @@ toastRoot.addEventListener('click', async (event) => {
 
 window.counter.onChanged(async (nextSnapshot) => {
   snapshot = nextSnapshot;
+  await LadExperience.refreshPane();
   if (ui.tab === 'activity') await loadActivityReport({ render: false });
   if (ui.tab === 'weekly') await loadWeeklySummary(ui.weeklyAnchor);
   if (ui.tab === 'analytics') await loadAnalytics(analyticsCurrentFilter(), { render: false });

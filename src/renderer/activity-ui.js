@@ -143,7 +143,7 @@ async function activityQuickPeriod(period) {
     const earliest = new Date(Date.parse(end + 'T00:00:00Z') - 3659 * 86400000).toISOString().slice(0, 10);
     if (start < earliest) { start = earliest; showToast('Відкрито останні 10 років. Раніші записи збережено; виберіть їхній період вручну.'); }
   }
-  activityUi.startDate = start; activityUi.endDate = end; activityUi.page = 0;
+  activityUi.startDate = start; activityUi.endDate = end; activityUi.page = 0; activityUi.preset = period;
   activityUi.groupBy = ['day', 'week'].includes(period) ? 'day' : period === 'month' ? 'week' : 'month';
   await loadActivityReport();
 }
@@ -173,6 +173,7 @@ activityFileInput.addEventListener('change', () => {
 async function importActivityFiles(files) {
   if (activityUi.busy || !files.length) return;
   activityUi.busy = true;
+  LadExperience.stage('activity',0,'Читання вибраних файлів…');
   renderShell();
   try {
     if (files.length > 50 || files.some(file => !/\.(csv|zip)$/i.test(file.name) || !file.size || file.size > 32 * 1024 * 1024)
@@ -181,14 +182,16 @@ async function importActivityFiles(files) {
     }
     const payload = [];
     for (const file of files) payload.push({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    LadExperience.stage('activity',1,'Читання історії та перевірка повторів…');
     const preview = await window.counter.previewActivityImport(payload);
+    LadExperience.stage('activity',2,`${preview.newCount} нових записів. Перевірте прив’язку джерел і підтвердьте імпорт.`);
     openActivityImport(preview);
-  } catch (error) { showToast(error.message || String(error), { error: true }); }
+  } catch (error) { LadExperience.stage('activity',1,error.message||String(error),true); showToast(error.message || String(error), { error: true }); }
   finally { activityUi.busy = false; renderShell({ preserveDrafts: true }); }
 }
 function openActivityImport(preview) {
   const pending = preview.files.some(file => !file.duplicateFile);
-  openModal(`<form id="activity-import-form" data-token="${h(preview.token)}" data-start="${h(preview.startDate)}" data-end="${h(preview.endDate)}"><header class="modal-head"><div><span class="page-eyebrow">Перевірка імпорту</span><h2>${preview.files.length} файлів · ${preview.newCount} нових записів</h2><p>Спочатку перевірте джерела й призначте працівників.</p></div><button class="icon-button" type="button" data-close-modal aria-label="Закрити">×</button></header><div class="modal-body activity-import-body"><div class="activity-import-files">${preview.files.map(file => `<article class="activity-import-file"><strong>${h(file.name)}</strong><span class="activity-state ${file.duplicateFile ? 'activity-state-no-data' : 'activity-state-observed'}">${file.duplicateFile ? 'Повтор файлу · пропустимо' : `${file.newCount} нових · ${file.duplicateCount} повторів`}</span><small>${h(formatDate(file.startDate))}–${h(formatDate(file.endDate))} · ${h(file.encoding)} · ${file.validCount} придатних рядків</small>${activityDatabaseSummary(file)}${file.issues.length ? `<details><summary class="activity-warning">Проблемних рядків: ${file.issues.length}</summary><ul>${file.issues.map(issue => `<li>${activityIssueLabel(issue)}</li>`).join('')}</ul></details>` : ''}</article>`).join('')}</div>${preview.sources.length ? `<label class="field"><span>Призначити всі джерела одному працівнику</span><select data-activity-bulk>${activityEmployeeOptions()}</select></label><div class="activity-import-sources">${preview.sources.map(source => `<div class="activity-source"><div><strong>${h(source.label)}</strong><small>${h(source.browser)}${source.userProfile ? ' · ' + h(source.userProfile) : ''}</small></div><label class="field"><span>Працівник</span><select name="source:${h(source.id)}" data-activity-source>${activityEmployeeOptions(source.employeeId)}</select></label></div>`).join('')}</div>` : pending ? '<p>Відвідувань у придатних базах немає. Можна зберегти результат перевірки порожніх баз.</p>' : '<p>Усі вибрані файли вже враховано. Повторна загрузка не змінить показники.</p>'}<p class="activity-note">Час із ZIP переводиться за Києвом з урахуванням літнього часу. CSV зберігає надрукований час. Непризначені джерела залишаться окремо.</p>${preview.issueCount ? `<label class="activity-checkbox"><input name="acceptIssues" type="checkbox" required> Імпортувати справні рядки; ${preview.issueCount} проблемних рядків залишити в журналі перевірки.</label>` : ''}</div><footer class="modal-foot"><button class="button" type="button" data-close-modal>Закрити</button><button class="button primary" type="submit" ${pending ? '' : 'disabled'}>Імпортувати</button></footer></form>`, true);
+  openModal(`<form id="activity-import-form" data-token="${h(preview.token)}" data-start="${h(preview.startDate)}" data-end="${h(preview.endDate)}"><header class="modal-head"><div><span class="page-eyebrow">Перевірка імпорту</span><h2>${preview.files.length} файлів · ${preview.newCount} нових записів</h2><p>Спочатку перевірте джерела й призначте працівників.</p></div><button class="icon-button" type="button" data-close-modal aria-label="Закрити">×</button></header><div class="modal-body activity-import-body">${LadExperience.steps('activity')}<div class="activity-import-files">${preview.files.map(file => `<article class="activity-import-file"><strong>${h(file.name)}</strong><span class="activity-state ${file.duplicateFile ? 'activity-state-no-data' : 'activity-state-observed'}">${file.duplicateFile ? 'Повтор файлу · пропустимо' : `${file.newCount} нових · ${file.duplicateCount} повторів`}</span><small>${h(formatDate(file.startDate))}–${h(formatDate(file.endDate))} · ${h(file.encoding)} · ${file.validCount} придатних рядків</small>${activityDatabaseSummary(file)}${file.issues.length ? `<details><summary class="activity-warning">Проблемних рядків: ${file.issues.length}</summary><ul>${file.issues.map(issue => `<li>${activityIssueLabel(issue)}</li>`).join('')}</ul></details>` : ''}</article>`).join('')}</div>${preview.sources.length ? `<label class="field"><span>Призначити всі джерела одному працівнику</span><select data-activity-bulk>${activityEmployeeOptions()}</select></label><div class="activity-import-sources">${preview.sources.map(source => `<div class="activity-source"><div><strong>${h(source.label)}</strong><small>${h(source.browser)}${source.userProfile ? ' · ' + h(source.userProfile) : ''}</small></div><label class="field"><span>Працівник</span><select name="source:${h(source.id)}" data-activity-source>${activityEmployeeOptions(source.employeeId)}</select></label></div>`).join('')}</div>` : pending ? '<p>Відвідувань у придатних базах немає. Можна зберегти результат перевірки порожніх баз.</p>' : '<p>Усі вибрані файли вже враховано. Повторна загрузка не змінить показники.</p>'}<p class="activity-note">Час із ZIP переводиться за Києвом з урахуванням літнього часу. CSV зберігає надрукований час. Непризначені джерела залишаться окремо.</p>${preview.issueCount ? `<label class="activity-checkbox"><input name="acceptIssues" type="checkbox" required> Імпортувати справні рядки; ${preview.issueCount} проблемних рядків залишити в журналі перевірки.</label>` : ''}</div><footer class="modal-foot"><button class="button" type="button" data-close-modal>Закрити</button><button class="button primary" type="submit" ${pending ? '' : 'disabled'}>Імпортувати</button></footer></form>`, true);
 }
 document.addEventListener('change', async event => {
   if (event.target.matches('[data-activity-group-by]')) { activityUi.groupBy = event.target.value; activityUi.page = 0; await loadActivityReport(); }
@@ -279,8 +282,11 @@ async function handleActivitySubmit(event) {
   }
   if (form.id === 'activity-import-form') {
     const assignments = Object.fromEntries([...data].filter(([key]) => key.startsWith('source:')).map(([key, value]) => [key.slice(7), value || null]));
+    LadExperience.stage('activity',3,'Збереження перевіреної історії…');
     const result = await run(() => window.counter.importActivity({ token: form.dataset.token, assignments, acceptIssues: data.has('acceptIssues') }), null);
+    if(!result)LadExperience.stage('activity',3,'Історію не збережено. Перевірте повідомлення про помилку та повторіть.',true);
     if (result) {
+      LadExperience.stage('activity',4,`Збережено ${result.newCount} записів із ${result.importedFiles} файлів. Пропущено ${result.duplicateCount} повторів записів і ${result.skippedFiles} повторів файлів.`);
       activityUi.endDate = result.endDate;
       const earliest = new Date(Date.parse(result.endDate + 'T00:00:00Z') - 3659 * 86400000).toISOString().slice(0, 10);
       activityUi.startDate = result.startDate < earliest ? earliest : result.startDate;

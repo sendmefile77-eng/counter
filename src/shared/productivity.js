@@ -147,8 +147,9 @@
       rules, anomalies, groupBy, trend: [...buckets.values()].map(b => finish(b, rules)), employeeIds: people.map(p => p.id),
       legacyDayCount: total.legacyUnknownDays,
       intakes: (state.workIntakes || []).filter(i => people.some(p => p.id === i.employeeId) && i.receivedDate >= filter.startDate && i.receivedDate <= filter.endDate) };
-    if (filter.compare) {
-      const previous = report(state, { ...filter, startDate: work.addDays(filter.startDate, -dates.length), endDate: work.addDays(filter.startDate, -1), compare: false }, now);
+    const actualDays = dates.filter(date => date <= today).length;
+    if (filter.compare && actualDays) {
+      const previous = report(state, { ...filter, employeeIds: people.map(p=>p.id), startDate: work.addDays(filter.startDate, -actualDays), endDate: work.addDays(filter.startDate, -1), compare: false }, now);
       result.previous = { startDate: previous.startDate, endDate: previous.endDate, rows: previous.rows, total: previous.total };
     }
     return result;

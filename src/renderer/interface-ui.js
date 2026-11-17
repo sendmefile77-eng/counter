@@ -41,7 +41,7 @@ function applyInterfacePendingForms() {
       if (!entry.fields.has(field)) entry.fields.set(field,field.hasAttribute('inert'));
       field.setAttribute('inert','');
     }
-    for (const button of form.querySelectorAll('button[type="submit"]')) {
+    for (const button of form.querySelectorAll('button[type="submit"],button:not([type])')) {
       if (!entry.buttons.has(button)) entry.buttons.set(button,{disabled:button.disabled,label:button.getAttribute('aria-label')});
       button.disabled = true;
       button.dataset.formPending = '';
@@ -55,14 +55,14 @@ async function submitInterfaceForm(event, callback) {
   const form = event.target;
   const guarded = new Set(['employee-form','time-off-form','settings-form','submission-form','employee-rename-form',
     'work-form','work-progress-form','widget-options-form',
-    'time-off-edit-form','receipt-correction-form','duty-copy-form','duty-rules-form','duty-schedule-form','duty-history-form','duty-day-form','task-form','task-status-form']);
+    'activity-import-form','employee-data-form','document-text-form','document-rows-form','time-off-edit-form','receipt-correction-form','duty-copy-form','duty-rules-form','duty-schedule-form','duty-history-form','duty-day-form','task-form','task-status-form']);
   if (!guarded.has(form.id)) return callback();
-  if (interfacePendingForms.has(form.id) || form.querySelector('button[type="submit"]')?.disabled) return;
+  if (interfacePendingForms.has(form.id) || form.querySelector('button[type="submit"],button:not([type])')?.disabled) return;
   const entry = {buttons:new Map(),fields:new Map()};
   interfacePendingForms.set(form.id,entry);
   applyInterfacePendingForms();
   try { return await callback(); }
-  catch (error) { showToast(error.message || String(error),{error:true}); }
+  catch (error) { if (['document-text-form','document-rows-form'].includes(form.id)) LadExperience.stage('documents',2,error.message || String(error),true); showToast(error.message || String(error),{error:true}); }
   finally {
     interfacePendingForms.delete(form.id);
     form.removeAttribute('aria-busy');
